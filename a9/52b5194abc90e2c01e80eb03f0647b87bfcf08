@@ -1,0 +1,39 @@
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/evidence/core-probe-output.txt
+  s_60d626c82d7682::t_f15d69e72650f8 1-17
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/architecture.md
+  s_60d626c82d7682::t_abe9d033760105 1-196
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/cli.md
+  s_60d626c82d7682::t_abe9d033760105 1-85
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/core.md
+  s_60d626c82d7682::t_abe9d033760105 1-77
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/evidence/fold-growth.rs
+  s_60d626c82d7682::t_f15d69e72650f8 1-27
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/evidence/cli-probes-output.txt
+  s_60d626c82d7682::t_f15d69e72650f8 1-20
+ai/research/20261016T212002---chat-review/reports/20261016T212002---ai-chat-implementation-review.md
+  s_60d626c82d7682::t_abe9d033760105 1-86
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/evidence/chunk-identity.rs
+  s_60d626c82d7682::t_bc8446c756801e 1-21
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/evidence/cli-probes.mjs
+  s_60d626c82d7682::t_5d26a20295569b 1-70
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/evidence/core-probes.rs
+  s_60d626c82d7682::t_a5e3435c1a47db 1-114
+ai/research/20261016T212002---chat-review/research-notes/ai-chat-implementation-review/evidence/read-growth.rs
+  s_60d626c82d7682::t_355f07425f7db4 1-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a952b5194abc90e2c01e80eb03f0647b87bfcf08",
+  "prompts": {},
+  "sessions": {
+    "s_60d626c82d7682": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a14673-422c-7fc2-bc47-ca5a11b0ebcc",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
