@@ -1,0 +1,17 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/core_review_probe.rs (/hatimthayyil/code/ai-tools/target/debug/deps/core_review_probe-92c48b49b8bf11df)
+
+running 6 tests
+test core_probe_append_only_stale_sync_regresses_tip ... append-only same-path sync: len=4, tip=Some(0)
+ok
+test core_probe_concurrent_attach_creates_two_active_bindings ... simultaneous active bindings: 12
+ok
+test core_probe_failed_move_loses_attachment ... move failed: '.bad' is not a agent id: letters, digits, '.', '_' and '-'.
+ok
+test core_probe_ref_lock_failed_move_loses_attachment ... move failed: Could not prepare reference edit, "reference"="refs/ai/chat/two", "referent"="refs/ai/chat/two": The lock for resource '/tmp/.tmpUFn0k9/repo/.git/refs/ai/chat/two' could not be obtained after 0.10s after 8 attempt(s). The lockfile at '/tmp/.tmpUFn0k9/repo/.git/refs/ai/chat/two.lock' might need manual deletion.
+ok
+test core_probe_stale_child ... ok
+test core_probe_stale_sync_regresses_tip ... stored items: 4, binding tip: Some(0), old parsed items: 4
+ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 12.38s
