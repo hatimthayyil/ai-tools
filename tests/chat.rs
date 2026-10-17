@@ -6,7 +6,7 @@ use std::{
 };
 
 use ai_tools::{
-    chat::{Chat, Item, Key, Kind, LineKind, Synced, Tree, claude, read, sync},
+    chat::{Chat, Item, Key, Kind, LineKind, Snapshot, Synced, Tree, claude, read, sync},
     memory::Who,
 };
 use tempfile::TempDir;
@@ -133,6 +133,18 @@ fn added(s: Synced) -> std::ops::Range<u64> {
         Synced::Attached { added, .. } => added.items,
         Synced::NotAttached => panic!("not attached"),
     }
+}
+
+fn assert_blob(snapshot: &Snapshot, path: &str, expected: &[u8]) {
+    let stored = snapshot.as_ref().entry(path).unwrap();
+    assert!(stored.is_some(), "missing original file: {path}");
+    let bytes = snapshot.as_ref().read(path).unwrap();
+    assert!(
+        &*bytes == expected,
+        "source bytes differ for {path}: expected {} bytes, found {}",
+        expected.len(),
+        bytes.len()
+    );
 }
 
 #[test]
@@ -364,6 +376,180 @@ fn attaching_to_a_second_thread_moves_the_binding() {
         Synced::Attached { thread, added } => assert!(thread == "two" && added.is_empty()),
         Synced::NotAttached => panic!("attached to two"),
     }
+}
+
+#[test]
+fn an_invalid_move_preserves_the_original_attachment() {
+    let r = Repo::new();
+    let chat = r.chat();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    chat.attach("one", "claude", "s-1", Some(&path)).unwrap();
+    let before = r.head("one");
+    let agents = path.with_extension("").join("subagents");
+    fs::create_dir_all(&agents).unwrap();
+    fs::write(agents.join("agent-.invalid.jsonl"), "").unwrap();
+
+    assert!(chat.attach("two", "claude", "s-1", None).is_err());
+
+    assert_eq!(r.head("one"), before);
+    assert!(!chat.thread("two").unwrap().exists().unwrap());
+    let attached = chat.attached("claude", "s-1").unwrap().unwrap();
+    assert_eq!(attached.0.name(), "one");
+    assert_eq!(attached.1.transcript.as_deref(), Some(path.as_path()));
+}
+
+#[test]
+fn an_unwritable_destination_preserves_the_original_attachment() {
+    let r = Repo::new();
+    let chat = r.chat();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    chat.attach("one", "claude", "s-1", Some(&path)).unwrap();
+    let before = r.head("one");
+    fs::write(r.path().join(".git/refs/ai/chat/two.lock"), "held").unwrap();
+
+    assert!(chat.attach("two", "claude", "s-1", None).is_err());
+
+    assert_eq!(r.head("one"), before);
+    assert!(!chat.thread("two").unwrap().exists().unwrap());
+    assert_eq!(
+        chat.attached("claude", "s-1").unwrap().unwrap().0.name(),
+        "one"
+    );
+    assert!(matches!(
+        chat.sync("claude", "s-1", None).unwrap(),
+        Synced::Attached { thread, .. } if thread == "one"
+    ));
+}
+
+#[test]
+fn attaching_archives_complete_original_session_files() {
+    let r = Repo::new();
+    let chat = r.chat();
+    let mut original = fs::read(fixture("plain.jsonl")).unwrap();
+    original.extend_from_slice(
+        b"{\"type\":\"future-event\",\"unknown\":true}\r\n\
+          {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hidden reasoning\"}]}}\n\
+          {\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"injected context\"}}\n\
+          malformed \xff record\n{\"incomplete\":",
+    );
+    let path = r.dir.path().join("s-1.jsonl");
+    let files = [
+        ("s-1.jsonl", original),
+        (
+            "s-1/subagents/agent-a1b2c3d4e5f6a7b8c.jsonl",
+            fs::read(fixture("subagent/subagents/agent-a1b2c3d4e5f6a7b8c.jsonl")).unwrap(),
+        ),
+        (
+            "s-1/subagents/agent-a1b2c3d4e5f6a7b8c.meta.json",
+            fs::read(fixture(
+                "subagent/subagents/agent-a1b2c3d4e5f6a7b8c.meta.json",
+            ))
+            .unwrap(),
+        ),
+        (
+            "s-1/tool-results/nested/output.bin",
+            vec![0, 255, 128, b'\n', b'\r', 0],
+        ),
+        ("s-1/.session-artifact", b"unrecognised artifact\n".to_vec()),
+        ("s-1/empty", Vec::new()),
+    ];
+    for (name, bytes) in &files {
+        let file = r.dir.path().join(name);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, bytes).unwrap();
+    }
+    fs::write(r.dir.path().join("unrelated.json"), "outside session").unwrap();
+
+    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+
+    let thread = chat.thread("dev").unwrap();
+    let snapshot = thread.snapshot().unwrap();
+    for (name, bytes) in &files {
+        let stored = format!("sources/claude/s-1/{name}");
+        assert_blob(&snapshot, &stored, bytes);
+    }
+    assert!(
+        snapshot
+            .as_ref()
+            .entry("sources/claude/s-1/unrelated.json")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        snapshot.items().unwrap(),
+        claude::read(&path, "s-1").unwrap()
+    );
+}
+
+#[test]
+fn sync_archives_source_changes_without_new_projected_items() {
+    let r = Repo::new();
+    let chat = r.chat();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    let before = r.head("dev");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"{\"type\":\"future-event\",\"payload\":true}\nunfinished \xff")
+        .unwrap();
+    let original = fs::read(&path).unwrap();
+
+    assert!(matches!(
+        chat.sync("claude", "s-1", None).unwrap(),
+        Synced::Attached { added, .. } if added.is_empty()
+    ));
+
+    let thread = chat.thread("dev").unwrap();
+    let snapshot = thread.snapshot().unwrap();
+    assert_blob(&snapshot, "sources/claude/s-1/s-1.jsonl", &original);
+    assert_ne!(r.head("dev"), before);
+    let archived = r.head("dev");
+    chat.sync("claude", "s-1", None).unwrap();
+    assert_eq!(r.head("dev"), archived, "unchanged sources add no commit");
+}
+
+#[test]
+fn original_files_survive_source_changes_and_disappearance() {
+    let r = Repo::new();
+    let chat = r.chat();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    let original = fs::read(&path).unwrap();
+    let artifact = path.with_extension("").join("tool-results/output.bin");
+    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    fs::write(&artifact, b"original\0artifact\xff").unwrap();
+    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    let thread = chat.thread("dev").unwrap();
+    let first = thread.snapshot().unwrap().commit().unwrap();
+    let mut changed = original.clone();
+    changed.extend_from_slice(b"{\"type\":\"future-event\"}\n");
+    fs::write(&path, &changed).unwrap();
+    fs::write(&artifact, b"changed artifact").unwrap();
+    chat.sync("claude", "s-1", None).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(&artifact).unwrap();
+
+    chat.sync("claude", "s-1", None).unwrap();
+
+    let latest = thread.snapshot().unwrap();
+    assert_blob(&latest, "sources/claude/s-1/s-1.jsonl", &changed);
+    assert_blob(
+        &latest,
+        "sources/claude/s-1/s-1/tool-results/output.bin",
+        b"changed artifact",
+    );
+    let original_snapshot = thread.snapshot_at(first).unwrap();
+    assert_blob(
+        &original_snapshot,
+        "sources/claude/s-1/s-1.jsonl",
+        &original,
+    );
+    assert_blob(
+        &original_snapshot,
+        "sources/claude/s-1/s-1/tool-results/output.bin",
+        b"original\0artifact\xff",
+    );
 }
 
 #[test]

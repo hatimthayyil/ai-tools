@@ -77,6 +77,16 @@ impl Chat {
     /// Ingests the new entries of an attached session, from `transcript` or the path its
     /// binding holds, in one commit; none if nothing is new.
     pub fn sync(&self, harness: &str, session: &str, transcript: Option<&Path>) -> Result<Synced> {
+        self.sync_with(harness, session, transcript, read)
+    }
+
+    fn sync_with(
+        &self,
+        harness: &str,
+        session: &str,
+        transcript: Option<&Path>,
+        mut read: impl FnMut(&str, &str, Option<&Path>) -> Result<Transcript>,
+    ) -> Result<Synced> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let Some((thread, bound)) = self.attached(harness, session)? else {
@@ -118,6 +128,17 @@ impl Chat {
         harness: &str,
         session: &str,
         transcript: Option<&Path>,
+    ) -> Result<Attached> {
+        self.attach_with(name, harness, session, transcript, read)
+    }
+
+    fn attach_with(
+        &self,
+        name: &str,
+        harness: &str,
+        session: &str,
+        transcript: Option<&Path>,
+        mut read: impl FnMut(&str, &str, Option<&Path>) -> Result<Transcript>,
     ) -> Result<Attached> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
@@ -197,4 +218,162 @@ fn detach(t: &Thread, harness: &str, session: &str) -> Result<()> {
         Ok(((), ch))
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io::Write, sync::mpsc, thread, time::Duration};
+
+    use super::*;
+
+    #[test]
+    fn an_older_sync_finishing_last_preserves_newer_progress() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let chat = Chat::find(dir.path()).unwrap().unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/plain.jsonl");
+        let all = fs::read_to_string(fixture).unwrap();
+        let prefix: String = all.split_inclusive('\n').take(3).collect();
+        let transcript = dir.path().join("s-1.jsonl");
+        fs::write(&transcript, &prefix).unwrap();
+        chat.attach("dev", "claude", "s-1", Some(&transcript))
+            .unwrap();
+        let (captured, observed) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        let path = dir.path().to_path_buf();
+        let older = thread::spawn(move || {
+            let chat = Chat::find(&path).unwrap().unwrap();
+            let mut first = true;
+            chat.sync_with("claude", "s-1", None, |harness, session, path| {
+                let transcript = read(harness, session, path)?;
+                if first {
+                    first = false;
+                    captured.send(()).unwrap();
+                    resumed.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                Ok(transcript)
+            })
+            .unwrap()
+        });
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap()
+            .write_all(&all.as_bytes()[prefix.len()..])
+            .unwrap();
+        chat.sync("claude", "s-1", None).unwrap();
+        let thread = chat.thread("dev").unwrap();
+        let before = thread.snapshot().unwrap();
+        let items = before.items().unwrap();
+        let tip = before.tip("claude", "s-1").unwrap();
+        let commit = before.commit();
+        resume.send(()).unwrap();
+        older.join().unwrap();
+
+        let after = thread.snapshot().unwrap();
+        assert_eq!(after.items().unwrap(), items);
+        assert_eq!(after.tip("claude", "s-1").unwrap(), tip);
+        assert_eq!(after.commit(), commit, "a stale no-op sync adds no commit");
+    }
+
+    #[test]
+    fn concurrent_attachments_have_one_owner_and_detach_clears_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let (captured, observed) = mpsc::channel();
+        let mut workers = Vec::new();
+        let mut releases = Vec::new();
+        for name in ["one", "two"] {
+            let path = dir.path().to_path_buf();
+            let captured = captured.clone();
+            let (resume, resumed) = mpsc::channel();
+            releases.push(resume);
+            workers.push(thread::spawn(move || {
+                let chat = Chat::find(&path).unwrap().unwrap();
+                let mut first = true;
+                chat.attach_with(name, "claude", "s-1", None, |_, _, _| {
+                    if first {
+                        first = false;
+                        captured.send(()).unwrap();
+                        resumed.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                    Ok(Transcript::default())
+                })
+                .unwrap()
+            }));
+        }
+        for _ in 0..2 {
+            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let chat = Chat::find(dir.path()).unwrap().unwrap();
+        let owners: Vec<_> = chat
+            .threads()
+            .unwrap()
+            .into_iter()
+            .filter(|thread| {
+                thread
+                    .snapshot()
+                    .unwrap()
+                    .binding("claude", "s-1")
+                    .unwrap()
+                    .is_some_and(|binding| binding.is_attached())
+            })
+            .map(|thread| thread.name().to_string())
+            .collect();
+        assert_eq!(owners.len(), 1, "active attachments: {owners:?}");
+        assert_eq!(
+            chat.detach("claude", "s-1").unwrap(),
+            Some(owners[0].clone())
+        );
+        assert!(chat.attached("claude", "s-1").unwrap().is_none());
+        assert_eq!(chat.detach("claude", "s-1").unwrap(), None);
+    }
+
+    #[test]
+    fn archived_source_and_projection_use_the_same_captured_bytes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let chat = Chat::find(dir.path()).unwrap().unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/plain.jsonl");
+        let all = fs::read_to_string(fixture).unwrap();
+        let original: String = all.split_inclusive('\n').take(3).collect();
+        let path = dir.path().join("s-1.jsonl");
+        fs::write(&path, &original).unwrap();
+
+        chat.attach_with(
+            "dev",
+            "claude",
+            "s-1",
+            Some(&path),
+            |harness, session, path| {
+                let captured = read(harness, session, path)?;
+                fs::write(path.unwrap(), &all).unwrap();
+                Ok(captured)
+            },
+        )
+        .unwrap();
+
+        let thread = chat.thread("dev").unwrap();
+        let snapshot = thread.snapshot().unwrap();
+        assert_eq!(snapshot.len().unwrap(), 1);
+        assert!(
+            &*snapshot
+                .as_ref()
+                .read("sources/claude/s-1/s-1.jsonl")
+                .unwrap()
+                == original.as_bytes(),
+            "archived bytes must match the parsed observation"
+        );
+        assert_ne!(fs::read(path).unwrap(), original.as_bytes());
+    }
 }

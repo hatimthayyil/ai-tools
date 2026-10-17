@@ -9,6 +9,9 @@ The thread store and sync against real git repositories in temporary directories
 - Fork: the same entries under another session id add nothing; new entries hang on the copies.
 - Detach and re-attach: the graft and transcript path are kept; re-attach catches up.
 - Moving: attaching to a second thread detaches the first and ingests the whole history there, reading the transcript path from the first binding.
+- Failed moves: malformed subagent ids and a locked destination must preserve the original attachment and leave the destination unpublished.
+- Original sources: complete main JSONL bytes, companion subagent JSONL and metadata, nested binary artifacts, hidden files and empty files belong to the session archive. Unrelated files beside the session stay outside it.
+- Archive updates: unknown events and incomplete tails change the archive without adding projected items. Unchanged files add no commit; missing live files retain their last captured bytes, with earlier versions available through pinned snapshots.
 - Subagents: kept under `agents/`, out of the main tree, linked to their Agent call; a second sync adds nothing.
 - Lines: first write wins; lookups by key and level; a key past the last item is refused.
 - Locks per thread in the common git dir; worktrees share refs and locks.
