@@ -14,21 +14,18 @@ use crate::{
     chat::{
         claude::Subagent,
         model::{Item, Kind, SourceId, Tree, turns},
-        record::{
-            Agent, Binding, COLUMNS, Head, Key, Line, LineKind, check_id, encode_kind, item, word,
-        },
+        record::{Agent, Binding, Head, Key, Line, LineKind, check_id, decode, encode, item},
     },
     file::{self, AtPath},
     git::{Changes, Ref, Snap, fan_path},
     memory::Who,
-    record::Seg,
 };
 
 pub const ME: &str = "ai chat";
 /// Where the threads' refs live: `refs/ai/chat/<name>`.
 pub const REFS: &str = "refs/ai/chat/";
 /// The thread format this ai reads and writes.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 const SEG: u64 = 256;
 const INDEX: &str = "index";
 const ITEMS: &str = "items";
@@ -59,7 +56,7 @@ fn binding_path(harness: &str, session: &str) -> Result<String> {
 }
 
 pub(super) fn put_binding(ch: &mut Changes, b: &Binding) -> Result<()> {
-    ch.put(binding_path(&b.harness, &b.session)?, b.encode());
+    ch.put(binding_path(&b.harness, &b.session)?, encode(b)?);
     Ok(())
 }
 
@@ -73,13 +70,15 @@ fn line_path(key: Key) -> String {
     fan_path(&format!("{LINES}/{}", key.level), key.last)
 }
 
-/// An index segment: [`COLUMNS`] or more, then one line per item.
-fn index_seg(b: &[u8]) -> Result<Seg> {
-    let seg = Seg::parse(b, &COLUMNS).context("An index segment is corrupt.")?;
-    if COLUMNS.iter().any(|c| !seg.cols.iter().any(|k| k == c)) {
-        bail!("An index segment is corrupt.");
+fn index_seg(b: &[u8]) -> Result<Vec<Head>> {
+    if b.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(seg)
+    let heads: Vec<Head> = decode(b).context("An index segment is corrupt.")?;
+    if heads.len() > SEG as usize {
+        bail!("An index segment is corrupt: too many items.");
+    }
+    Ok(heads)
 }
 
 /// The items nothing follows, in order.
@@ -95,7 +94,7 @@ fn tips(heads: &[Head]) -> Vec<u64> {
 
 /// The dedupe key of an entry: its harness and entry id.
 fn key(id: &SourceId) -> (String, String) {
-    (word(&id.harness), word(&id.entry))
+    (id.harness.clone(), id.entry.clone())
 }
 
 /// What a sync or attach added to a thread.
@@ -239,6 +238,22 @@ impl Thread {
         Ok(self.git.head()?.is_some())
     }
 
+    pub fn upgrade(&self) -> Result<bool> {
+        let (upgraded, _) = self.git.mutate(
+            "upgrade thread to format 2",
+            |commit| self.git.raw(commit),
+            |source| {
+                let format = source.format()?;
+                self.git.readable(format)?;
+                if format == FORMAT {
+                    return Ok((false, Changes::default()));
+                }
+                Ok((true, super::v1::export(source)?))
+            },
+        )?;
+        Ok(upgraded)
+    }
+
     /// The thread as of its latest commit; empty if it does not exist.
     pub fn snapshot(&self) -> Result<Snapshot<'_>> {
         self.at(self.git.head()?)
@@ -251,7 +266,14 @@ impl Thread {
 
     fn at(&self, commit: Option<ObjectId>) -> Result<Snapshot<'_>> {
         let git = self.git.raw(commit)?;
-        self.git.readable(git.format()?)?;
+        let format = git.format()?;
+        self.git.readable(format)?;
+        if format < FORMAT {
+            bail!(
+                "This thread is format {format}. Run ai chat upgrade {}.",
+                self.name
+            );
+        }
         Ok(Snapshot { git })
     }
 
@@ -347,7 +369,7 @@ impl Thread {
                 if key.last >= n {
                     bail!("Line {key} is beyond the thread: it holds {n} items.");
                 }
-                ch.put(line_path(*key), line.encode());
+                ch.put(line_path(*key), encode(line)?);
                 stored.push(line.clone());
             }
             Ok((stored, ch))
@@ -386,19 +408,21 @@ impl Snapshot<'_> {
         let mut out: Vec<Head> = Vec::new();
         self.git.walk(&format!("{dir}{INDEX}"), |s, id| {
             let seg = index_seg(&self.git.fetch(id)?)?;
-            for (k, line) in seg.lines.iter().enumerate() {
+            for (k, head) in seg.into_iter().enumerate() {
                 let seq = s * SEG + k as u64;
                 if seq != out.len() as u64 {
                     bail!("Item {} is missing from the thread.", out.len());
                 }
-                let head = Head::parse(seq, &seg, line)
-                    .ok()
-                    .filter(|h| h.parent.is_none_or(|p| p < seq))
-                    .with_context(|| format!("Item {seq} is corrupt."))?;
+                if head.seq != seq || head.parent.is_some_and(|p| p >= seq) {
+                    bail!("Item {seq} is corrupt.");
+                }
                 out.push(head);
             }
             Ok(())
         })?;
+        if self.git.count(&format!("{dir}{ITEMS}"))? != out.len() as u64 {
+            bail!("The thread's index and item sequence have different lengths.");
+        }
         Ok(out)
     }
 
@@ -418,6 +442,9 @@ impl Snapshot<'_> {
                 ids.push(id);
                 Ok(())
             })?;
+            if ids.len() != heads.len() {
+                bail!("The thread's index and {sub} sequence have different lengths.");
+            }
             Ok(ids)
         };
         let (kinds, raws) = (blobs(ITEMS)?, blobs(RAW)?);
@@ -439,11 +466,13 @@ impl Snapshot<'_> {
     pub fn item(&self, seq: u64) -> Result<Item> {
         let head = |seq: u64| -> Result<Head> {
             let seg = index_seg(&self.git.read(&fan_path(INDEX, seq / SEG))?)?;
-            let line = seg
-                .lines
+            let head = seg
                 .get((seq % SEG) as usize)
                 .with_context(|| format!("No item {seq}."))?;
-            Head::parse(seq, &seg, line).with_context(|| format!("Item {seq} is corrupt"))
+            if head.seq != seq || head.parent.is_some_and(|p| p >= seq) {
+                bail!("Item {seq} is corrupt.");
+            }
+            Ok(head.clone())
         };
         let h = head(seq)?;
         let parent = h.parent.map(|p| head(p).map(|p| p.source())).transpose()?;
@@ -473,8 +502,11 @@ impl Snapshot<'_> {
         let mut out = Vec::new();
         for (harness, _) in self.git.names(SESSIONS)? {
             for (session, id) in self.git.names(&format!("{SESSIONS}/{harness}"))? {
-                let b = Binding::decode(&harness, &session, &self.git.fetch(id)?)
+                let b: Binding = decode(&self.git.fetch(id)?)
                     .with_context(|| format!("The binding of {harness} {session} is corrupt"))?;
+                if b.harness != harness || b.session != session {
+                    bail!("The binding of {harness} {session} has a different identity.");
+                }
                 out.push(b);
             }
         }
@@ -486,9 +518,12 @@ impl Snapshot<'_> {
         if b.is_empty() {
             return Ok(None);
         }
-        Binding::decode(harness, session, &b)
-            .map(Some)
-            .with_context(|| format!("The binding of {harness} {session} is corrupt"))
+        let binding: Binding =
+            decode(&b).with_context(|| format!("The binding of {harness} {session} is corrupt"))?;
+        if binding.harness != harness || binding.session != session {
+            bail!("The binding of {harness} {session} has a different identity.");
+        }
+        Ok(Some(binding))
     }
 
     /// The newest tip of a session: the item of its transcript's newest entry.
@@ -514,9 +549,12 @@ impl Snapshot<'_> {
         if b.is_empty() {
             return Ok(None);
         }
-        Agent::decode(harness, agent, &b)
-            .map(Some)
-            .with_context(|| format!("The record of agent {agent} is corrupt"))
+        let record: Agent =
+            decode(&b).with_context(|| format!("The record of agent {agent} is corrupt"))?;
+        if record.harness != harness || record.agent != agent {
+            bail!("The record of agent {agent} has a different identity.");
+        }
+        Ok(Some(record))
     }
 
     /// A subagent's items, in order; its roots follow its [`Agent::call`].
@@ -529,7 +567,7 @@ impl Snapshot<'_> {
         if b.is_empty() {
             return Ok(None);
         }
-        Line::decode(&b)
+        decode(&b)
             .map(Some)
             .with_context(|| format!("Line {key} is corrupt"))
     }
@@ -557,7 +595,7 @@ impl Snapshot<'_> {
     pub fn lines(&self, level: u32) -> Result<Vec<(u64, Line)>> {
         let mut out = Vec::new();
         self.git.walk(&format!("{LINES}/{level}"), |last, id| {
-            let line = Line::decode(&self.git.fetch(id)?)
+            let line = decode(&self.git.fetch(id)?)
                 .with_context(|| format!("Line {} is corrupt", Key { level, last }))?;
             out.push((last, line));
             Ok(())
@@ -607,7 +645,7 @@ impl Snapshot<'_> {
             agent_items += self.ingest_agent(&b.harness, sub, call, ch)?;
         }
         let added = first..main.len;
-        main.finish(ch);
+        main.finish(ch)?;
         Ok(Added {
             items: added,
             agent_items,
@@ -639,10 +677,10 @@ impl Snapshot<'_> {
             call: call.or_else(|| previous.as_ref().and_then(|agent| agent.call)),
         };
         if previous.as_ref() != Some(&agent) {
-            ch.put(format!("{dir}{AGENT}"), agent.encode());
+            ch.put(format!("{dir}{AGENT}"), encode(&agent)?);
         }
         let added = items.len - first;
-        items.finish(ch);
+        items.finish(ch)?;
         Ok(added)
     }
 }
@@ -653,7 +691,7 @@ struct Append<'a, 't> {
     dir: String,
     len: u64,
     keys: HashMap<(String, String), u64>,
-    segs: BTreeMap<u64, Seg>,
+    segs: BTreeMap<u64, Vec<Head>>,
 }
 
 impl<'a, 't> Append<'a, 't> {
@@ -686,24 +724,24 @@ impl<'a, 't> Append<'a, 't> {
             self.segs.insert(s, seg);
         }
         let seg = self.segs.get_mut(&s).expect("inserted above");
-        if seg.lines.len() as u64 != seq % SEG {
+        if seg.len() as u64 != seq % SEG {
             bail!(
                 "Item {seq} is corrupt: its index segment holds {} items.",
-                seg.lines.len()
+                seg.len()
             );
         }
         let head = Head {
             seq,
             parent,
-            harness: word(&item.id.harness),
-            session: word(&item.id.session),
-            entry: word(&item.id.entry),
+            harness: item.id.harness.clone(),
+            session: item.id.session.clone(),
+            entry: item.id.entry.clone(),
             ts: item.ts,
         };
-        seg.lines.push(head.line(seg));
+        seg.push(head);
         ch.put(
             fan_path(&format!("{}{ITEMS}", self.dir), seq),
-            encode_kind(&item.kind),
+            encode(&item.kind)?,
         );
         ch.put(
             fan_path(&format!("{}{RAW}", self.dir), seq),
@@ -714,10 +752,11 @@ impl<'a, 't> Append<'a, 't> {
         Ok(())
     }
 
-    fn finish(self, ch: &mut Changes) {
+    fn finish(self, ch: &mut Changes) -> Result<()> {
         let index = format!("{}{INDEX}", self.dir);
         for (s, seg) in self.segs {
-            ch.put(fan_path(&index, s), seg.bytes());
+            ch.put(fan_path(&index, s), encode(&seg)?);
         }
+        Ok(())
     }
 }

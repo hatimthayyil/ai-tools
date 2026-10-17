@@ -84,7 +84,7 @@ pub fn read(path: &Path, session: &str) -> Result<Vec<Item>> {
 }
 
 pub(super) fn parse_bytes(session: &str, bytes: &[u8]) -> Vec<Item> {
-    let end = memchr::memrchr(b'\n', &bytes).map_or(0, |i| i + 1);
+    let end = memchr::memrchr(b'\n', bytes).map_or(0, |i| i + 1);
     parse(session, &String::from_utf8_lossy(&bytes[..end]))
 }
 

@@ -64,6 +64,8 @@ enum Command {
         #[arg(last = true, help = "arguments for claude, after --")]
         args: Vec<String>,
     },
+    #[command(about = "export a v1 thread as structured JSON records.")]
+    Upgrade { name: String },
     #[command(about = "list this repository's threads and their sessions.")]
     List {
         #[command(flatten)]
@@ -237,6 +239,17 @@ impl Cli {
         match self.command {
             Command::Start { name, args } => launch(cwd, &name, &args),
             Command::Resume { name, args } => resume(cwd, &name, &args),
+            Command::Upgrade { name } => {
+                let thread = find(cwd)?.thread(&name)?;
+                if !thread.exists()? {
+                    bail!("No thread {name} in this repository.");
+                }
+                match thread.upgrade()? {
+                    true => writeln!(out, "Upgraded {name} to format {}.", super::FORMAT)?,
+                    false => writeln!(out, "Thread {name} is already format {}.", super::FORMAT)?,
+                }
+                Ok(ExitCode::SUCCESS)
+            }
             Command::List { session } => list(cwd, out, session),
             Command::View { target, part, at } => {
                 view(cwd, out, target, part.unwrap_or(1), at.as_deref())

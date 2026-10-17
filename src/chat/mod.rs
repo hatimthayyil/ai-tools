@@ -9,6 +9,7 @@ mod source;
 mod store;
 mod summarise;
 mod sync;
+mod v1;
 mod view;
 
 pub use cli::{Cli, NOT_ATTACHED};

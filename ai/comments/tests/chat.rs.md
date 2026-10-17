@@ -15,5 +15,6 @@ The thread store and sync against real git repositories in temporary directories
 - Subagents: kept under `agents/`, out of the main tree, linked to their Agent call; a second sync adds nothing.
 - Lines: first write wins; lookups by key and level; a key past the last item is refused.
 - Locks per thread in the common git dir; worktrees share refs and locks.
-- A thread of format 2 is refused by snapshot and sync, and left unchanged.
+- A thread newer than format 2 is refused by snapshot, sync and upgrade, and left unchanged.
+- V1 conversion exports records, indexes, bindings, subagents and summaries as JSON while preserving raw/source object ids and the prior Git parent. Repeated conversion adds no commit. Structured ids and multiline fields round-trip exactly; invalid index sequence numbers and parents are refused.
 - `two_processes_syncing_one_thread_lose_nothing`: two sessions on one thread grow line by line; at each step four child processes (two per session) sync at once. Children are this test binary re-run with `--exact sync_child` and `AI_CHAT_TEST_SYNC=<repo> <session>`; `sync_child` does nothing without the variable. Every entry lands once with its links, and only syncs that added something committed. Instrumented once: 52 lost compare-and-swaps over the 17 steps, each redone.

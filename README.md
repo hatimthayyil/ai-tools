@@ -53,9 +53,12 @@ ai chat view -t dev                  # dev's view
 ai chat zoom -t dev <id>             # open a line of it; --tool-output adds tool output
 ai chat grep -t dev <regex>          # search it
 ai chat summarise -t dev             # write its summaries now; --rebuild, --model, --dry-run
+ai chat upgrade dev                  # export a v1 thread as JSON records, retaining its previous Git commit
 ```
 
 Inside a session, `/ai attach <name>`, `/ai detach` and `/ai compress`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/compact` and auto-compaction replace the context with the thread's view. Threads live under `refs/ai/chat/` in the repository, so each repository has its own; `git config ai.chat.model` picks the summariser's model.
+
+Threads retain complete original transcripts and companion session files alongside derived JSON records and summaries. `upgrade` converts the current v1 tree to v2 in one child commit; previous commits and source blobs remain intact. Typed `--at` views read v2 snapshots; older v1 snapshots remain available through Git.
 
 This needs the Claude Code plugin in `share/ai/plugins/claude` of the package (`plugins/claude` here). Load it in every session with the `env` block of `~/.claude/settings.json`:
 

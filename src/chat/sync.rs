@@ -41,9 +41,12 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
     let Some(path) = path else {
         return Ok(Transcript::default());
     };
+    let files = source::capture(path)?;
+    if files.is_empty() {
+        return Ok(Transcript::default());
+    }
     match harness {
         claude::HARNESS => {
-            let files = source::capture(path)?;
             let name = Path::new(
                 path.file_name()
                     .ok_or_else(|| anyhow::anyhow!("A transcript needs a file name."))?,

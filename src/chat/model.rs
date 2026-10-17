@@ -1,6 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One entry of one harness session.
@@ -12,7 +13,8 @@ pub struct SourceId {
 }
 
 /// What an item says.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "content", rename_all = "snake_case")]
 pub enum Kind {
     /// The user's words.
     User(String),
@@ -37,7 +39,8 @@ pub enum Kind {
 }
 
 /// A harness event that is not content.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Marker {
     /// The harness compacted its context here.
     Compaction,

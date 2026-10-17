@@ -188,7 +188,7 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     let log = git(&r.path(), &["log", "--format=%s", "refs/ai/chat/dev"]);
     assert_eq!(log, "sync claude s-1\nattach claude s-1\n");
     let format = git(&r.path(), &["show", "refs/ai/chat/dev:format"]);
-    assert_eq!(format, "1\n");
+    assert_eq!(format, "2\n");
 }
 
 #[test]
@@ -727,7 +727,7 @@ fn a_newer_thread_is_refused() {
     r.chat().attach("dev", "claude", "s-1", Some(&p)).unwrap();
     let path = r.path();
     let old = git(&path, &["rev-parse", "refs/ai/chat/dev:format"]);
-    let new = git_in(&path, &["hash-object", "-w", "--stdin"], "2\n");
+    let new = git_in(&path, &["hash-object", "-w", "--stdin"], "3\n");
     let tree = git(&path, &["ls-tree", "refs/ai/chat/dev"]).replace(old.trim(), new.trim());
     let tree = git_in(&path, &["mktree"], &tree);
     let commit = git(
@@ -743,12 +743,243 @@ fn a_newer_thread_is_refused() {
     );
     git(&path, &["update-ref", "refs/ai/chat/dev", commit.trim()]);
     let chat = r.chat();
-    let want = "This thread is format 2; this ai reads up to 1. Upgrade ai.";
+    let want = "This thread is format 3; this ai reads up to 2. Upgrade ai.";
     let snap = chat.thread("dev").unwrap().snapshot().map(|_| ());
     assert_eq!(snap.unwrap_err().to_string(), want);
     let s = sync(&path, "claude", "s-1", None).map(|_| ());
     assert_eq!(s.unwrap_err().to_string(), want);
     assert_eq!(r.head("dev").unwrap(), commit.trim());
+    assert!(chat.thread("dev").unwrap().upgrade().is_err());
+    assert_eq!(r.head("dev").unwrap(), commit.trim());
+}
+
+#[test]
+fn structured_indexes_keep_source_ids_exact() {
+    let r = Repo::new();
+    let path = r.transcript("s-1", &relabel(&lines("plain.jsonl"), "with space "));
+    let chat = r.chat();
+    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    let thread = chat.thread("dev").unwrap();
+    let snapshot = thread.snapshot().unwrap();
+
+    assert_eq!(
+        snapshot.items().unwrap(),
+        claude::read(&path, "s-1").unwrap()
+    );
+    assert!(
+        snapshot
+            .heads()
+            .unwrap()
+            .iter()
+            .all(|head| head.entry.starts_with("with space "))
+    );
+    let index: serde_json::Value =
+        serde_json::from_slice(&snapshot.as_ref().read("index/0000/00").unwrap()).unwrap();
+    assert_eq!(index[0]["entry"], "with space u1");
+    let item: serde_json::Value =
+        serde_json::from_slice(&snapshot.as_ref().read("items/0000/00").unwrap()).unwrap();
+    assert_eq!(item["kind"], "user");
+}
+
+#[test]
+fn structured_indexes_reject_invalid_positions_and_parents() {
+    use ai_tools::git::{Changes, Ref};
+
+    let r = Repo::new();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    let chat = r.chat();
+    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    let thread = chat.thread("dev").unwrap();
+    let snapshot = thread.snapshot().unwrap();
+    let original: serde_json::Value =
+        serde_json::from_slice(&snapshot.as_ref().read("index/0000/00").unwrap()).unwrap();
+    let mut repo = gix::open(r.path()).unwrap();
+    repo.committer_or_set_fallback("test", "test@localhost")
+        .unwrap();
+    let reference = Ref::new(repo, "refs/ai/chat/dev".into(), "thread", 2);
+    for (field, value) in [("seq", 99), ("parent", 0)] {
+        let mut broken = original.clone();
+        broken[0][field] = value.into();
+        reference
+            .mutate(
+                "invalid index fixture",
+                |commit| reference.raw(commit),
+                |_| {
+                    let mut changes = Changes::default();
+                    changes.put("index/0000/00".into(), serde_json::to_vec(&broken).unwrap());
+                    Ok(((), changes))
+                },
+            )
+            .unwrap();
+
+        let snapshot = thread.snapshot().unwrap();
+        assert!(snapshot.heads().is_err(), "invalid {field}");
+        assert!(snapshot.item(0).is_err(), "invalid {field}");
+        assert!(snapshot.tree().is_err(), "invalid {field}");
+    }
+    reference
+        .mutate(
+            "empty index fixture",
+            |commit| reference.raw(commit),
+            |_| {
+                let mut changes = Changes::default();
+                changes.put("index/0000/00".into(), b"[]".to_vec());
+                Ok(((), changes))
+            },
+        )
+        .unwrap();
+    let snapshot = thread.snapshot().unwrap();
+    assert!(snapshot.heads().is_err());
+    assert!(snapshot.items().is_err());
+}
+
+#[test]
+fn a_v1_thread_exports_to_json_without_rewriting_its_history() {
+    use ai_tools::git::{Changes, Ref};
+    use clap::Parser;
+
+    let r = Repo::new();
+    let mut repo = gix::open(r.path()).unwrap();
+    repo.committer_or_set_fallback("test", "test@localhost")
+        .unwrap();
+    let old = Ref::new(repo, "refs/ai/chat/dev".into(), "thread", 1);
+    let raw = lines("plain.jsonl");
+    let (_, source) = old.mutate("legacy thread", |commit| old.raw(commit), |_| {
+        let mut changes = Changes::default();
+        for (path, bytes) in [
+            ("index/0000/00", b"ts harness session entry parent\n2026-10-14T10:00:00Z claude s-1 u1 \n2026-10-14T10:00:03Z claude s-1 a2 0\n".to_vec()),
+            ("items/0000/00", b"kind user\n\nWhat does the config loader do?".to_vec()),
+            ("items/0000/01", b"kind text\n\nIt reads `config.toml`, then applies `APP_*` environment overrides.".to_vec()),
+            ("raw/0000/00", raw[2].trim_end_matches('\n').as_bytes().to_vec()),
+            ("raw/0000/01", raw[6].trim_end_matches('\n').as_bytes().to_vec()),
+            ("sessions/claude/s-1", b"transcript /missing/s-1.jsonl\ntip 1\nattached 2026-10-14T10:00:00Z\n\n".to_vec()),
+            ("agents/claude/agent-1/agent", b"type general-purpose\ndescription Survey storage\ncall 1\n\n".to_vec()),
+            ("agents/claude/agent-1/index/0000/00", b"ts harness session entry parent\n2026-10-14T10:00:02Z claude s-1 sub-1 \n".to_vec()),
+            ("agents/claude/agent-1/items/0000/00", b"kind text\n\nagent answer".to_vec()),
+            ("agents/claude/agent-1/raw/0000/00", b"{\"original\":\"agent\"}".to_vec()),
+            ("lines/1/0000/01", b"ts 2026-10-14T10:00:03Z\nkind exchange\nagent claude-code\nmodel sonnet\nsession summary-1\n\nuser: config loader; ai: explains config and overrides".to_vec()),
+            ("sources/claude/s-1/s-1/artifact.bin", vec![0, 255, 128, 10]),
+        ] {
+            changes.put(path.into(), bytes);
+        }
+        Ok(((), changes))
+    }).unwrap();
+    let first = source.commit().unwrap();
+    let raw_id = source.entry("raw/0000/00").unwrap();
+    let artifact_id = source.entry("sources/claude/s-1/s-1/artifact.bin").unwrap();
+    let chat = r.chat();
+    let thread = chat.thread("dev").unwrap();
+    assert!(
+        thread
+            .snapshot()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("ai chat upgrade dev")
+    );
+
+    let mut output = Vec::new();
+    let result = ai_tools::chat::Cli::parse_from(["chat", "upgrade", "dev"])
+        .run(&r.path(), &mut output)
+        .unwrap();
+    assert_eq!(result, std::process::ExitCode::SUCCESS);
+    assert_eq!(output, b"Upgraded dev to format 2.\n");
+
+    let snapshot = thread.snapshot().unwrap();
+    assert_eq!(snapshot.len().unwrap(), 2);
+    assert_eq!(entries(&snapshot.items().unwrap()), ["u1", "a2"]);
+    assert_eq!(
+        snapshot.binding("claude", "s-1").unwrap().unwrap().tip,
+        Some(1)
+    );
+    assert_eq!(snapshot.agents().unwrap()[0].description, "Survey storage");
+    assert_eq!(
+        snapshot.agent_items("claude", "agent-1").unwrap()[0].kind,
+        Kind::Text("agent answer".into())
+    );
+    assert_eq!(
+        snapshot
+            .line(Key { level: 1, last: 1 })
+            .unwrap()
+            .unwrap()
+            .who
+            .model,
+        "sonnet"
+    );
+    assert_eq!(snapshot.as_ref().entry("raw/0000/00").unwrap(), raw_id);
+    assert_eq!(
+        snapshot
+            .as_ref()
+            .entry("sources/claude/s-1/s-1/artifact.bin")
+            .unwrap(),
+        artifact_id
+    );
+    assert_eq!(
+        git(&r.path(), &["rev-parse", "refs/ai/chat/dev^"]).trim(),
+        first.to_string()
+    );
+    assert_eq!(
+        old.raw(Some(first))
+            .unwrap()
+            .read("format")
+            .unwrap()
+            .as_ref(),
+        b"1\n"
+    );
+    let converted = r.head("dev");
+    assert!(!thread.upgrade().unwrap());
+    assert_eq!(r.head("dev"), converted);
+}
+
+#[test]
+fn a_corrupt_v1_sequence_is_not_published_as_v2() {
+    use ai_tools::git::{Changes, Ref};
+
+    for missing in ["items/0000/00", "raw/0000/00"] {
+        let r = Repo::new();
+        let mut repo = gix::open(r.path()).unwrap();
+        repo.committer_or_set_fallback("test", "test@localhost")
+            .unwrap();
+        let old = Ref::new(repo, "refs/ai/chat/dev".into(), "thread", 1);
+        old.mutate(
+            "corrupt v1 fixture",
+            |commit| old.raw(commit),
+            |_| {
+                let mut changes = Changes::default();
+                for (path, bytes) in [
+                    (
+                        "index/0000/00",
+                        b"ts harness session entry parent\n2026-10-14T10:00:00Z claude s-1 u1 \n"
+                            .as_slice(),
+                    ),
+                    ("items/0000/00", b"kind user\n\nprompt".as_slice()),
+                    ("raw/0000/00", b"original source".as_slice()),
+                ] {
+                    if path != missing {
+                        changes.put(path.into(), bytes.to_vec());
+                    }
+                }
+                Ok(((), changes))
+            },
+        )
+        .unwrap();
+        let original = r.head("dev");
+
+        assert!(
+            r.chat().thread("dev").unwrap().upgrade().is_err(),
+            "missing {missing}"
+        );
+
+        assert_eq!(r.head("dev"), original);
+        assert_eq!(
+            old.raw(old.head().unwrap())
+                .unwrap()
+                .read("format")
+                .unwrap()
+                .as_ref(),
+            b"1\n"
+        );
+    }
 }
 
 #[test]

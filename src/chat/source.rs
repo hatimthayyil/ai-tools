@@ -11,15 +11,20 @@ pub(super) fn capture(path: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
         .parent()
         .context("A transcript needs a parent directory.")?;
     let mut files = BTreeMap::new();
-    capture_at(path, parent, &mut files)?;
+    capture_at(path, parent, &mut files, false)?;
     let companion = path.with_extension("");
     if companion != path {
-        capture_at(&companion, parent, &mut files)?;
+        capture_at(&companion, parent, &mut files, true)?;
     }
     Ok(files)
 }
 
-fn capture_at(path: &Path, parent: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
+fn capture_at(
+    path: &Path,
+    parent: &Path,
+    files: &mut BTreeMap<PathBuf, Vec<u8>>,
+    allow_directory: bool,
+) -> Result<()> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -31,10 +36,13 @@ fn capture_at(path: &Path, parent: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>
         bail!("Cannot archive symbolic link {}.", path.display());
     }
     if meta.is_dir() {
+        if !allow_directory {
+            bail!("A transcript must be a regular file: {}.", path.display());
+        }
         for entry in
             fs::read_dir(path).with_context(|| format!("Cannot read {}.", path.display()))?
         {
-            capture_at(&entry?.path(), parent, files)?;
+            capture_at(&entry?.path(), parent, files, true)?;
         }
     } else if meta.is_file() {
         let relative = path.strip_prefix(parent)?.to_path_buf();
@@ -67,5 +75,19 @@ mod tests {
         let error = capture(&transcript).unwrap_err();
 
         assert!(error.to_string().contains("Cannot archive symbolic link"));
+    }
+
+    #[test]
+    fn a_directory_cannot_be_used_as_the_main_transcript() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join("unrelated.jsonl"), "outside session").unwrap();
+
+        let error = capture(dir.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("A transcript must be a regular file")
+        );
     }
 }
