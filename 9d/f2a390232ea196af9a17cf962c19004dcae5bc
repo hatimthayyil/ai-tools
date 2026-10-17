@@ -1,0 +1,36 @@
+src/chat/sync.rs
+  s_b1a099b6b80707::t_bc76c83929a4e4 76,78-82,86-89,143,165-173,183,185,341
+  s_b1a099b6b80707::t_cf044c681f5021 308,311-312,315
+  s_b1a099b6b80707::t_e86ca824824788 186,188,202-204,218-219,304,316-322,340,342-344
+src/chat/store.rs
+  s_b1a099b6b80707::t_bc76c83929a4e4 156-163
+  s_b1a099b6b80707::t_0bbb3ba4422ac3 164-167
+README.md
+  s_b1a099b6b80707::t_797d1206fef507 61-62
+ai/comments/src/chat/sync.rs.md
+  s_b1a099b6b80707::t_797d1206fef507 8-9,13
+tests/chat.rs
+  s_b1a099b6b80707::t_cf044c681f5021 157,348,353-361,375-396
+  s_b1a099b6b80707::t_ade67f587d2086 411,421-422,432,438-439,441-442,445
+tests/chat_cli.rs
+  s_b1a099b6b80707::t_cf044c681f5021 368,370-373,375
+  s_b1a099b6b80707::t_27cf8c5a927b67 374
+ai/comments/tests/chat.rs.md
+  s_b1a099b6b80707::t_797d1206fef507 11-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9df2a390232ea196af9a17cf962c19004dcae5bc",
+  "prompts": {},
+  "sessions": {
+    "s_b1a099b6b80707": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1499a-01cf-7a90-b0b2-29b3e986c43c",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
