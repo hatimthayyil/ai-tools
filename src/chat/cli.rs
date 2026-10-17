@@ -1,7 +1,10 @@
 use std::{
     env,
     io::{self, BufRead, IsTerminal, Write},
-    os::unix::process::CommandExt,
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{self, ExitCode},
     time::{Duration, Instant},
@@ -34,7 +37,7 @@ pub const PART: u64 = 20_000;
 /// How long `compact-session` waits for the lines its view needs, and `summarise --rebuild`
 /// for a running summariser.
 pub const WAIT: Duration = Duration::from_secs(60);
-const IMPORT_REQUIRED: &str = "This repository has v1 chat threads. Run a normal ai chat command in an interactive terminal to confirm their import into format 2.";
+const IMPORT_REQUIRED: &str = "This repository has v1 chat threads. Run a normal ai chat command in the foreground of an interactive terminal to confirm their import into format 2.";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -239,7 +242,7 @@ impl Cli {
             &mut io::stdout().lock(),
             &mut io::stderr().lock(),
             |names, status| {
-                if !interactive {
+                if !interactive || !foreground_terminal(io::stdin().as_raw_fd()) {
                     bail!(IMPORT_REQUIRED);
                 }
                 confirm_import(names, &mut io::stdin().lock(), status)
@@ -327,6 +330,11 @@ impl Cli {
             Command::CompactSession { session } => compact_session(cwd, out, session),
         }
     }
+}
+
+fn foreground_terminal(fd: RawFd) -> bool {
+    let foreground = unsafe { libc::tcgetpgrp(fd) };
+    foreground > 0 && foreground == unsafe { libc::getpgrp() }
 }
 
 fn confirm_import(
@@ -1068,6 +1076,12 @@ mod tests {
         assert!(Cli::try_parse_from(["chat", "upgrade", "dev"]).is_err());
         let help = Cli::command().render_help().to_string();
         assert!(!help.contains("upgrade"));
+    }
+
+    #[test]
+    fn nonterminals_cannot_offer_import_confirmation() {
+        let file = tempfile::tempfile().unwrap();
+        assert!(!foreground_terminal(file.as_raw_fd()));
     }
 
     #[test]

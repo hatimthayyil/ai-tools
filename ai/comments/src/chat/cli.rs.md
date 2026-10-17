@@ -2,6 +2,7 @@
 
 - CLI preflight scans every thread's format before dispatch. Newer formats fail before confirmation or writes. Normal terminal commands ask once before importing the repository's v1 threads, then run the requested command; confirmation and import status use stderr.
 - `Cli::run` is noninteractive. It and background plumbing refuse v1 without waiting or converting. Library store APIs have no prompt behavior. Decline, blank input and EOF leave the old refs unchanged.
+- Terminal confirmation requires the process group to own stdin's foreground terminal group (`tcgetpgrp`/`getpgrp`). A background job can inherit TTY descriptors; TTY detection alone would let its input read suspend it with `SIGTTIN`. A failed foreground-group query refuses confirmation.
 
 Design: `ai/research/20261014T002322---chat-design.md`, Commands and Contract. Caller: `plugins/claude/hooks/register.ts` (register.ts.md).
 
@@ -25,7 +26,7 @@ Reading
 - `view`: the picked thread's view, paged by `PART` (20,000 bytes, under the 30,000-character cap on a Claude Code command's output) with memory's `page`. Every part comes from one commit of the thread: the footer names it and the thread (`-t <name> --part <n> --at <commit>`), because the background summariser writes lines between parts and a fresh fold would shift the page boundaries. A thread with no item yet prints that it holds nothing.
 - `zoom <id> [part] [--tool-output]`: `Branch::zoom` on the picked thread's branch (the session's when it is attached there, else the newest: `read_branch`), paged by part number, not pinned: what it shows is mostly items, which never change. The footer names the thread and repeats `--tool-output`, so it works outside the session too.
 - `grep <regex> [-F -i -s] [--tool-output] [--before <id>]`: `Branch::grep` on the picked thread's branch, as zoom picks it, with memory's pattern flags (`memory::Pattern`). Pages newest first: the newest matches that fit `PART`, printed oldest first, then `Newest k of n. Older: ai chat grep -t <name> '<pattern>' … --before <id>` with the flags repeated (`memory::quote`, `memory::word`); else `n matches.`.
-- `attach`/`detach`: one-line confirmations. `attach` reports a new thread and the thread it moved from.
+- `attach`/`detach`: one-line confirmations. `attach` reports a new thread; attaching elsewhere is rejected until the session is explicitly detached.
 
 Summarising
 - `summarise`: `summarise::summarise` with `--model`, else the configured model (`Chat::backend`). Prints `Wrote N lines, M by the model.` or `Nothing to write.`, or that another summariser holds the lock (it writes the same lines). Spawned by `sync-session` as `summarise -t <name>`: stdout null, stderr the log.
