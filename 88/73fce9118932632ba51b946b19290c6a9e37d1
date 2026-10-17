@@ -1,0 +1,33 @@
+ai/comments/src/chat/v1.rs.md
+  s_b1a099b6b80707::t_c146e6291ceb63 3,5
+tests/chat.rs
+  s_b1a099b6b80707::t_3dd5b6966413d1 909,912
+README.md
+  s_b1a099b6b80707::t_c146e6291ceb63 62
+src/chat/store.rs
+  s_b1a099b6b80707::t_3dd5b6966413d1 253-258,291
+ai/comments/src/chat/cli.rs.md
+  s_b1a099b6b80707::t_c146e6291ceb63 3-5
+ai/comments/src/chat/store.rs.md
+  s_b1a099b6b80707::t_c146e6291ceb63 11
+src/chat/cli.rs
+  s_b1a099b6b80707::t_3dd5b6966413d1 3,37,231-232,254-268,270-271,276-280,289-292,342-344
+  s_b1a099b6b80707::t_051fc2f97b9bf4 233-247,272-275,282-287,332-341,345-350,910-1028,1033,1035,1047
+  s_b1a099b6b80707::t_bfb2db2cd67cdf 1029-1032,1034,1036-1046,1048-1071
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8873fce9118932632ba51b946b19290c6a9e37d1",
+  "prompts": {},
+  "sessions": {
+    "s_b1a099b6b80707": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1499a-01cf-7a90-b0b2-29b3e986c43c",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
