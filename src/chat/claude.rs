@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::{self, BufRead},
     path::{Path, PathBuf},
@@ -80,8 +80,12 @@ pub fn session_dir(path: &Path) -> Option<PathBuf> {
 /// The items of the transcript at `path`, as [`parse`] gives them.
 pub fn read(path: &Path, session: &str) -> Result<Vec<Item>> {
     let bytes = fs::read(path).with_context(|| format!("Cannot read {}.", path.display()))?;
+    Ok(parse_bytes(session, &bytes))
+}
+
+pub(super) fn parse_bytes(session: &str, bytes: &[u8]) -> Vec<Item> {
     let end = memchr::memrchr(b'\n', &bytes).map_or(0, |i| i + 1);
-    Ok(parse(session, &String::from_utf8_lossy(&bytes[..end])))
+    parse(session, &String::from_utf8_lossy(&bytes[..end]))
 }
 
 /// The items of a transcript, in file order, each linked to its logical parent. A last line
@@ -108,11 +112,25 @@ pub struct Subagent {
 
 /// The subagents of the session whose transcript is at `path`, by agent id.
 pub fn subagents(path: &Path, session: &str) -> Result<Vec<Subagent>> {
-    let Ok(dir) = fs::read_dir(path.with_extension("").join("subagents")) else {
-        return Ok(Vec::new());
-    };
+    let files = super::source::capture(path)?;
+    let name = Path::new(
+        path.file_name()
+            .context("A transcript needs a file name.")?,
+    );
+    Ok(subagents_from(&files, &name.with_extension(""), session))
+}
+
+pub(super) fn subagents_from(
+    files: &BTreeMap<PathBuf, Vec<u8>>,
+    companion: &Path,
+    session: &str,
+) -> Vec<Subagent> {
+    let dir = companion.join("subagents");
     let mut out = Vec::new();
-    for file in dir.flatten().map(|e| e.path()) {
+    for (file, bytes) in files {
+        if file.parent() != Some(dir.as_path()) {
+            continue;
+        }
         let name = file
             .file_name()
             .and_then(|n| n.to_str())
@@ -123,9 +141,9 @@ pub fn subagents(path: &Path, session: &str) -> Result<Vec<Subagent>> {
         else {
             continue;
         };
-        let meta: Value = fs::read(file.with_extension("meta.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
+        let meta: Value = files
+            .get(&file.with_extension("meta.json"))
+            .and_then(|b| serde_json::from_slice(b).ok())
             .unwrap_or_default();
         let field = |k: &str| meta[k].as_str().unwrap_or_default().to_string();
         out.push(Subagent {
@@ -133,11 +151,11 @@ pub fn subagents(path: &Path, session: &str) -> Result<Vec<Subagent>> {
             agent_type: field("agentType"),
             description: field("description"),
             call: meta["toolUseId"].as_str().map(String::from),
-            items: read(&file, session)?,
+            items: parse_bytes(session, bytes),
         });
     }
     out.sort_by(|a, b| a.agent.cmp(&b.agent));
-    Ok(out)
+    out
 }
 
 /// The transcript read so far: every chain entry by uuid, and the items made from them.

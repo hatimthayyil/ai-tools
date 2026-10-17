@@ -602,6 +602,30 @@ fn subagents_are_kept_beside_the_main_tree() {
 }
 
 #[test]
+fn missing_main_transcript_preserves_subagent_linkage() {
+    let r = Repo::new();
+    let path = r.transcript("s-1", &lines("subagent.jsonl"));
+    let agents = path.with_extension("").join("subagents");
+    fs::create_dir_all(&agents).unwrap();
+    for name in [
+        "agent-a1b2c3d4e5f6a7b8c.jsonl",
+        "agent-a1b2c3d4e5f6a7b8c.meta.json",
+    ] {
+        fs::copy(fixture("subagent/subagents").join(name), agents.join(name)).unwrap();
+    }
+    let chat = r.chat();
+    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    let thread = chat.thread("dev").unwrap();
+    let before = thread.snapshot().unwrap().agents().unwrap();
+    assert!(before[0].call.is_some());
+    fs::remove_file(&path).unwrap();
+
+    chat.sync("claude", "s-1", None).unwrap();
+
+    assert_eq!(thread.snapshot().unwrap().agents().unwrap(), before);
+}
+
+#[test]
 fn lines_are_built_once() {
     let r = Repo::new();
     let chat = r.chat();

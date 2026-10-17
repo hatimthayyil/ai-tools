@@ -5,6 +5,7 @@ pub mod model;
 mod record;
 pub mod render;
 pub mod rollup;
+mod source;
 mod store;
 mod summarise;
 mod sync;

@@ -118,6 +118,7 @@ impl Added {
 pub struct Transcript {
     pub items: Vec<Item>,
     pub agents: Vec<Subagent>,
+    pub files: BTreeMap<PathBuf, Vec<u8>>,
 }
 
 /// A thread at a glance.
@@ -572,6 +573,15 @@ impl Snapshot<'_> {
         t: &Transcript,
         ch: &mut Changes,
     ) -> Result<Added> {
+        for (relative, bytes) in &t.files {
+            let relative = relative
+                .to_str()
+                .context("A source file name is not UTF-8.")?;
+            let path = format!("sources/{}/{}/{relative}", b.harness, b.session);
+            if self.git.entry(&path)?.is_none() || &*self.git.read(&path)? != bytes {
+                ch.put(path, bytes.clone());
+            }
+        }
         let mut main = Append::new(self, String::new())?;
         let first = main.len;
         for item in &t.items {
@@ -620,14 +630,15 @@ impl Snapshot<'_> {
                 items.push(item, parent, ch)?;
             }
         }
+        let previous = self.agent(harness, &sub.agent)?;
         let agent = Agent {
             harness: harness.into(),
             agent: sub.agent.clone(),
             agent_type: sub.agent_type.clone(),
             description: sub.description.clone(),
-            call,
+            call: call.or_else(|| previous.as_ref().and_then(|agent| agent.call)),
         };
-        if self.agent(harness, &sub.agent)?.as_ref() != Some(&agent) {
+        if previous.as_ref() != Some(&agent) {
             ch.put(format!("{dir}{AGENT}"), agent.encode());
         }
         let added = items.len - first;

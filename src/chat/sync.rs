@@ -7,6 +7,7 @@ use crate::{
     chat::{
         claude,
         record::{Binding, check_id},
+        source,
         store::{Added, Chat, Thread, Transcript, put_binding},
     },
     git::Changes,
@@ -37,14 +38,26 @@ pub struct Attached {
 /// The session's transcript at `path`, read by its harness's adapter; empty if it does not
 /// exist yet.
 pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcript> {
-    let Some(path) = path.filter(|p| p.exists()) else {
+    let Some(path) = path else {
         return Ok(Transcript::default());
     };
     match harness {
-        claude::HARNESS => Ok(Transcript {
-            items: claude::read(path, session)?,
-            agents: claude::subagents(path, session)?,
-        }),
+        claude::HARNESS => {
+            let files = source::capture(path)?;
+            let name = Path::new(
+                path.file_name()
+                    .ok_or_else(|| anyhow::anyhow!("A transcript needs a file name."))?,
+            );
+            let items = files
+                .get(name)
+                .map_or_else(Vec::new, |bytes| claude::parse_bytes(session, bytes));
+            let agents = claude::subagents_from(&files, &name.with_extension(""), session);
+            Ok(Transcript {
+                items,
+                agents,
+                files,
+            })
+        }
         _ => bail!("ai chat cannot read {harness} sessions."),
     }
 }
@@ -89,16 +102,16 @@ impl Chat {
     ) -> Result<Synced> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
-        let Some((thread, bound)) = self.attached(harness, session)? else {
+        let Some((thread, _)) = self.attached(harness, session)? else {
             return Ok(Synced::NotAttached);
         };
-        let path = transcript.map(Path::to_path_buf).or(bound.transcript);
-        let t = read(harness, session, path.as_deref())?;
         let msg = format!("sync {harness} {session}");
         let (added, _) = thread.mutate(&msg, |s| {
             let Some(old) = s.binding(harness, session)?.filter(Binding::is_attached) else {
                 return Ok((None, Changes::default()));
             };
+            let path = transcript.map(Path::to_path_buf).or(old.transcript.clone());
+            let t = read(harness, session, path.as_deref())?;
             let mut b = Binding {
                 transcript: path.clone().or(old.transcript.clone()),
                 ..old.clone()
@@ -146,12 +159,9 @@ impl Chat {
         let current = self
             .attached(harness, session)?
             .filter(|(t, _)| t.name() != name);
-        let bound = target.snapshot()?.binding(harness, session)?;
-        let path: Option<PathBuf> = transcript
-            .map(Path::to_path_buf)
-            .or_else(|| current.as_ref()?.1.transcript.clone())
-            .or_else(|| bound?.transcript);
-        let t = read(harness, session, path.as_deref())?;
+        let inherited = current
+            .as_ref()
+            .and_then(|(_, binding)| binding.transcript.clone());
         let moved_from = match current {
             Some((old, _)) => {
                 detach(&old, harness, session)?;
@@ -162,8 +172,14 @@ impl Chat {
         let created = !target.exists()?;
         let msg = format!("attach {harness} {session}");
         let (added, _) = target.mutate(&msg, |s| {
+            let bound = s.binding(harness, session)?;
+            let path: Option<PathBuf> = transcript
+                .map(Path::to_path_buf)
+                .or(inherited.clone())
+                .or_else(|| bound.as_ref()?.transcript.clone());
+            let t = read(harness, session, path.as_deref())?;
             let now = Timestamp::now();
-            let mut b = match s.binding(harness, session)? {
+            let mut b = match bound {
                 Some(b) => Binding {
                     transcript: path.clone().or(b.transcript),
                     attached: now,
