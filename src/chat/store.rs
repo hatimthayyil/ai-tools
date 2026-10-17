@@ -153,6 +153,18 @@ impl Chat {
         &self.repo
     }
 
+    pub(super) fn session_lock(&self, harness: &str, session: &str) -> Result<File> {
+        check_id(harness, "harness")?;
+        check_id(session, "session")?;
+        let dir = self
+            .repo
+            .common_dir()
+            .join("ai/chat/sessions")
+            .join(harness);
+        fs::create_dir_all(&dir).at(&dir)?;
+        file::lock(&dir.join(format!("{session}.lock")))
+    }
+
     /// The thread `name`; it exists once something is attached to it.
     pub fn thread(&self, name: &str) -> Result<Thread> {
         check_name(name)?;

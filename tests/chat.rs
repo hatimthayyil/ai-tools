@@ -154,7 +154,7 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     let path = r.transcript("s-1", &all[..8]);
     let chat = r.chat();
     let a = chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
-    assert!(a.created && a.moved_from.is_none());
+    assert!(a.created);
     let first = a.added.items.clone();
     assert!(!first.is_empty() && first.start == 0);
 
@@ -345,13 +345,20 @@ fn detach_and_reattach_catch_up() {
 }
 
 #[test]
-fn attaching_to_a_second_thread_moves_the_binding() {
+fn a_session_can_attach_to_another_thread_after_explicit_detach() {
     let r = Repo::new();
     let chat = r.chat();
     let p = r.transcript("s-1", &lines("plain.jsonl"));
     chat.attach("one", "claude", "s-1", Some(&p)).unwrap();
-    let a = chat.attach("two", "claude", "s-1", None).unwrap();
-    assert_eq!(a.moved_from.as_deref(), Some("one"));
+    let original = chat
+        .thread("one")
+        .unwrap()
+        .snapshot()
+        .unwrap()
+        .items()
+        .unwrap();
+    assert_eq!(chat.detach("claude", "s-1").unwrap(), Some("one".into()));
+    let a = chat.attach("two", "claude", "s-1", Some(&p)).unwrap();
     assert!(a.created);
     assert_eq!(
         a.added.items,
@@ -365,6 +372,28 @@ fn attaching_to_a_second_thread_moves_the_binding() {
     let t = chat.thread("one").unwrap();
     let one = t.snapshot().unwrap();
     assert!(!one.binding("claude", "s-1").unwrap().unwrap().is_attached());
+    assert_eq!(one.items().unwrap(), original);
+    assert_eq!(
+        chat.thread("two")
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .items()
+            .unwrap(),
+        original
+    );
+    let head = r.head("two");
+    assert!(
+        chat.attach("two", "claude", "s-1", None)
+            .unwrap()
+            .added
+            .is_empty()
+    );
+    assert_eq!(
+        r.head("two"),
+        head,
+        "same-thread reattachment with no new data is a no-op"
+    );
     let names: Vec<_> = chat
         .threads()
         .unwrap()
@@ -379,7 +408,7 @@ fn attaching_to_a_second_thread_moves_the_binding() {
 }
 
 #[test]
-fn an_invalid_move_preserves_the_original_attachment() {
+fn attaching_elsewhere_is_rejected_before_reading_new_sources() {
     let r = Repo::new();
     let chat = r.chat();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
@@ -389,7 +418,8 @@ fn an_invalid_move_preserves_the_original_attachment() {
     fs::create_dir_all(&agents).unwrap();
     fs::write(agents.join("agent-.invalid.jsonl"), "").unwrap();
 
-    assert!(chat.attach("two", "claude", "s-1", None).is_err());
+    let error = chat.attach("two", "claude", "s-1", None).unwrap_err();
+    assert!(error.to_string().contains("Run ai chat detach"));
 
     assert_eq!(r.head("one"), before);
     assert!(!chat.thread("two").unwrap().exists().unwrap());
@@ -399,18 +429,20 @@ fn an_invalid_move_preserves_the_original_attachment() {
 }
 
 #[test]
-fn an_unwritable_destination_preserves_the_original_attachment() {
+fn attaching_elsewhere_is_rejected_without_changing_either_thread() {
     let r = Repo::new();
     let chat = r.chat();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
     chat.attach("one", "claude", "s-1", Some(&path)).unwrap();
     let before = r.head("one");
-    fs::write(r.path().join(".git/refs/ai/chat/two.lock"), "held").unwrap();
+    chat.attach("two", "claude", "s-2", None).unwrap();
+    let destination = r.head("two");
 
-    assert!(chat.attach("two", "claude", "s-1", None).is_err());
+    let error = chat.attach("two", "claude", "s-1", None).unwrap_err();
+    assert!(error.to_string().contains("Run ai chat detach"));
 
     assert_eq!(r.head("one"), before);
-    assert!(!chat.thread("two").unwrap().exists().unwrap());
+    assert_eq!(r.head("two"), destination);
     assert_eq!(
         chat.attached("claude", "s-1").unwrap().unwrap().0.name(),
         "one"

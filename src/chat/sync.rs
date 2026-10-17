@@ -30,8 +30,6 @@ pub struct Attached {
     pub thread: String,
     /// The thread is new.
     pub created: bool,
-    /// The thread the session was attached to before.
-    pub moved_from: Option<String>,
     pub added: Added,
 }
 
@@ -75,15 +73,20 @@ pub fn sync(dir: &Path, harness: &str, session: &str, transcript: Option<&Path>)
 }
 
 impl Chat {
-    /// The thread `session` is attached to, with its binding there; the latest attach wins if
-    /// two threads claim it.
+    /// The thread `session` is attached to, with its binding there.
     pub fn attached(&self, harness: &str, session: &str) -> Result<Option<(Thread, Binding)>> {
+        let _lock = self.session_lock(harness, session)?;
+        self.attached_unlocked(harness, session)
+    }
+
+    fn attached_unlocked(&self, harness: &str, session: &str) -> Result<Option<(Thread, Binding)>> {
         let mut found: Option<(Thread, Binding)> = None;
         for t in self.threads()? {
             let b = t.snapshot()?.binding(harness, session)?;
-            if let Some(b) = b.filter(Binding::is_attached)
-                && found.as_ref().is_none_or(|f| b.attached > f.1.attached)
-            {
+            if let Some(b) = b.filter(Binding::is_attached) {
+                if found.is_some() {
+                    bail!("Session {harness} {session} is attached to multiple threads.");
+                }
                 found = Some((t, b));
             }
         }
@@ -137,7 +140,7 @@ impl Chat {
 
     /// Attaches a session to the thread `name`, creating it if new, and ingests its whole
     /// history. A new binding grafts the session's roots onto the thread's newest item; a
-    /// session attached to another thread is detached there first.
+    /// session attached to another thread must be detached explicitly first.
     pub fn attach(
         &self,
         name: &str,
@@ -159,35 +162,30 @@ impl Chat {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let target = self.thread(name)?;
-        let current = self
-            .attached(harness, session)?
-            .filter(|(t, _)| t.name() != name);
-        let inherited = current
-            .as_ref()
-            .and_then(|(_, binding)| binding.transcript.clone());
-        let moved_from = match current {
-            Some((old, _)) => {
-                detach(&old, harness, session)?;
-                Some(old.name().to_string())
-            }
-            None => None,
-        };
+        let _lock = self.session_lock(harness, session)?;
+        if let Some((current, _)) = self.attached_unlocked(harness, session)?
+            && current.name() != name
+        {
+            bail!(
+                "Session {harness} {session} is attached to {}. Run ai chat detach --harness {harness} --session {session} before attaching to {name}.",
+                current.name()
+            );
+        }
         let created = !target.exists()?;
         let msg = format!("attach {harness} {session}");
         let (added, _) = target.mutate(&msg, |s| {
             let bound = s.binding(harness, session)?;
             let path: Option<PathBuf> = transcript
                 .map(Path::to_path_buf)
-                .or(inherited.clone())
                 .or_else(|| bound.as_ref()?.transcript.clone());
             let t = read(harness, session, path.as_deref())?;
             let now = Timestamp::now();
-            let mut b = match bound {
+            let mut b = match bound.as_ref() {
                 Some(b) => Binding {
-                    transcript: path.clone().or(b.transcript),
-                    attached: now,
+                    transcript: path.clone().or(b.transcript.clone()),
+                    attached: if b.is_attached() { b.attached } else { now },
                     detached: None,
-                    ..b
+                    ..b.clone()
                 },
                 None => Binding {
                     harness: harness.into(),
@@ -201,13 +199,14 @@ impl Chat {
             };
             let mut ch = Changes::default();
             let added = s.ingest(&mut b, &t, &mut ch)?;
-            put_binding(&mut ch, &b)?;
+            if bound.as_ref() != Some(&b) {
+                put_binding(&mut ch, &b)?;
+            }
             Ok((added, ch))
         })?;
         Ok(Attached {
             thread: name.into(),
             created,
-            moved_from,
             added,
         })
     }
@@ -216,7 +215,8 @@ impl Chat {
     pub fn detach(&self, harness: &str, session: &str) -> Result<Option<String>> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
-        let Some((t, _)) = self.attached(harness, session)? else {
+        let _lock = self.session_lock(harness, session)?;
+        let Some((t, _)) = self.attached_unlocked(harness, session)? else {
             return Ok(None);
         };
         detach(&t, harness, session)?;
@@ -301,37 +301,25 @@ mod tests {
     fn concurrent_attachments_have_one_owner_and_detach_clears_it() {
         let dir = tempfile::TempDir::new().unwrap();
         gix::init(dir.path()).unwrap();
-        let (captured, observed) = mpsc::channel();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
         let mut workers = Vec::new();
-        let mut releases = Vec::new();
         for name in ["one", "two"] {
             let path = dir.path().to_path_buf();
-            let captured = captured.clone();
-            let (resume, resumed) = mpsc::channel();
-            releases.push(resume);
+            let start = start.clone();
             workers.push(thread::spawn(move || {
                 let chat = Chat::find(&path).unwrap().unwrap();
-                let mut first = true;
-                chat.attach_with(name, "claude", "s-1", None, |_, _, _| {
-                    if first {
-                        first = false;
-                        captured.send(()).unwrap();
-                        resumed.recv_timeout(Duration::from_secs(5)).unwrap();
-                    }
-                    Ok(Transcript::default())
-                })
-                .unwrap()
+                start.wait();
+                chat.attach(name, "claude", "s-1", None)
             }));
         }
-        for _ in 0..2 {
-            observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        }
-        for release in releases {
-            release.send(()).unwrap();
-        }
-        for worker in workers {
-            worker.join().unwrap();
-        }
+        start.wait();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let error = results.into_iter().find_map(Result::err).unwrap();
+        assert!(error.to_string().contains("Run ai chat detach"));
 
         let chat = Chat::find(dir.path()).unwrap().unwrap();
         let owners: Vec<_> = chat
@@ -349,6 +337,11 @@ mod tests {
             .map(|thread| thread.name().to_string())
             .collect();
         assert_eq!(owners.len(), 1, "active attachments: {owners:?}");
+        assert_eq!(
+            chat.threads().unwrap().len(),
+            1,
+            "rejected attachment creates no thread"
+        );
         assert_eq!(
             chat.detach("claude", "s-1").unwrap(),
             Some(owners[0].clone())

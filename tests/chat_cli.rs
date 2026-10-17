@@ -365,9 +365,14 @@ fn attach_sync_and_detach() {
     );
     assert!(t.snapshot().unwrap().len().unwrap() > n);
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
-    ok(
+    fails(
         s.ai(&["attach", "other", "--harness", "claude", "--session", "s-1"]),
-        "Attached to other, a new thread; detached from dev.\n",
+        "Session claude s-1 is attached to dev. Run ai chat detach --harness claude --session s-1 before attaching to other.\n",
+    );
+    ok(s.ai_in("s-1", &["detach"]), "Detached from dev.\n");
+    ok(
+        s.ai_in("s-1", &["attach", "other"]),
+        "Attached to other, a new thread.\n",
     );
     ok(s.ai_in("s-1", &["detach"]), "Detached from other.\n");
     fails(

@@ -59,16 +59,6 @@ pub enum LineKind {
     Node,
 }
 
-impl LineKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Chunk => "chunk",
-            Self::Turn => "exchange",
-            Self::Node => "node",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Line {
     pub ts: Timestamp,

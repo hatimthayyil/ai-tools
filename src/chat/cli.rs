@@ -514,9 +514,6 @@ fn attach(cwd: &Path, out: &mut dyn Write, name: &str, s: Session) -> Result<Exi
     if a.created {
         msg += ", a new thread";
     }
-    if let Some(old) = &a.moved_from {
-        msg += &format!("; detached from {old}");
-    }
     writeln!(out, "{msg}.")?;
     if !a.added.is_empty() {
         start_summariser(cwd, &a.thread)?;
