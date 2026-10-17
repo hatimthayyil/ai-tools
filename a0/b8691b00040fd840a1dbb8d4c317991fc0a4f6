@@ -1,0 +1,25 @@
+ai/research/20261016T212002---chat-review/cli.md
+  s_60d626c82d7682::t_832a283af72e7d 1-85
+ai/research/20261016T212002---chat-review/architecture.md
+  s_60d626c82d7682::t_832a283af72e7d 1-196
+ai/research/20261016T212002---chat-review/core.md
+  s_60d626c82d7682::t_832a283af72e7d 1-77
+ai/research/20261016T212002---chat-review.md
+  s_60d626c82d7682::t_832a283af72e7d 1-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a0b8691b00040fd840a1dbb8d4c317991fc0a4f6",
+  "prompts": {},
+  "sessions": {
+    "s_60d626c82d7682": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a14673-422c-7fc2-bc47-ca5a11b0ebcc",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
