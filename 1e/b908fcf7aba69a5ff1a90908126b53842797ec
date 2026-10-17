@@ -1,0 +1,24 @@
+src/chat/cli.rs
+  s_b1a099b6b80707::t_b8afe5f50ebbd1 335-339,1081-1084
+  s_b1a099b6b80707::t_68990fd274a09c 4-7,40,245
+  s_b1a099b6b80707::t_d6876f2c934b0f 1085-1086
+ai/comments/src/chat/cli.rs.md
+  s_b1a099b6b80707::t_b8afe5f50ebbd1 5
+  s_b1a099b6b80707::t_68990fd274a09c 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1eb908fcf7aba69a5ff1a90908126b53842797ec",
+  "prompts": {},
+  "sessions": {
+    "s_b1a099b6b80707": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1499a-01cf-7a90-b0b2-29b3e986c43c",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
