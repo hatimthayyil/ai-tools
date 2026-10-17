@@ -8,7 +8,7 @@ Where
 - Compactor lock per thread: `<common git dir>/ai/chat/<name>.lock` (`file::try_lock`), outside `refs/` so git never mistakes it for a ref lock. The compactor's log beside it, `<name>.log` (`log_path`; both make the directory).
 
 Layout of a thread's tree (format 2)
-- `format`: `2`, written by the first commit (`Ref::mutate`). Newer formats are refused before writes. V1 threads require `ai chat upgrade <name>`.
+- `format`: `2`, written by the first commit (`Ref::mutate`). Newer formats are refused before writes. The CLI detects v1 threads and requests terminal confirmation before importing them.
 - `index/<fan s>`: JSON array of `Head` records for items `[256s, 256s+256)`. Positions and embedded sequence numbers agree; parents name earlier items.
 - `items/<fan i>`: a serde JSON tagged item kind and its content.
 - `raw/<fan i>`: a recognised item's source line after text decoding, without its line ending. Several items from one entry share a blob.

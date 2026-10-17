@@ -1,5 +1,8 @@
 # chat/cli.rs
 
+- CLI preflight scans every thread's format before dispatch. Newer formats fail before confirmation or writes. Normal terminal commands ask once before importing the repository's v1 threads, then run the requested command; confirmation and import status use stderr.
+- `Cli::run` is noninteractive. It and background plumbing refuse v1 without waiting or converting. Library store APIs have no prompt behavior. Decline, blank input and EOF leave the old refs unchanged.
+
 Design: `ai/research/20261014T002322---chat-design.md`, Commands and Contract. Caller: `plugins/claude/hooks/register.ts` (register.ts.md).
 
 Porcelain and plumbing

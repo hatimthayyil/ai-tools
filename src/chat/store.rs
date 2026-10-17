@@ -250,6 +250,12 @@ impl Thread {
         Ok(self.git.head()?.is_some())
     }
 
+    pub(super) fn format(&self) -> Result<u32> {
+        let format = self.git.raw(self.git.head()?)?.format()?;
+        self.git.readable(format)?;
+        Ok(format)
+    }
+
     pub fn upgrade(&self) -> Result<bool> {
         let (upgraded, _) = self.git.mutate(
             "upgrade thread to format 2",
@@ -282,8 +288,7 @@ impl Thread {
         self.git.readable(format)?;
         if format < FORMAT {
             bail!(
-                "This thread is format {format}. Run ai chat upgrade {}.",
-                self.name
+                "This thread snapshot is format {format}; typed historical views require format {FORMAT}. Original v1 snapshots remain available through Git."
             );
         }
         Ok(Snapshot { git })

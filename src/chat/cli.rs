@@ -1,6 +1,6 @@
 use std::{
     env,
-    io::{self, Write},
+    io::{self, BufRead, IsTerminal, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{self, ExitCode},
@@ -34,6 +34,7 @@ pub const PART: u64 = 20_000;
 /// How long `compact-session` waits for the lines its view needs, and `summarise --rebuild`
 /// for a running summariser.
 pub const WAIT: Duration = Duration::from_secs(60);
+const IMPORT_REQUIRED: &str = "This repository has v1 chat threads. Run a normal ai chat command in an interactive terminal to confirm their import into format 2.";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -64,8 +65,6 @@ enum Command {
         #[arg(last = true, help = "arguments for claude, after --")]
         args: Vec<String>,
     },
-    #[command(about = "export a v1 thread as structured JSON records.")]
-    Upgrade { name: String },
     #[command(about = "list this repository's threads and their sessions.")]
     List {
         #[command(flatten)]
@@ -229,27 +228,68 @@ impl Cli {
     /// Runs in the current directory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        match self.run(&cwd, &mut io::stdout().lock()) {
+        let interactive = io::stdin().is_terminal()
+            && io::stderr().is_terminal()
+            && !matches!(
+                self.command,
+                Command::SyncSession { .. } | Command::CompactSession { .. }
+            );
+        match self.run_with_confirm(
+            &cwd,
+            &mut io::stdout().lock(),
+            &mut io::stderr().lock(),
+            |names, status| {
+                if !interactive {
+                    bail!(IMPORT_REQUIRED);
+                }
+                confirm_import(names, &mut io::stdin().lock(), status)
+            },
+        ) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
             r => r,
         }
     }
 
     pub fn run(self, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+        self.run_with_confirm(cwd, out, &mut io::sink(), |_, _| bail!(IMPORT_REQUIRED))
+    }
+
+    fn run_with_confirm(
+        self,
+        cwd: &Path,
+        out: &mut dyn Write,
+        status: &mut dyn Write,
+        mut confirm: impl FnMut(&[String], &mut dyn Write) -> Result<bool>,
+    ) -> Result<ExitCode> {
+        if let Some(chat) = Chat::find(cwd)? {
+            let mut legacy = Vec::new();
+            for thread in chat.threads()? {
+                if thread.format()? < super::FORMAT {
+                    legacy.push(thread);
+                }
+            }
+            if !legacy.is_empty() {
+                let names = legacy
+                    .iter()
+                    .map(|thread| thread.name().to_string())
+                    .collect::<Vec<_>>();
+                if !confirm(&names, status)? {
+                    bail!("Chat import cancelled; existing threads were left unchanged.");
+                }
+                for thread in legacy {
+                    thread.upgrade()?;
+                }
+                writeln!(
+                    status,
+                    "Imported {} into format {}.",
+                    plural(names.len() as u64, "chat thread"),
+                    super::FORMAT
+                )?;
+            }
+        }
         match self.command {
             Command::Start { name, args } => launch(cwd, &name, &args),
             Command::Resume { name, args } => resume(cwd, &name, &args),
-            Command::Upgrade { name } => {
-                let thread = find(cwd)?.thread(&name)?;
-                if !thread.exists()? {
-                    bail!("No thread {name} in this repository.");
-                }
-                match thread.upgrade()? {
-                    true => writeln!(out, "Upgraded {name} to format {}.", super::FORMAT)?,
-                    false => writeln!(out, "Thread {name} is already format {}.", super::FORMAT)?,
-                }
-                Ok(ExitCode::SUCCESS)
-            }
             Command::List { session } => list(cwd, out, session),
             Command::View { target, part, at } => {
                 view(cwd, out, target, part.unwrap_or(1), at.as_deref())
@@ -287,6 +327,25 @@ impl Cli {
             Command::CompactSession { session } => compact_session(cwd, out, session),
         }
     }
+}
+
+fn confirm_import(
+    names: &[String],
+    input: &mut dyn BufRead,
+    status: &mut dyn Write,
+) -> Result<bool> {
+    write!(
+        status,
+        "Import v1 chat threads ({}) into format 2? Existing Git history will be kept. [y/N] ",
+        names.join(", ")
+    )?;
+    status.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 fn not_attached() -> Result<ExitCode> {
@@ -848,6 +907,168 @@ fn summarise_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::{Changes, Ref};
+
+    fn legacy_thread(dir: &Path, name: &str, format: u32) -> Ref {
+        let mut repo = gix::open(dir).unwrap();
+        repo.committer_or_set_fallback("test", "test@localhost")
+            .unwrap();
+        let reference = Ref::new(repo, format!("refs/ai/chat/{name}"), "thread", format);
+        reference
+            .mutate(
+                "fixture",
+                |commit| reference.raw(commit),
+                |_| {
+                    let mut changes = Changes::default();
+                    changes.put("sources/claude/s-1/evidence.bin".into(), vec![0, 255, 10]);
+                    Ok(((), changes))
+                },
+            )
+            .unwrap();
+        reference
+    }
+
+    #[test]
+    fn terminal_confirmation_imports_all_v1_threads_then_runs_the_command() {
+        for answer in ["y\n", "YeS\n"] {
+            let dir = tempfile::TempDir::new().unwrap();
+            gix::init(dir.path()).unwrap();
+            let first = legacy_thread(dir.path(), "one", 1);
+            let second = legacy_thread(dir.path(), "two", 1);
+            let originals = [
+                first.head().unwrap().unwrap(),
+                second.head().unwrap().unwrap(),
+            ];
+            let mut output = Vec::new();
+            let mut status = Vec::new();
+            let mut asked = 0;
+            let result = Cli::parse_from(["chat", "list"])
+                .run_with_confirm(dir.path(), &mut output, &mut status, |names, status| {
+                    asked += 1;
+                    assert_eq!(names, ["one", "two"]);
+                    confirm_import(names, &mut io::Cursor::new(answer), status)
+                })
+                .unwrap();
+
+            assert_eq!(result, ExitCode::SUCCESS);
+            assert_eq!(asked, 1);
+            assert!(String::from_utf8(output).unwrap().contains("one  0 turns"));
+            let status = String::from_utf8(status).unwrap();
+            assert!(status.contains("[y/N] "));
+            assert!(status.ends_with("Imported 2 chat threads into format 2.\n"));
+            for (reference, previous) in [first, second].iter().zip(originals) {
+                let snapshot = reference.raw(reference.head().unwrap()).unwrap();
+                assert_eq!(snapshot.format().unwrap(), 2);
+                assert_eq!(
+                    &*snapshot.read("sources/claude/s-1/evidence.bin").unwrap(),
+                    &[0, 255, 10]
+                );
+                let parent = reference
+                    .repo()
+                    .find_commit(snapshot.commit().unwrap())
+                    .unwrap()
+                    .parent_ids()
+                    .next()
+                    .unwrap();
+                assert_eq!(parent, previous);
+            }
+            let mut current_status = Vec::new();
+            Cli::parse_from(["chat", "list"])
+                .run_with_confirm(dir.path(), &mut Vec::new(), &mut current_status, |_, _| {
+                    panic!("current threads need no confirmation")
+                })
+                .unwrap();
+            assert!(current_status.is_empty());
+        }
+    }
+
+    #[test]
+    fn declined_blank_and_eof_answers_preserve_v1_without_running_the_command() {
+        for answer in ["no\n", "\n", ""] {
+            let dir = tempfile::TempDir::new().unwrap();
+            gix::init(dir.path()).unwrap();
+            let reference = legacy_thread(dir.path(), "dev", 1);
+            let before = reference.head().unwrap();
+            let mut output = Vec::new();
+            let mut status = Vec::new();
+            let result = Cli::parse_from(["chat", "list"]).run_with_confirm(
+                dir.path(),
+                &mut output,
+                &mut status,
+                |names, status| confirm_import(names, &mut io::Cursor::new(answer), status),
+            );
+
+            assert!(result.unwrap_err().to_string().contains("import cancelled"));
+            assert_eq!(reference.head().unwrap(), before);
+            assert!(!dir.path().join(".git/ai").exists());
+            assert!(output.is_empty());
+            assert!(String::from_utf8(status).unwrap().contains("[y/N] "));
+        }
+    }
+
+    #[test]
+    fn noninteractive_commands_refuse_v1_without_confirmation_or_conversion() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let reference = legacy_thread(dir.path(), "dev", 1);
+        let before = reference.head().unwrap();
+        let mut output = Vec::new();
+
+        let error = Cli::parse_from(["chat", "list"])
+            .run(dir.path(), &mut output)
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), IMPORT_REQUIRED);
+        assert_eq!(reference.head().unwrap(), before);
+        assert!(output.is_empty());
+        assert!(!dir.path().join(".git/ai").exists());
+    }
+
+    #[test]
+    fn newer_formats_are_refused_before_any_prompt_or_import() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gix::init(dir.path()).unwrap();
+        let old = legacy_thread(dir.path(), "a-old", 1);
+        let future = legacy_thread(dir.path(), "z-future", 3);
+        let before = [old.head().unwrap(), future.head().unwrap()];
+        let mut output = Vec::new();
+        let mut status = Vec::new();
+
+        let error = Cli::parse_from(["chat", "list"])
+            .run_with_confirm(dir.path(), &mut output, &mut status, |_, _| {
+                panic!("newer format must fail before confirmation")
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("format 3"));
+        assert_eq!([old.head().unwrap(), future.head().unwrap()], before);
+        assert!(output.is_empty());
+        assert!(status.is_empty());
+    }
+
+    #[test]
+    fn preflight_skips_directories_outside_repositories() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut output = Vec::new();
+        let mut status = Vec::new();
+        let result = Cli::parse_from(["chat", "sync-session", "--session", "s-1"])
+            .run_with_confirm(dir.path(), &mut output, &mut status, |_, _| {
+                panic!("no repository has no import")
+            })
+            .unwrap();
+        assert_eq!(result, ExitCode::from(NOT_ATTACHED));
+        assert!(output.is_empty());
+        assert!(status.is_empty());
+    }
+
+    #[test]
+    fn upgrade_is_not_a_chat_command() {
+        use clap::CommandFactory;
+
+        assert!(Cli::try_parse_from(["chat", "upgrade", "dev"]).is_err());
+        let help = Cli::command().render_help().to_string();
+        assert!(!help.contains("upgrade"));
+    }
 
     #[test]
     fn uuids_are_version_4() {

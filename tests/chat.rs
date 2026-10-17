@@ -868,7 +868,6 @@ fn structured_indexes_reject_invalid_positions_and_parents() {
 #[test]
 fn a_v1_thread_exports_to_json_without_rewriting_its_history() {
     use ai_tools::git::{Changes, Ref};
-    use clap::Parser;
 
     let r = Repo::new();
     let mut repo = gix::open(r.path()).unwrap();
@@ -907,15 +906,10 @@ fn a_v1_thread_exports_to_json_without_rewriting_its_history() {
             .err()
             .unwrap()
             .to_string()
-            .contains("ai chat upgrade dev")
+            .contains("typed historical views require format 2")
     );
 
-    let mut output = Vec::new();
-    let result = ai_tools::chat::Cli::parse_from(["chat", "upgrade", "dev"])
-        .run(&r.path(), &mut output)
-        .unwrap();
-    assert_eq!(result, std::process::ExitCode::SUCCESS);
-    assert_eq!(output, b"Upgraded dev to format 2.\n");
+    assert!(thread.upgrade().unwrap());
 
     let snapshot = thread.snapshot().unwrap();
     assert_eq!(snapshot.len().unwrap(), 2);
