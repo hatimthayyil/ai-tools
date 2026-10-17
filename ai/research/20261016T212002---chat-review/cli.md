@@ -29,7 +29,7 @@ The CLI has a coherent small command vocabulary, good sentence-level errors, bou
 
 ### Gaps
 
-- Persistent [probe source](evidence/cli-probes.mjs) and [representative output](evidence/cli-probes-output.txt) are retained beside these notes. It uses `/tmp/ai-chat-review-cli-binary`, copied immediately after the unmodified baseline build; reproduce after copying a baseline `target/debug/ai` to that path and running Node. All transcripts, HOME/Claude config, git config and fake Claude were temporary. No real stores or sessions were accessed by probes.
+- Persistent [probe source](cli-probes.mjs) and [representative output](cli-probes-output.txt) are retained beside these notes. It uses `/tmp/ai-chat-review-cli-binary`, copied immediately after the unmodified baseline build; reproduce after copying a baseline `target/debug/ai` to that path and running Node. All transcripts, HOME/Claude config, git config and fake Claude were temporary. No real stores or sessions were accessed by probes.
 - I did not live-test Claude model behaviour, auto-compaction under sustained load, non-Claude harnesses, enormous repositories or external pagers. Known Codex/Pi absence is intentionally not a defect in this review.
 
 ## Do start, resume, attach and detach preserve lifecycle intent?
