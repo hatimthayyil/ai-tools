@@ -55,11 +55,11 @@ ai chat grep -t dev <regex>          # search it
 ai chat summarise -t dev             # write its summaries now; --rebuild, --model, --dry-run
 ```
 
-Inside a session, `/ai attach <name>`, `/ai detach` and `/ai compress`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/compact` and auto-compaction replace the context with the thread's view. Threads live under `refs/ai/chat/` in the repository, so each repository has its own; `git config ai.chat.model` picks the summariser's model.
+Inside a session, `/ai attach <name>`, `/ai detach` and `/ai compress`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/compact` and auto-compaction replace the context with the thread's view. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
 
 A session has one active thread. Detach it explicitly before attaching it elsewhere; its previous thread retains the recorded history.
 
-Threads retain complete original transcripts and companion session files alongside derived JSON records and summaries. When a normal chat command detects v1 threads, an interactive terminal asks once before importing them into v2; declining leaves them unchanged. Background and noninteractive calls refuse the import without waiting for input. Each imported thread retains its previous Git commit and source blobs. Typed `--at` views read v2 snapshots; older v1 snapshots remain available through Git.
+A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Earlier states are prefixes of those files (`--at`). A newer store format is refused. Re-attaching a session rebuilds its thread from the transcript.
 
 This needs the Claude Code plugin in `share/ai/plugins/claude` of the package (`plugins/claude` here). Load it in every session with the `env` block of `~/.claude/settings.json`:
 
