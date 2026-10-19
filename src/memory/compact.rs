@@ -413,12 +413,12 @@ mod tests {
         )));
         assert!(
             m[0].text.ends_with(
-                "Merge these two lines into one, in at most 512 bytes, about 59 words:\nuser: hi\nai: a b"
+                "Merge these two lines into one, in at most 512 bytes, about 60 words:\nuser: hi\nai: a b"
             )
         );
         let c = step_text(&Step::Compress("tool: x\ny".into()));
         assert!(c.ends_with(
-            "Compress this message into one line, in at most 512 bytes, about 59 words:\ntool: x\ny"
+            "Compress this message into one line, in at most 512 bytes, about 60 words:\ntool: x\ny"
         ));
     }
 
