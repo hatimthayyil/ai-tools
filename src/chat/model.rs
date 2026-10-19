@@ -64,6 +64,8 @@ pub struct Item {
     pub parent: Option<SourceId>,
     pub ts: Timestamp,
     pub kind: Kind,
+    /// The harness marks it as the end of the assistant's turn.
+    pub ends_turn: bool,
 }
 
 /// Where an item sits on the branch from its root: its turn, numbered from 0, and its number
@@ -158,8 +160,11 @@ pub struct Turn {
     pub span: Range<usize>,
     /// The rest of the span, cut before each assistant text.
     pub steps: Vec<Range<usize>>,
-    /// A message follows it on the path.
+    /// A message follows it on the path, or its last item that is not a marker ends it.
     pub closed: bool,
+    /// The position its lines are keyed by: the item that ends it, so markers after it change
+    /// no key; else its last.
+    pub last: usize,
 }
 
 /// The turns along `path`, in order.
@@ -182,10 +187,15 @@ pub fn turns(path: &[&Item]) -> Vec<Turn> {
                     _ => steps.push(i..i + 1),
                 }
             }
+            let ending = (start..end)
+                .rev()
+                .find(|&i| !matches!(path[i].kind, Kind::Marker(_)))
+                .filter(|&i| path[i].ends_turn);
             Turn {
                 span: start..end,
                 steps,
-                closed: end < path.len(),
+                closed: end < path.len() || ending.is_some(),
+                last: ending.unwrap_or(end - 1),
             }
         })
         .collect()
@@ -203,7 +213,8 @@ mod tests {
         }
     }
 
-    /// Items from `(entry, parent, kind)`: `u` user, `w` work, `t` text, `c` call, `r` result, `m` marker.
+    /// Items from `(entry, parent, kind)`: `u` user, `w` work, `t` text, `e` text that ends the
+    /// turn, `c` call, `r` result, `m` marker.
     fn items(spec: &[(&str, &str, char)]) -> Vec<Item> {
         spec.iter()
             .map(|&(e, p, k)| Item {
@@ -216,7 +227,7 @@ mod tests {
                         from: "agent".into(),
                         text: e.into(),
                     },
-                    't' => Kind::Text(e.into()),
+                    't' | 'e' => Kind::Text(e.into()),
                     'c' => Kind::ToolCall {
                         id: e.into(),
                         name: "Read".into(),
@@ -229,6 +240,7 @@ mod tests {
                     },
                     _ => Kind::Marker(Marker::Compaction),
                 },
+                ends_turn: k == 'e',
             })
             .collect()
     }
@@ -281,6 +293,7 @@ mod tests {
         ]);
         let path: Vec<&Item> = all.iter().collect();
         let x = |span: Range<usize>, steps: &[(usize, usize)], closed: bool| Turn {
+            last: span.end - 1,
             span,
             steps: steps.iter().map(|&(a, b)| a..b).collect(),
             closed,
@@ -296,6 +309,37 @@ mod tests {
         );
         assert_eq!(turns(&path[1..7]), [x(0..6, &[(1, 6)], false)]);
         assert_eq!(turns(&[]), []);
+    }
+
+    #[test]
+    fn a_turn_closes_where_the_harness_ends_it() {
+        let all = items(&[
+            ("u1", "", 'u'),
+            ("c1", "", 'c'),
+            ("r1", "", 'r'),
+            ("e1", "", 'e'),
+            ("m1", "", 'm'),
+            ("m2", "", 'm'),
+            ("u2", "", 'u'),
+            ("e2", "", 'e'),
+            ("c2", "", 'c'),
+        ]);
+        let path: Vec<&Item> = all.iter().collect();
+        let ends = |n: usize| {
+            turns(&path[..n])
+                .iter()
+                .map(|x| (x.closed, x.last))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ends(3), [(false, 2)], "no end yet");
+        assert_eq!(ends(4), [(true, 3)]);
+        assert_eq!(ends(6), [(true, 3)], "markers after the end move nothing");
+        assert_eq!(ends(8), [(true, 3), (true, 7)]);
+        assert_eq!(
+            ends(9),
+            [(true, 3), (false, 8)],
+            "a step after the end reopens the turn"
+        );
     }
 
     #[test]

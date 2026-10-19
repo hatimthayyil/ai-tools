@@ -9,7 +9,7 @@ use crate::{
         model::{Item, Kind, Tree, Turn},
         record::{Binding, Key},
         render::{Cut, WHOLE, item_line, item_text, searched},
-        rollup,
+        rollup::{self, chunk_last},
         store::Snapshot,
     },
     memory::{Coord, excerpt, flat},
@@ -298,7 +298,7 @@ impl Branch {
                 let open = turn == self.closed() && at + 1 == cuts.len();
                 (!open).then(|| Key {
                     level: 0,
-                    last: self.path[r.end - 1] as u64,
+                    last: self.path[chunk_last(&self.xs[turn as usize], &r)] as u64,
                 })
             }
         }
@@ -321,8 +321,9 @@ impl Branch {
         }
     }
 
+    /// How many turns are closed: all but an open newest one.
     fn closed(&self) -> u64 {
-        self.xs.len().saturating_sub(1) as u64
+        self.xs.iter().take_while(|x| x.closed).count() as u64
     }
 
     fn item(&self, p: usize) -> &Item {
@@ -347,7 +348,7 @@ impl Branch {
     fn key(&self, c: Coord) -> Key {
         Key {
             level: 1 + c.l,
-            last: self.path[self.span(c).end - 1] as u64,
+            last: self.path[self.xs[c.end() as usize - 1].last] as u64,
         }
     }
 
@@ -373,7 +374,7 @@ impl Branch {
             .map_while(|r| {
                 let key = Key {
                     level: 0,
-                    last: self.path[r.end - 1] as u64,
+                    last: self.path[chunk_last(&self.xs[e], r)] as u64,
                 };
                 Some((r.clone(), self.lines.get(&key)?.as_str()))
             })
@@ -498,12 +499,13 @@ impl Branch {
     }
 
     /// The open turn: its message, then its chunk lines and the steps after them, the
-    /// newest that fit in [`OPEN`] bytes; the newest item always.
+    /// newest that fit in [`OPEN`] bytes; the newest item always. Nothing when every turn is
+    /// closed.
     fn current(&self) -> Vec<String> {
-        let Some(e) = self.xs.len().checked_sub(1) else {
+        let e = self.closed() as usize;
+        let Some(x) = self.xs.get(e) else {
             return Vec::new();
         };
-        let x = &self.xs[e];
         let body = self.body(e);
         let mut out: Vec<String> = (x.span.start..body)
             .map(|p| self.item_line(p, cut(WORDS)))
@@ -644,6 +646,7 @@ mod tests {
                     },
                     _ => Kind::Marker(Marker::Interrupt),
                 },
+                ends_turn: false,
             })
             .collect()
     }

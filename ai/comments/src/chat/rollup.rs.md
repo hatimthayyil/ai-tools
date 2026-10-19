@@ -8,7 +8,7 @@ Rendering
 
 Chunking (`chunk`)
 - Only for a turn whose rendering (message and steps) is over `INPUT` = 48 KB. Greedy over its steps: whole steps while they fit; a step over the budget starts a chunk and is cut before each tool call the same way; a piece still over it (a tool call with many parallel results) is a chunk alone. The message is not in a chunk: it is each chunk call's `<context>`, clipped to 4 KB.
-- The cut before an over-budget step keeps chunks stable as items are appended: a chunk is final once another follows it (test `chunks_but_the_last_stay_as_items_are_appended`). `Part::chunks` is the whole cut; `Part::done` the chunks that have lines: all once the turn is closed, else all but the last, which waits until it is closed.
+- The cut before an over-budget step keeps chunks stable as items are appended: a chunk is final once another follows it (test `chunks_but_the_last_stay_as_items_are_appended`). `Part::chunks` is the whole cut; `Part::done` the chunks that have lines: all once the turn is closed, else all but the last, which waits until it is closed. The last chunk of a turn is keyed at most at `Turn::last` (`chunk_last`), so markers appended after an ended turn keep its key.
 - Keys: chunk `0@last`. A chunk's range is fixed by the items above `last` except in one case: a fork inside an over-budget step that is itself split into pieces could give two branches different chunks ending at the same item. Claude Code forks at user messages (claude.rs.md), so the key's first writer wins and the case is left.
 
 Lines (`Rollup`)

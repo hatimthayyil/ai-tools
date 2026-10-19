@@ -4,7 +4,7 @@ Design: `ai/research/20261014T002322---chat-design.md`, View and Roll-up. Fold: 
 
 Branch
 - `Branch`: the path from the root to a session's tip, its turns and their chunks as the roll-up cuts them (`rollup::branch`), and every line of the thread (`Snapshot::all_lines`), loaded once into a map. A session with no item yet uses its graft as tip.
-- Fold coordinates are memory's `Coord` over turn positions along the branch: `(l, i)` covers turns `[i·2^l, (i+1)·2^l)`, its line is key `(1 + l, last item of its last turn)`, the contract with the roll-up. The fold covers the closed turns, all but the last.
+- Fold coordinates are memory's `Coord` over turn positions along the branch: `(l, i)` covers turns `[i·2^l, (i+1)·2^l)`, its line is key `(1 + l, last item of its last turn)`, the contract with the roll-up. The fold covers the closed turns: all but an open newest one. A turn closes at the next message or at its ending item (model.rs.md); with none open, the view has no open-turn section.
 
 Fold
 - Computed fresh at every call: start from one line per closed turn, merge the most due aligned pair, due = (T − last)/2^l with `last` the pair's last turn, oldest first on ties, until the lines fit. No high/low-water batches and no persisted view: the view is sent once per compaction, so its prefix never has to stay stable from one call to the next; only the merge order matters.

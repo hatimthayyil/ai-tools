@@ -25,13 +25,15 @@ pub struct Head {
     pub ts: Timestamp,
 }
 
-/// One line of an item sequence: an item's head and its kind.
+/// One line of an item sequence: an item's head, its kind, and `ends_turn` only when true.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Row {
     #[serde(flatten)]
     pub head: Head,
     #[serde(flatten)]
     pub kind: Kind,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ends_turn: bool,
 }
 
 /// An item row's kind tag alone, its head and content skipped: whether the item opens a turn
@@ -273,22 +275,29 @@ mod tests {
             let line = serde_json::to_string(&Row {
                 head: head(),
                 kind: kind.clone(),
+                ends_turn: false,
             })
             .unwrap();
             assert_eq!(
                 serde_json::from_str::<Tag>(&line).unwrap().opens(),
                 kind.opens()
             );
-            round(&Row { head: head(), kind });
+            round(&Row {
+                head: head(),
+                kind,
+                ends_turn: true,
+            });
         }
         let row = serde_json::to_value(Row {
             head: head(),
             kind: Kind::User("x".into()),
+            ends_turn: false,
         })
         .unwrap();
         assert_eq!(row["seq"], 7);
         assert_eq!(row["kind"], "user");
         assert_eq!(row["content"], "x");
+        assert!(row.get("ends_turn").is_none(), "written only when true");
         let mut unknown = row.clone();
         unknown["kind"] = "unknown".into();
         assert!(serde_json::from_value::<Row>(unknown).is_err());
@@ -315,6 +324,7 @@ mod tests {
                 ..head()
             },
             kind: Kind::Text("t".into()),
+            ends_turn: false,
         })
         .unwrap();
         assert!(serde_json::from_value::<Row>(fail(row, "parent")).is_err());

@@ -438,7 +438,7 @@ fn compact_session_syncs_and_prints_the_view() {
         "compact-session synced the rest of the transcript"
     );
     let fold = section(&view, "Earlier turns, summarised");
-    assert_eq!(fold.len(), 3);
+    assert_eq!(fold.len(), 4, "the newest turn ended, so it is folded too");
     assert_eq!(fold[0], "0|user asked to run the tests; two failed");
     assert!(
         fold[1].starts_with(
@@ -452,8 +452,8 @@ fn compact_session_syncs_and_prints_the_view() {
         rail.iter()
             .any(|l| l == &"1.0|user: Skip the network tests.")
     );
-    let open = section(&view, "The turn in progress");
-    assert!(open[0].starts_with("3.0|user: "));
+    assert!(fold[3].starts_with("3|user: "), "{fold:#?}");
+    assert!(section(&view, "The turn in progress").is_empty(), "{view}");
     assert!(section(&view, "Earlier turns, summarised").len() <= FOLD_LINES);
 }
 
@@ -779,11 +779,12 @@ fn start_binds_a_new_session_and_starts_claude() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(seed.starts_with("# Thread `dev`"), "{seed}");
     assert!(
-        section(&seed, "The previous session's last turn")
+        section(&seed, "Earlier turns, summarised")
             .last()
-            .is_some_and(|l| l.starts_with("1.1|")),
-        "a new session's view ends at its graft: {seed}"
+            .is_some_and(|l| l.starts_with("1|")),
+        "a new session's view ends at its graft, the previous session's ended turn: {seed}"
     );
+    assert!(section(&seed, "The previous session's last turn").is_empty());
     assert!(section(&seed, "The turn in progress").is_empty());
 
     let o = s.ai(&["start", "a b"]);

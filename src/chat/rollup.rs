@@ -167,21 +167,31 @@ impl Branch {
         }
     }
 
-    /// The chunk lines of `p`: of its [`Part::done`] chunks.
+    /// The chunk lines of `p`: of its [`Part::done`] chunks, keyed by their last item, the last
+    /// chunk by the turn's [`Turn::last`].
     pub fn chunk_keys(&self, p: &Part) -> Vec<Key> {
-        p.done().iter().map(|c| self.key(0, c.end - 1)).collect()
+        p.done()
+            .iter()
+            .map(|c| self.key(0, chunk_last(&p.turn, c)))
+            .collect()
     }
 
     /// The turn line of `p`, once it is closed.
     pub fn line(&self, p: &Part) -> Option<Key> {
         let x = &p.turn;
-        x.closed.then(|| self.key(1, x.span.end - 1))
+        x.closed.then(|| self.key(1, x.last))
     }
 
     /// The turn lines of the closed turns, in order.
     pub fn lines(&self) -> Vec<Key> {
         self.parts.iter().filter_map(|p| self.line(p)).collect()
     }
+}
+
+/// The position chunk `c` of `turn` is keyed by: its last item, at most the turn's
+/// [`Turn::last`].
+pub fn chunk_last(turn: &Turn, c: &Range<usize>) -> usize {
+    (c.end - 1).min(turn.last)
 }
 
 /// The binary nodes over the adjacent lines `lines`, aligned from the first, each with its two
@@ -425,6 +435,7 @@ mod tests {
             parent: None,
             ts: Timestamp::UNIX_EPOCH,
             kind,
+            ends_turn: false,
         }
     }
 

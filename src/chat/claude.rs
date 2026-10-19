@@ -233,12 +233,19 @@ impl<'s> Chain<'s> {
                 parent: up.map(|p| self.items[p].id.clone()),
                 ts,
                 kind,
+                ends_turn: false,
             });
             self.children.push(Vec::new());
             if let Some(p) = up {
                 self.children[p].push(i);
             }
             last = Some(i);
+        }
+        if let Some(i) = last
+            && v["type"] == "assistant"
+            && v["message"]["stop_reason"] == "end_turn"
+        {
+            self.items[i].ends_turn = true;
         }
         self.entries
             .insert(uuid.to_string(), Entry { parent, item: last });
@@ -438,7 +445,11 @@ fn text(content: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::model::{Tree, turns};
+    use crate::chat::{
+        model::{Tree, turns},
+        record::Key,
+        rollup,
+    };
 
     const SESSION: &str = "s-1";
 
@@ -601,6 +612,27 @@ mod tests {
                 vec![vec!["u2"], vec!["a2"]]
             ]
         );
+    }
+
+    #[test]
+    fn a_turn_ends_where_claude_ends_it_and_keeps_its_line_through_a_compaction() {
+        let items = load("compact.jsonl");
+        let ends: Vec<&str> = items
+            .iter()
+            .filter(|i| i.ends_turn)
+            .map(|i| i.id.entry.as_str())
+            .collect();
+        assert_eq!(ends, ["a1", "a2"]);
+        let lines = |n: usize| {
+            let tree = Tree::new(items[..n].to_vec());
+            let tip = *tree.tips().last().unwrap();
+            rollup::branch(&tree, tip).lines()
+        };
+        let key = |last| Key { level: 1, last };
+        assert_eq!(lines(1), [], "the turn is open");
+        assert_eq!(lines(2), [key(1)], "the reply ends it");
+        assert_eq!(lines(4), [key(1)], "the compaction after it moves no key");
+        assert_eq!(lines(6), [key(1), key(5)]);
     }
 
     #[test]

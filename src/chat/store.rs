@@ -534,6 +534,7 @@ fn items(thread: &str, what: &str, b: &[u8]) -> Result<Vec<Item>> {
             parent: r.head.parent.map(|p| ids[p as usize].clone()),
             ts: r.head.ts,
             kind: r.kind,
+            ends_turn: r.ends_turn,
         })
         .collect())
 }
@@ -601,6 +602,7 @@ impl Snapshot {
             parent,
             ts: r.head.ts,
             kind: r.kind,
+            ends_turn: r.ends_turn,
         })
     }
 
@@ -944,6 +946,7 @@ impl Append {
                 ts: item.ts,
             },
             kind: item.kind.clone(),
+            ends_turn: item.ends_turn,
         });
         self.keys.insert(key(&item.id), seq);
     }
@@ -991,6 +994,7 @@ mod tests {
                     } else {
                         Kind::Text(String::new())
                     },
+                    ends_turn: false,
                 })
                 .collect(),
         );

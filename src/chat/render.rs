@@ -154,6 +154,7 @@ mod tests {
             parent: None,
             ts: Timestamp::UNIX_EPOCH,
             kind,
+            ends_turn: false,
         }
     }
 
