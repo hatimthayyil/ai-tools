@@ -30,6 +30,7 @@
   - A native summary is a marker: after `detach`, native `/compact`, `attach`, its text is neither in the view nor in `zoom`.
   - After an `ai chat` compaction, nested `CLAUDE.md`/`AGENTS.md` files are not re-attached (register.ts.md). Not tested: the run had `CLAUDE_CODE_DISABLE_CLAUDE_MDS`.
   - Auto-compaction was not run live (it needs a full context); the plugin tests cover the `auto` trigger.
+- Our own auto-compaction: `/ai` runs by itself at our own context threshold, before Claude Code's auto-compaction. Claude Code 2.1.304 has settings `autoCompactEnabled`, `precomputeCompactionEnabled`, `idleCompaction` and env `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; the mod's `session.compact` fires for triggers `manual`, `auto`, `plugin`, `precompute`. Open: where the plugin reads the context size (`usage` of each assistant entry in the transcript, or an engine API); when it checks (turn end); what a failed automatic `/ai` shows without disrupting the user.
 
 ## Notes
 
