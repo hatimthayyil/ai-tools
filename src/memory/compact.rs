@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    fs::File,
     sync::{
         Arc,
         mpsc::{Receiver, RecvTimeoutError, Sender, channel},
@@ -190,7 +189,7 @@ pub struct Compactor<'s> {
     built: u64,
     tx: Sender<Done>,
     rx: Receiver<Done>,
-    _lock: File,
+    _lock: crate::file::Lock,
 }
 
 impl<'s> Compactor<'s> {

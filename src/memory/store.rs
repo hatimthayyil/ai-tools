@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -148,7 +148,7 @@ impl Store {
     }
 
     /// The compactor's lock on this memory; `None` while another process holds it.
-    pub fn try_lock(&self) -> Result<Option<File>> {
+    pub fn try_lock(&self) -> Result<Option<file::Lock>> {
         file::try_lock(&self.dir.join(LOCK))
     }
 

@@ -576,7 +576,7 @@ fn a_held_lock_makes_a_second_summariser_exit_at_once() {
     assert_eq!(fake.calls(), 0);
     let other = r.chat().thread("t").unwrap();
     assert!(other.try_lock().unwrap().is_none());
-    lock.unlock().unwrap();
+    drop(lock);
     assert_eq!(summarised(&t, &fake).calls, 1);
     let log = fs::read_to_string(t.log_path().unwrap()).unwrap();
     assert!(
@@ -663,7 +663,7 @@ fn build_gives_up_on_a_lock_held_past_its_deadline() {
     assert!(lines(&t).is_empty());
     let log = fs::read_to_string(t.log_path().unwrap()).unwrap();
     assert!(log.contains("waiting") && log.contains("deadline"), "{log}");
-    held.unlock().unwrap();
+    drop(held);
 }
 
 #[test]
@@ -836,7 +836,7 @@ fn rebuild_drops_every_line_and_writes_them_again() {
         dropped,
         "nothing dropped while the lock is held"
     );
-    held.unlock().unwrap();
+    drop(held);
 }
 
 #[test]

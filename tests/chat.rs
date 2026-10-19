@@ -746,11 +746,7 @@ fn the_compactor_lock_is_per_thread() {
     assert!(r.chat().thread("a").unwrap().try_lock().unwrap().is_none());
     assert!(b.try_lock().unwrap().is_some());
     drop(held);
-    let soon = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    assert!(
-        a.lock_before(soon).unwrap().is_some(),
-        "a spawned child may hold a copy briefly"
-    );
+    assert!(a.try_lock().unwrap().is_some());
     assert!(r.store().join("a.lock").is_file());
 }
 

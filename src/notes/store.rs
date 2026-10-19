@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -146,7 +146,7 @@ impl Store {
     }
 
     /// The summariser lock, unless another summariser holds it.
-    pub fn summarise_lock(&self) -> Result<Option<File>> {
+    pub fn summarise_lock(&self) -> Result<Option<file::Lock>> {
         file::try_lock(&self.git_dir().join(SUMMARISE_LOCK))
     }
 
