@@ -48,9 +48,10 @@ An item's text continues on lines indented by two spaces. Summaries cite the ite
 detail, as [12.3].
 
 Zoom a line to see what it was made from: `ai chat zoom 8+4`. You can zoom any turn, item or \
-range. Zoom lists tool calls without their output; add `--tool-output` to include it. \
-`ai chat grep <regex>` searches the thread and takes the same flag. Long output comes in parts; \
-each part ends with the command for the next.
+range. Before you act, guess or ask, find the latest mention of what you need and zoom until \
+you have it whole. Zoom lists tool calls without their output; add `--tool-output` to include \
+it. `ai chat grep <regex>` searches the thread and takes the same flag. Long output comes in \
+parts; each part ends with the command for the next.
 
 Summaries keep little tool output, so state in your replies what you learned that you will \
 need later.
