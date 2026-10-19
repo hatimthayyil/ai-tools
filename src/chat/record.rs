@@ -34,6 +34,28 @@ pub(super) struct Row {
     pub kind: Kind,
 }
 
+/// An item row's kind tag alone, its head and content skipped: whether the item opens a turn
+/// (`Kind::opens`).
+#[derive(Deserialize)]
+pub(super) struct Tag {
+    kind: Opener,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Opener {
+    User,
+    Work,
+    #[serde(other)]
+    Other,
+}
+
+impl Tag {
+    pub(super) fn opens(&self) -> bool {
+        !matches!(self.kind, Opener::Other)
+    }
+}
+
 /// A session's branch in one thread: one line of the thread's `sessions.jsonl`, the last per
 /// session holding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +270,15 @@ mod tests {
             },
             Kind::Marker(Marker::Interrupt),
         ] {
+            let line = serde_json::to_string(&Row {
+                head: head(),
+                kind: kind.clone(),
+            })
+            .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Tag>(&line).unwrap().opens(),
+                kind.opens()
+            );
             round(&Row { head: head(), kind });
         }
         let row = serde_json::to_value(Row {
