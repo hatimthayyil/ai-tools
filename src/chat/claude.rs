@@ -233,7 +233,6 @@ impl<'s> Chain<'s> {
                 parent: up.map(|p| self.items[p].id.clone()),
                 ts,
                 kind,
-                raw: line.to_string(),
             });
             self.children.push(Vec::new());
             if let Some(p) = up {
@@ -512,8 +511,6 @@ mod tests {
             first.ts,
             "2026-10-14T10:00:00Z".parse::<Timestamp>().unwrap()
         );
-        let text = fs::read_to_string(fixture("plain.jsonl")).unwrap();
-        assert_eq!(first.raw, text.lines().nth(2).unwrap());
     }
 
     #[test]
@@ -655,7 +652,6 @@ mod tests {
             items[3].kind,
             Kind::User("The licence is CC0-1.0, not MIT.".into())
         );
-        assert_eq!(items[2].raw, items[3].raw);
     }
 
     #[test]

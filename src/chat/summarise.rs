@@ -11,7 +11,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use gix::ObjectId;
 use jiff::Timestamp;
 use tracing::{Span, dispatcher, info, info_span, warn};
 
@@ -19,7 +18,7 @@ use crate::{
     chat::{
         record::{Key, Line},
         rollup::{PROMPT, Rollup, Source},
-        store::{Chat, Thread},
+        store::{Chat, Mark, Thread},
     },
     memory::{Backend, Block, ClaudeCode, JOBS, Who, claude, log, write_line},
 };
@@ -169,7 +168,7 @@ pub fn summarise(thread: &Thread, backend: Arc<dyn Backend>) -> Result<Option<Bu
         };
         lock.unlock()?;
         drop(lock);
-        if thread.snapshot()?.commit() == seen {
+        if thread.snapshot()?.mark() == seen {
             let b = &run.built;
             let secs = log::secs(start.elapsed());
             info!(
@@ -415,12 +414,8 @@ impl<'t> Run<'t> {
     }
 
     /// Builds on the latest snapshot what is ready, of `want` and what it is made from if
-    /// given, until nothing more can start or `deadline` passes; returns the commit it read.
-    fn pass(
-        &mut self,
-        want: Option<&[Key]>,
-        deadline: Option<Instant>,
-    ) -> Result<Option<ObjectId>> {
+    /// given, until nothing more can start or `deadline` passes; returns the state it read.
+    fn pass(&mut self, want: Option<&[Key]>, deadline: Option<Instant>) -> Result<Mark> {
         let snap = self.thread.snapshot()?;
         let roll = Rollup::new(&snap.tree()?);
         let mut lines: HashMap<Key, String> = match self.anew {
@@ -447,7 +442,7 @@ impl<'t> Run<'t> {
             self.free(&roll, &mut lines, &mut todo)?;
             self.start(&roll, &lines, &todo);
             if self.busy.is_empty() {
-                return Ok(snap.commit());
+                return Ok(snap.mark());
             }
             let done = match deadline {
                 Some(d) => match self
@@ -455,7 +450,7 @@ impl<'t> Run<'t> {
                     .recv_timeout(d.saturating_duration_since(Instant::now()))
                 {
                     Ok(done) => done,
-                    Err(RecvTimeoutError::Timeout) => return Ok(snap.commit()),
+                    Err(RecvTimeoutError::Timeout) => return Ok(snap.mark()),
                     Err(RecvTimeoutError::Disconnected) => unreachable!("the run holds a sender"),
                 },
                 None => self.rx.recv().expect("the run holds a sender"),

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -6,7 +7,7 @@ use std::{
 };
 
 use ai_tools::{
-    chat::{Chat, Item, Key, Kind, LineKind, Snapshot, Synced, Tree, claude, read, sync},
+    chat::{Chat, Item, Key, Kind, LineKind, Synced, Tree, claude, read, sync},
     memory::Who,
 };
 use tempfile::TempDir;
@@ -104,12 +105,30 @@ impl Repo {
         p
     }
 
-    fn head(&self, name: &str) -> Option<String> {
-        let repo = gix::open(self.path()).unwrap();
-        let r = repo
-            .try_find_reference(format!("refs/ai/chat/{name}").as_str())
-            .unwrap()?;
-        Some(r.id().to_string())
+    /// The files of thread `name`, by path within it; `None` before it exists.
+    fn state(&self, name: &str) -> Option<BTreeMap<PathBuf, Vec<u8>>> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for e in fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                match p.is_dir() {
+                    true => walk(root, &p, out),
+                    false => {
+                        out.insert(p.strip_prefix(root).unwrap().into(), fs::read(&p).unwrap());
+                    }
+                }
+            }
+        }
+        let dir = self.store().join("threads").join(name);
+        dir.is_dir().then(|| {
+            let mut out = BTreeMap::new();
+            walk(&dir, &dir, &mut out);
+            out
+        })
+    }
+
+    /// The chat store of the repository.
+    fn store(&self) -> PathBuf {
+        self.path().join(".git/ai/chat")
     }
 }
 
@@ -135,12 +154,11 @@ fn added(s: Synced) -> std::ops::Range<u64> {
     }
 }
 
-fn assert_blob(snapshot: &Snapshot, path: &str, expected: &[u8]) {
-    let stored = snapshot.as_ref().entry(path).unwrap();
-    assert!(stored.is_some(), "missing original file: {path}");
-    let bytes = snapshot.as_ref().read(path).unwrap();
+fn assert_source(r: &Repo, thread: &str, path: &str, expected: &[u8]) {
+    let p = r.store().join("threads").join(thread).join(path);
+    let bytes = fs::read(&p).unwrap_or_else(|_| panic!("missing original file: {path}"));
     assert!(
-        &*bytes == expected,
+        bytes == expected,
         "source bytes differ for {path}: expected {} bytes, found {}",
         expected.len(),
         bytes.len()
@@ -161,10 +179,10 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     r.transcript("s-1", &all);
     let more = added(sync(&r.path(), "claude", "s-1", None).unwrap());
     assert_eq!(more.start, first.end);
-    let head = r.head("dev");
+    let head = r.state("dev");
     let none = added(sync(&r.path(), "claude", "s-1", Some(&path)).unwrap());
     assert!(none.is_empty());
-    assert_eq!(r.head("dev"), head, "no commit when nothing is new");
+    assert_eq!(r.state("dev"), head, "no commit when nothing is new");
 
     let want = claude::read(&path, "s-1").unwrap();
     let thread = chat.thread("dev").unwrap();
@@ -185,10 +203,11 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     let b = s.binding("claude", "s-1").unwrap().unwrap();
     assert_eq!((b.graft, b.transcript.as_deref()), (None, Some(&*path)));
     assert!(b.is_attached());
-    let log = git(&r.path(), &["log", "--format=%s", "refs/ai/chat/dev"]);
-    assert_eq!(log, "sync claude s-1\nattach claude s-1\n");
-    let format = git(&r.path(), &["show", "refs/ai/chat/dev:format"]);
-    assert_eq!(format, "2\n");
+    assert_eq!(fs::read_to_string(r.store().join("format")).unwrap(), "3\n");
+    let events = fs::read_to_string(r.store().join("sessions.jsonl")).unwrap();
+    assert_eq!(events.lines().count(), 1, "one attachment: {events}");
+    let rows = fs::read_to_string(r.store().join("threads/dev/items.jsonl")).unwrap();
+    assert_eq!(rows.lines().count() as u64, more.end);
 }
 
 #[test]
@@ -210,12 +229,12 @@ fn an_unattached_session_is_not_attached() {
     );
     assert_eq!(chat.detach("claude", "s-1").unwrap(), Some("dev".into()));
     assert_eq!(chat.detach("claude", "s-1").unwrap(), None);
-    let head = r.head("dev");
+    let head = r.state("dev");
     assert_eq!(
         sync(&r.path(), "claude", "s-1", Some(&path)).unwrap(),
         Synced::NotAttached
     );
-    assert_eq!(r.head("dev"), head);
+    assert_eq!(r.state("dev"), head);
     assert!(sync(&r.path(), "claude", "../s-1", None).is_err());
 }
 
@@ -382,7 +401,7 @@ fn a_session_can_attach_to_another_thread_after_explicit_detach() {
             .unwrap(),
         original
     );
-    let head = r.head("two");
+    let head = r.state("two");
     assert!(
         chat.attach("two", "claude", "s-1", None)
             .unwrap()
@@ -390,7 +409,7 @@ fn a_session_can_attach_to_another_thread_after_explicit_detach() {
             .is_empty()
     );
     assert_eq!(
-        r.head("two"),
+        r.state("two"),
         head,
         "same-thread reattachment with no new data is a no-op"
     );
@@ -413,7 +432,7 @@ fn attaching_elsewhere_is_rejected_before_reading_new_sources() {
     let chat = r.chat();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
     chat.attach("one", "claude", "s-1", Some(&path)).unwrap();
-    let before = r.head("one");
+    let before = r.state("one");
     let agents = path.with_extension("").join("subagents");
     fs::create_dir_all(&agents).unwrap();
     fs::write(agents.join("agent-.invalid.jsonl"), "").unwrap();
@@ -421,7 +440,7 @@ fn attaching_elsewhere_is_rejected_before_reading_new_sources() {
     let error = chat.attach("two", "claude", "s-1", None).unwrap_err();
     assert!(error.to_string().contains("Run ai chat detach"));
 
-    assert_eq!(r.head("one"), before);
+    assert_eq!(r.state("one"), before);
     assert!(!chat.thread("two").unwrap().exists().unwrap());
     let attached = chat.attached("claude", "s-1").unwrap().unwrap();
     assert_eq!(attached.0.name(), "one");
@@ -434,15 +453,15 @@ fn attaching_elsewhere_is_rejected_without_changing_either_thread() {
     let chat = r.chat();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
     chat.attach("one", "claude", "s-1", Some(&path)).unwrap();
-    let before = r.head("one");
+    let before = r.state("one");
     chat.attach("two", "claude", "s-2", None).unwrap();
-    let destination = r.head("two");
+    let destination = r.state("two");
 
     let error = chat.attach("two", "claude", "s-1", None).unwrap_err();
     assert!(error.to_string().contains("Run ai chat detach"));
 
-    assert_eq!(r.head("one"), before);
-    assert_eq!(r.head("two"), destination);
+    assert_eq!(r.state("one"), before);
+    assert_eq!(r.state("two"), destination);
     assert_eq!(
         chat.attached("claude", "s-1").unwrap().unwrap().0.name(),
         "one"
@@ -494,19 +513,14 @@ fn attaching_archives_complete_original_session_files() {
 
     chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
 
-    let thread = chat.thread("dev").unwrap();
-    let snapshot = thread.snapshot().unwrap();
+    let snapshot = chat.thread("dev").unwrap().snapshot().unwrap();
     for (name, bytes) in &files {
-        let stored = format!("sources/claude/s-1/{name}");
-        assert_blob(&snapshot, &stored, bytes);
+        assert_source(&r, "dev", &format!("sources/claude/s-1/{name}"), bytes);
     }
-    assert!(
-        snapshot
-            .as_ref()
-            .entry("sources/claude/s-1/unrelated.json")
-            .unwrap()
-            .is_none()
-    );
+    let unrelated = r
+        .store()
+        .join("threads/dev/sources/claude/s-1/unrelated.json");
+    assert!(!unrelated.exists());
     assert_eq!(
         snapshot.items().unwrap(),
         claude::read(&path, "s-1").unwrap()
@@ -519,7 +533,7 @@ fn sync_archives_source_changes_without_new_projected_items() {
     let chat = r.chat();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
     chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
-    let before = r.head("dev");
+    let before = r.state("dev");
     fs::OpenOptions::new()
         .append(true)
         .open(&path)
@@ -533,13 +547,11 @@ fn sync_archives_source_changes_without_new_projected_items() {
         Synced::Attached { added, .. } if added.is_empty()
     ));
 
-    let thread = chat.thread("dev").unwrap();
-    let snapshot = thread.snapshot().unwrap();
-    assert_blob(&snapshot, "sources/claude/s-1/s-1.jsonl", &original);
-    assert_ne!(r.head("dev"), before);
-    let archived = r.head("dev");
+    assert_source(&r, "dev", "sources/claude/s-1/s-1.jsonl", &original);
+    assert_ne!(r.state("dev"), before);
+    let archived = r.state("dev");
     chat.sync("claude", "s-1", None).unwrap();
-    assert_eq!(r.head("dev"), archived, "unchanged sources add no commit");
+    assert_eq!(r.state("dev"), archived, "unchanged sources write nothing");
 }
 
 #[test]
@@ -552,8 +564,6 @@ fn original_files_survive_source_changes_and_disappearance() {
     fs::create_dir_all(artifact.parent().unwrap()).unwrap();
     fs::write(&artifact, b"original\0artifact\xff").unwrap();
     chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
-    let thread = chat.thread("dev").unwrap();
-    let first = thread.snapshot().unwrap().commit().unwrap();
     let mut changed = original.clone();
     changed.extend_from_slice(b"{\"type\":\"future-event\"}\n");
     fs::write(&path, &changed).unwrap();
@@ -564,24 +574,35 @@ fn original_files_survive_source_changes_and_disappearance() {
 
     chat.sync("claude", "s-1", None).unwrap();
 
-    let latest = thread.snapshot().unwrap();
-    assert_blob(&latest, "sources/claude/s-1/s-1.jsonl", &changed);
-    assert_blob(
-        &latest,
+    assert_source(&r, "dev", "sources/claude/s-1/s-1.jsonl", &changed);
+    assert_source(
+        &r,
+        "dev",
         "sources/claude/s-1/s-1/tool-results/output.bin",
         b"changed artifact",
     );
-    let original_snapshot = thread.snapshot_at(first).unwrap();
-    assert_blob(
-        &original_snapshot,
-        "sources/claude/s-1/s-1.jsonl",
-        &original,
-    );
-    assert_blob(
-        &original_snapshot,
-        "sources/claude/s-1/s-1/tool-results/output.bin",
-        b"original\0artifact\xff",
-    );
+}
+
+#[test]
+fn a_source_path_changing_kind_replaces_the_archived_entry() {
+    let r = Repo::new();
+    let chat = r.chat();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    let companion = path.with_extension("");
+    fs::create_dir_all(companion.join("x")).unwrap();
+    fs::write(companion.join("x/inner"), b"inner").unwrap();
+    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+
+    fs::remove_dir_all(companion.join("x")).unwrap();
+    fs::write(companion.join("x"), b"now a file").unwrap();
+    chat.sync("claude", "s-1", None).unwrap();
+    assert_source(&r, "dev", "sources/claude/s-1/s-1/x", b"now a file");
+
+    fs::remove_file(companion.join("x")).unwrap();
+    fs::create_dir_all(companion.join("x")).unwrap();
+    fs::write(companion.join("x/inner"), b"a dir again").unwrap();
+    chat.sync("claude", "s-1", None).unwrap();
+    assert_source(&r, "dev", "sources/claude/s-1/s-1/x/inner", b"a dir again");
 }
 
 #[test]
@@ -627,10 +648,10 @@ fn subagents_are_kept_beside_the_main_tree() {
     assert!(matches!(call.kind, Kind::ToolCall { ref id, .. } if id == "toolu_50"));
     let items = s.agent_items("claude", &agent.agent).unwrap();
     assert_eq!(items, read.agents[0].items);
-    let head = r.head("dev");
+    let head = r.state("dev");
     let again = sync(&r.path(), "claude", "s-1", None).unwrap();
     assert!(matches!(again, Synced::Attached { added, .. } if added.is_empty()));
-    assert_eq!(r.head("dev"), head);
+    assert_eq!(r.state("dev"), head);
 }
 
 #[test]
@@ -714,7 +735,11 @@ fn the_compactor_lock_is_per_thread() {
     assert!(r.chat().thread("a").unwrap().try_lock().unwrap().is_none());
     assert!(b.try_lock().unwrap().is_some());
     drop(held);
-    assert!(a.try_lock().unwrap().is_some());
+    let soon = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    assert!(
+        a.lock_before(soon).unwrap().is_some(),
+        "a spawned child may hold a copy briefly"
+    );
     assert!(r.path().join(".git/ai/chat/a.lock").is_file());
 }
 
@@ -729,11 +754,15 @@ fn worktrees_share_the_threads() {
     fs::create_dir_all(&sub).unwrap();
     let chat = Chat::find(&sub).unwrap().unwrap();
     chat.attach("dev", "claude", "s-1", Some(&p)).unwrap();
-    let refs = git(
-        &r.path(),
-        &["for-each-ref", "--format=%(refname)", "refs/ai/chat"],
-    );
-    assert_eq!(refs, "refs/ai/chat/dev\n");
+    let names: Vec<String> = r
+        .chat()
+        .threads()
+        .unwrap()
+        .iter()
+        .map(|t| t.name().into())
+        .collect();
+    assert_eq!(names, ["dev"]);
+    assert!(r.store().join("threads/dev").is_dir());
     assert!(chat.thread("dev").unwrap().try_lock().unwrap().is_some());
     assert!(r.path().join(".git/ai/chat/dev.lock").is_file());
     let main = r.chat();
@@ -753,259 +782,110 @@ fn worktrees_share_the_threads() {
 }
 
 #[test]
-fn a_newer_thread_is_refused() {
+fn a_newer_store_is_refused() {
     let r = Repo::new();
     let p = r.transcript("s-1", &lines("plain.jsonl"));
     r.chat().attach("dev", "claude", "s-1", Some(&p)).unwrap();
-    let path = r.path();
-    let old = git(&path, &["rev-parse", "refs/ai/chat/dev:format"]);
-    let new = git_in(&path, &["hash-object", "-w", "--stdin"], "3\n");
-    let tree = git(&path, &["ls-tree", "refs/ai/chat/dev"]).replace(old.trim(), new.trim());
-    let tree = git_in(&path, &["mktree"], &tree);
-    let commit = git(
-        &path,
-        &[
-            "commit-tree",
-            tree.trim(),
-            "-p",
-            "refs/ai/chat/dev",
-            "-m",
-            "future",
-        ],
-    );
-    git(&path, &["update-ref", "refs/ai/chat/dev", commit.trim()]);
-    let chat = r.chat();
-    let want = "This thread is format 3; this ai reads up to 2. Upgrade ai.";
-    let snap = chat.thread("dev").unwrap().snapshot().map(|_| ());
-    assert_eq!(snap.unwrap_err().to_string(), want);
-    let s = sync(&path, "claude", "s-1", None).map(|_| ());
+    let before = r.state("dev");
+    fs::write(r.store().join("format"), "4\n").unwrap();
+    let want = "This chat store is format 4; this ai reads up to 3. Upgrade ai.";
+    let found = Chat::find(&r.path()).map(|_| ());
+    assert_eq!(found.unwrap_err().to_string(), want);
+    let s = sync(&r.path(), "claude", "s-1", None).map(|_| ());
     assert_eq!(s.unwrap_err().to_string(), want);
-    assert_eq!(r.head("dev").unwrap(), commit.trim());
-    assert!(chat.thread("dev").unwrap().upgrade().is_err());
-    assert_eq!(r.head("dev").unwrap(), commit.trim());
+    assert_eq!(r.state("dev"), before);
 }
 
 #[test]
-fn structured_indexes_keep_source_ids_exact() {
+fn rows_keep_source_ids_exact() {
     let r = Repo::new();
     let path = r.transcript("s-1", &relabel(&lines("plain.jsonl"), "with space "));
     let chat = r.chat();
     chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
-    let thread = chat.thread("dev").unwrap();
-    let snapshot = thread.snapshot().unwrap();
+    let snapshot = chat.thread("dev").unwrap().snapshot().unwrap();
 
     assert_eq!(
         snapshot.items().unwrap(),
         claude::read(&path, "s-1").unwrap()
     );
-    assert!(
-        snapshot
-            .heads()
-            .unwrap()
-            .iter()
-            .all(|head| head.entry.starts_with("with space "))
-    );
-    let index: serde_json::Value =
-        serde_json::from_slice(&snapshot.as_ref().read("index/0000/00").unwrap()).unwrap();
-    assert_eq!(index[0]["entry"], "with space u1");
-    let item: serde_json::Value =
-        serde_json::from_slice(&snapshot.as_ref().read("items/0000/00").unwrap()).unwrap();
-    assert_eq!(item["kind"], "user");
+    let rows = fs::read_to_string(r.store().join("threads/dev/items.jsonl")).unwrap();
+    let first: serde_json::Value = serde_json::from_str(rows.lines().next().unwrap()).unwrap();
+    assert_eq!(first["entry"], "with space u1");
+    assert_eq!(first["kind"], "user");
+}
+
+/// Appends `line` to the file `name` of thread `dev`.
+fn corrupt(r: &Repo, name: &str, line: serde_json::Value) {
+    let p = r.store().join("threads/dev").join(name);
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+        .unwrap();
+    writeln!(f, "{line}").unwrap();
 }
 
 #[test]
-fn structured_indexes_reject_invalid_positions_and_parents() {
-    use ai_tools::git::{Changes, Ref};
-
-    let r = Repo::new();
-    let path = r.transcript("s-1", &lines("plain.jsonl"));
-    let chat = r.chat();
-    chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
-    let thread = chat.thread("dev").unwrap();
-    let snapshot = thread.snapshot().unwrap();
-    let original: serde_json::Value =
-        serde_json::from_slice(&snapshot.as_ref().read("index/0000/00").unwrap()).unwrap();
-    let mut repo = gix::open(r.path()).unwrap();
-    repo.committer_or_set_fallback("test", "test@localhost")
-        .unwrap();
-    let reference = Ref::new(repo, "refs/ai/chat/dev".into(), "thread", 2);
-    for (field, value) in [("seq", 99), ("parent", 0)] {
-        let mut broken = original.clone();
-        broken[0][field] = value.into();
-        reference
-            .mutate(
-                "invalid index fixture",
-                |commit| reference.raw(commit),
-                |_| {
-                    let mut changes = Changes::default();
-                    changes.put("index/0000/00".into(), serde_json::to_vec(&broken).unwrap());
-                    Ok(((), changes))
-                },
-            )
-            .unwrap();
-
-        let snapshot = thread.snapshot().unwrap();
-        assert!(snapshot.heads().is_err(), "invalid {field}");
-        assert!(snapshot.item(0).is_err(), "invalid {field}");
-        assert!(snapshot.tree().is_err(), "invalid {field}");
-    }
-    reference
-        .mutate(
-            "empty index fixture",
-            |commit| reference.raw(commit),
-            |_| {
-                let mut changes = Changes::default();
-                changes.put("index/0000/00".into(), b"[]".to_vec());
-                Ok(((), changes))
-            },
-        )
-        .unwrap();
-    let snapshot = thread.snapshot().unwrap();
-    assert!(snapshot.heads().is_err());
-    assert!(snapshot.items().is_err());
-}
-
-#[test]
-fn a_v1_thread_exports_to_json_without_rewriting_its_history() {
-    use ai_tools::git::{Changes, Ref};
-
-    let r = Repo::new();
-    let mut repo = gix::open(r.path()).unwrap();
-    repo.committer_or_set_fallback("test", "test@localhost")
-        .unwrap();
-    let old = Ref::new(repo, "refs/ai/chat/dev".into(), "thread", 1);
-    let raw = lines("plain.jsonl");
-    let (_, source) = old.mutate("legacy thread", |commit| old.raw(commit), |_| {
-        let mut changes = Changes::default();
-        for (path, bytes) in [
-            ("index/0000/00", b"ts harness session entry parent\n2026-10-14T10:00:00Z claude s-1 u1 \n2026-10-14T10:00:03Z claude s-1 a2 0\n".to_vec()),
-            ("items/0000/00", b"kind user\n\nWhat does the config loader do?".to_vec()),
-            ("items/0000/01", b"kind text\n\nIt reads `config.toml`, then applies `APP_*` environment overrides.".to_vec()),
-            ("raw/0000/00", raw[2].trim_end_matches('\n').as_bytes().to_vec()),
-            ("raw/0000/01", raw[6].trim_end_matches('\n').as_bytes().to_vec()),
-            ("sessions/claude/s-1", b"transcript /missing/s-1.jsonl\ntip 1\nattached 2026-10-14T10:00:00Z\n\n".to_vec()),
-            ("agents/claude/agent-1/agent", b"type general-purpose\ndescription Survey storage\ncall 1\n\n".to_vec()),
-            ("agents/claude/agent-1/index/0000/00", b"ts harness session entry parent\n2026-10-14T10:00:02Z claude s-1 sub-1 \n".to_vec()),
-            ("agents/claude/agent-1/items/0000/00", b"kind text\n\nagent answer".to_vec()),
-            ("agents/claude/agent-1/raw/0000/00", b"{\"original\":\"agent\"}".to_vec()),
-            ("lines/1/0000/01", b"ts 2026-10-14T10:00:03Z\nkind exchange\nagent claude-code\nmodel sonnet\nsession summary-1\n\nuser: config loader; ai: explains config and overrides".to_vec()),
-            ("sources/claude/s-1/s-1/artifact.bin", vec![0, 255, 128, 10]),
-        ] {
-            changes.put(path.into(), bytes);
-        }
-        Ok(((), changes))
-    }).unwrap();
-    let first = source.commit().unwrap();
-    let raw_id = source.entry("raw/0000/00").unwrap();
-    let artifact_id = source.entry("sources/claude/s-1/s-1/artifact.bin").unwrap();
-    let chat = r.chat();
-    let thread = chat.thread("dev").unwrap();
-    assert!(
-        thread
-            .snapshot()
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("typed historical views require format 2")
-    );
-
-    assert!(thread.upgrade().unwrap());
-
-    let snapshot = thread.snapshot().unwrap();
-    assert_eq!(snapshot.len().unwrap(), 2);
-    assert_eq!(entries(&snapshot.items().unwrap()), ["u1", "a2"]);
-    assert_eq!(
-        snapshot.binding("claude", "s-1").unwrap().unwrap().tip,
-        Some(1)
-    );
-    assert_eq!(snapshot.agents().unwrap()[0].description, "Survey storage");
-    assert_eq!(
-        snapshot.agent_items("claude", "agent-1").unwrap()[0].kind,
-        Kind::Text("agent answer".into())
-    );
-    assert_eq!(
-        snapshot
-            .line(Key { level: 1, last: 1 })
-            .unwrap()
-            .unwrap()
-            .who
-            .model,
-        "sonnet"
-    );
-    assert_eq!(snapshot.as_ref().entry("raw/0000/00").unwrap(), raw_id);
-    assert_eq!(
-        snapshot
-            .as_ref()
-            .entry("sources/claude/s-1/s-1/artifact.bin")
-            .unwrap(),
-        artifact_id
-    );
-    assert_eq!(
-        git(&r.path(), &["rev-parse", "refs/ai/chat/dev^"]).trim(),
-        first.to_string()
-    );
-    assert_eq!(
-        old.raw(Some(first))
-            .unwrap()
-            .read("format")
-            .unwrap()
-            .as_ref(),
-        b"1\n"
-    );
-    let converted = r.head("dev");
-    assert!(!thread.upgrade().unwrap());
-    assert_eq!(r.head("dev"), converted);
-}
-
-#[test]
-fn a_corrupt_v1_sequence_is_not_published_as_v2() {
-    use ai_tools::git::{Changes, Ref};
-
-    for missing in ["items/0000/00", "raw/0000/00"] {
+fn corrupt_records_are_errors_naming_thread_and_record() {
+    let track = |tip: u64, graft: Option<u64>| serde_json::json!({"harness": "claude", "session": "s-1", "transcript": null, "graft": graft, "tip": tip});
+    let cases = [
+        ("sessions.jsonl", track(9999, None), "tip 9999"),
+        ("sessions.jsonl", track(0, Some(9999)), "graft 9999"),
+        (
+            "sessions.jsonl",
+            serde_json::json!({"harness": "claude", "session": "s-1", "graft": null, "tip": 0}),
+            "session record 2 is corrupt",
+        ),
+        (
+            "items.jsonl",
+            serde_json::json!({"seq": 4, "parent": 4, "harness": "claude", "session": "s-1", "entry": "x", "ts": "2026-10-14T10:00:00Z", "kind": "text", "content": "t"}),
+            "item 4 is corrupt",
+        ),
+        (
+            "agents.jsonl",
+            serde_json::json!({"harness": "claude", "agent": "a1", "agent_type": "t", "description": "d", "call": 9999}),
+            "call 9999",
+        ),
+    ];
+    for (file, line, want) in cases {
         let r = Repo::new();
-        let mut repo = gix::open(r.path()).unwrap();
-        repo.committer_or_set_fallback("test", "test@localhost")
-            .unwrap();
-        let old = Ref::new(repo, "refs/ai/chat/dev".into(), "thread", 1);
-        old.mutate(
-            "corrupt v1 fixture",
-            |commit| old.raw(commit),
-            |_| {
-                let mut changes = Changes::default();
-                for (path, bytes) in [
-                    (
-                        "index/0000/00",
-                        b"ts harness session entry parent\n2026-10-14T10:00:00Z claude s-1 u1 \n"
-                            .as_slice(),
-                    ),
-                    ("items/0000/00", b"kind user\n\nprompt".as_slice()),
-                    ("raw/0000/00", b"original source".as_slice()),
-                ] {
-                    if path != missing {
-                        changes.put(path.into(), bytes.to_vec());
-                    }
-                }
-                Ok(((), changes))
-            },
-        )
-        .unwrap();
-        let original = r.head("dev");
-
-        assert!(
-            r.chat().thread("dev").unwrap().upgrade().is_err(),
-            "missing {missing}"
-        );
-
-        assert_eq!(r.head("dev"), original);
-        assert_eq!(
-            old.raw(old.head().unwrap())
-                .unwrap()
-                .read("format")
-                .unwrap()
-                .as_ref(),
-            b"1\n"
-        );
+        let p = r.transcript("s-1", &lines("plain.jsonl"));
+        let chat = r.chat();
+        chat.attach("dev", "claude", "s-1", Some(&p)).unwrap();
+        corrupt(&r, file, line);
+        let s = chat.thread("dev").unwrap().snapshot().unwrap();
+        let e = match file {
+            "agents.jsonl" => s.agents().map(|_| ()).unwrap_err(),
+            "items.jsonl" => s.tree().map(|_| ()).unwrap_err(),
+            _ => s.binding("claude", "s-1").map(|_| ()).unwrap_err(),
+        };
+        let e = format!("{e:#}");
+        assert!(e.contains("Thread dev") && e.contains(want), "{file}: {e}");
+        if file != "agents.jsonl" {
+            let e = format!("{:#}", chat.list().unwrap_err());
+            assert!(e.contains("Thread dev") && e.contains(want), "{file}: {e}");
+        }
     }
+}
+
+#[test]
+fn a_corrupt_thread_leaves_other_sessions_working() {
+    let r = Repo::new();
+    let chat = r.chat();
+    let pa = r.transcript("s-a", &lines("plain.jsonl"));
+    let pb = r.transcript("s-b", &relabel(&lines("plain.jsonl"), "b-"));
+    chat.attach("dev", "claude", "s-a", Some(&pa)).unwrap();
+    chat.attach("other", "claude", "s-b", Some(&pb)).unwrap();
+    corrupt(&r, "items.jsonl", serde_json::json!({"seq": "broken"}));
+
+    assert!(chat.sync("claude", "s-a", None).is_err());
+    assert!(matches!(
+        chat.sync("claude", "s-b", None).unwrap(),
+        Synced::Attached { thread, .. } if thread == "other"
+    ));
+    assert_eq!(chat.detach("claude", "s-b").unwrap(), Some("other".into()));
+    assert_eq!(chat.detach("claude", "s-a").unwrap(), Some("dev".into()));
+    chat.attach("other", "claude", "s-a", Some(&pa)).unwrap();
 }
 
 #[test]
@@ -1082,12 +962,9 @@ fn two_processes_syncing_one_thread_lose_nothing() {
     assert_eq!(items.len(), ia.len() + ib.len(), "each entry once");
     assert_eq!(links(&of("s-a"))[1..], links(&ia)[1..]);
     assert_eq!(links(&of("s-b"))[1..], links(&ib)[1..]);
-    let commits = git(&r.path(), &["rev-list", "--count", "refs/ai/chat/dev"]);
-    let syncs = git(&r.path(), &["log", "--format=%s", "refs/ai/chat/dev"]);
-    let syncs = syncs.lines().filter(|l| l.starts_with("sync")).count();
-    assert_eq!(commits.trim().parse::<usize>().unwrap(), syncs + 2);
+    let records = fs::read_to_string(r.store().join("threads/dev/sessions.jsonl")).unwrap();
     assert!(
-        syncs <= 2 * steps,
-        "a losing sync with nothing new commits nothing"
+        records.lines().count() <= 2 + 2 * steps,
+        "a sync with nothing new writes nothing"
     );
 }

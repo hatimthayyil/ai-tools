@@ -487,7 +487,7 @@ fn list_shows_this_repositorys_threads_and_their_sessions() {
 }
 
 #[test]
-fn view_prints_a_thread_in_parts_from_one_commit() {
+fn view_prints_a_thread_in_parts_from_one_state() {
     let s = Sandbox::new();
     let ask = |k| {
         format!(
@@ -541,10 +541,10 @@ fn view_prints_a_thread_in_parts_from_one_commit() {
     let (body, footer) = third.trim_end().rsplit_once('\n').unwrap();
     assert_eq!(footer, "Part 3 of 3.");
     parts += &(body.to_string() + "\n");
-    assert_eq!(parts, view, "the parts come from one commit");
+    assert_eq!(parts, view, "the parts come from one state");
     let o = s.ai_in("s-2", &["view", "--part", "2", "--at", "xyz"]);
     assert_eq!(code(&o), 1);
-    assert!(stderr(&o).contains("'xyz' is not a commit id"));
+    assert!(stderr(&o).contains("'xyz' is not a thread state"));
 }
 
 #[test]

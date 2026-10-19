@@ -261,11 +261,13 @@ fn summarised(t: &Thread, fake: &Arc<Fake>) -> Built {
         .expect("the lock is free")
 }
 
-fn head(r: &Repo) -> String {
-    let repo = gix::open(r.path()).unwrap();
-    repo.find_reference("refs/ai/chat/t")
+fn state(r: &Repo) -> String {
+    let chat = Chat::find(&r.path()).unwrap().unwrap();
+    chat.thread("t")
         .unwrap()
-        .id()
+        .snapshot()
+        .unwrap()
+        .mark()
         .to_string()
 }
 
@@ -409,11 +411,11 @@ fn a_second_summariser_finds_nothing_to_build() {
     let t = r.thread(&s);
     let fake = Fake::new();
     assert_eq!(summarised(&t, &fake).calls, 5 + 2 + 1);
-    let (before, at) = (texts(&t), head(&r));
+    let (before, at) = (texts(&t), state(&r));
     let again = Fake::new();
     assert_eq!(summarised(&t, &again), Built::default());
     assert_eq!(again.calls(), 0);
-    assert_eq!((texts(&t), head(&r)), (before, at), "no commit");
+    assert_eq!((texts(&t), state(&r)), (before, at), "no write");
     let keys: Vec<Key> = lines(&t).into_keys().collect();
     let b = build(
         &t,
@@ -653,7 +655,7 @@ fn a_dry_run_builds_in_memory_and_stores_nothing() {
     let t = r.thread(&s);
     let old = Fake::new();
     assert_eq!(summarised(&t, &old).calls, 3);
-    let (before, at) = (texts(&t), head(&r));
+    let (before, at) = (texts(&t), state(&r));
 
     let fake = Fake::new();
     let d = dry_run(&t, fake.backend(), false, None).unwrap();
@@ -688,7 +690,7 @@ fn a_dry_run_builds_in_memory_and_stores_nothing() {
             .iter()
             .all(|l| l.text.starts_with("turn ") || l.text.starts_with("merge "))
     );
-    assert_eq!((texts(&t), head(&r)), (before, at), "nothing stored");
+    assert_eq!((texts(&t), state(&r)), (before, at), "nothing stored");
 }
 
 #[test]

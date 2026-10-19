@@ -4,7 +4,7 @@ Design: `ai/research/20261014T002322---chat-design.md`, Roll-up. Pure: what line
 
 Rendering
 - `render`: each item's `render::item_line` and a newline, the line the view prints (render.rs.md): `t.i|kind: text`, the id from the item's place (model.rs.md), the same on every branch through it, so each item renders once. The prompt asks each finding to cite the item holding its detail as `[t.i]`, so a line points where to zoom. Memory's compactor hides ids because the model copied them; here copying them is the point.
-- `CUT`: tool inputs and outputs at `CLIP` = 4 KB, messages and replies at 24 KB (half the input, so no single item fills a chunk). Raw items stay whole in the store.
+- `CUT`: tool inputs and outputs at `CLIP` = 4 KB, messages and replies at 24 KB (half the input, so no single item fills a chunk). Items stay whole in the store.
 
 Chunking (`chunk`)
 - Only for a turn whose rendering (message and steps) is over `INPUT` = 48 KB. Greedy over its steps: whole steps while they fit; a step over the budget starts a chunk and is cut before each tool call the same way; a piece still over it (a tool call with many parallel results) is a chunk alone. The message is not in a chunk: it is each chunk call's `<context>`, clipped to 4 KB.

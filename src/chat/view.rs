@@ -630,7 +630,6 @@ mod tests {
                     },
                     _ => Kind::Marker(Marker::Interrupt),
                 },
-                raw: String::new(),
             })
             .collect()
     }

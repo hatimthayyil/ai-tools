@@ -42,18 +42,13 @@ pub fn edit_config<R>(
     Ok(r)
 }
 
-/// New blobs by path, and paths to remove.
+/// New blobs by path.
 #[derive(Debug, Default)]
-pub struct Changes(BTreeMap<String, Option<Vec<u8>>>);
+pub struct Changes(BTreeMap<String, Vec<u8>>);
 
 impl Changes {
     pub fn put(&mut self, path: String, bytes: Vec<u8>) {
-        self.0.insert(path, Some(bytes));
-    }
-
-    /// Removes the blob or tree at `path`.
-    pub fn remove(&mut self, path: String) {
-        self.0.insert(path, None);
+        self.0.insert(path, bytes);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -174,15 +169,8 @@ impl Ref {
     pub fn write_tree(&self, base: ObjectId, Changes(ch): Changes) -> Result<ObjectId> {
         let mut ed = self.repo.edit_tree(base)?;
         for (p, bytes) in ch {
-            match bytes {
-                Some(bytes) => {
-                    let id = self.repo.write_blob(bytes)?;
-                    ed.upsert(&p, EntryKind::Blob, id)?;
-                }
-                None => {
-                    ed.remove(&p)?;
-                }
-            }
+            let id = self.repo.write_blob(bytes)?;
+            ed.upsert(&p, EntryKind::Blob, id)?;
         }
         Ok(ed.write()?.detach())
     }
@@ -268,14 +256,6 @@ impl Snap<'_> {
         };
         self.cache.borrow_mut().insert(path.into(), b.clone());
         Ok(b)
-    }
-
-    /// The entries of the tree at `dir` by name, in order; none if absent.
-    pub fn names(&self, dir: &str) -> Result<Vec<(String, ObjectId)>> {
-        let Some(id) = self.entry(dir)? else {
-            return Ok(Vec::new());
-        };
-        self.named(id)
     }
 
     fn named(&self, tree: ObjectId) -> Result<Vec<(String, ObjectId)>> {

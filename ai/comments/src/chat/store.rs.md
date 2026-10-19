@@ -1,43 +1,42 @@
 # chat/store.rs
 
-Design: `ai/research/20261014T002322---chat-design.md` (Threads and sessions, Data model, Roll-up keys, Storage). Git plumbing: `src/git.rs` (git.rs.md), shared with `ai memory`.
+Design: `ai/research/20261014T002322---chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; JSON Lines files: `src/jsonl.rs`.
 
 Where
-- One ref per thread, `refs/ai/chat/<name>`, in the repository found from a directory (`gix::discover`). Refs other than `HEAD` live in the common git dir, so every worktree of a repository sees the same threads; nothing pushes them unless asked. The committer is the user's git identity, else `ai chat <ai@localhost>`.
-- Names: letters, digits, `-`, `_`, starting with a letter or digit: a safe ref component and lock file name. Harness, session and agent ids become tree path names: letters, digits, `.`, `_`, `-`, not starting with `.` (record.rs, `check_id`).
-- Compactor lock per thread: `<common git dir>/ai/chat/<name>.lock` (`file::try_lock`), outside `refs/` so git never mistakes it for a ref lock. The compactor's log beside it, `<name>.log` (`log_path`; both make the directory).
+- The store of a repository is `<common git dir>/ai/chat/`, found from a directory (`gix::discover`), so every worktree of a repository sees the same threads. Git never reads it: nothing is committed or pushed.
+- Thread names: letters, digits, `-`, `_`, starting with a letter or digit: a safe directory and lock file name. Harness, session and agent ids become path names: letters, digits, `.`, `_`, `-`, not starting with `.` (record.rs, `check_id`).
 
-Layout of a thread's tree (format 2)
-- `format`: `2`, written by the first commit (`Ref::mutate`). Newer formats are refused before writes. The CLI detects v1 threads and requests terminal confirmation before importing them.
-- `index/<fan s>`: JSON array of `Head` records for items `[256s, 256s+256)`. Positions and embedded sequence numbers agree; parents name earlier items.
-- `items/<fan i>`: a serde JSON tagged item kind and its content.
-- `raw/<fan i>`: a recognised item's source line after text decoding, without its line ending. Several items from one entry share a blob.
-- `sources/<harness>/<session>/<relative path>`: complete original main transcript and companion session files, with their original bytes. Changed files replace their current blobs; missing files retain their last captured blobs. Git parents retain earlier versions.
-- `sessions/<harness>/<session>`: a binding (record.rs).
-- `agents/<harness>/<agent>/`: a subagent: `agent` (type, description, `call`: the sequence number of the Agent tool call that started it) and its own `index/`, `items/`, `raw/`, numbered from 0. Its roots have no parent; `call` links it to the main tree.
-- `lines/<level>/<fan last>`: a summary line keyed by level and the last item it covers (record.rs `Line`).
-- `<fan n>` = `{n>>8:04x}/{n&255:02x}` (git.rs `fan_path`).
+Layout (format 3)
+- `format`: `3`, written before the first write. `Chat::find` refuses another format, so a newer store is refused before any read or write.
+- `sessions.jsonl`: every session's attachment changes (`Event`), appended. The last one per harness and session is the one owner lookup (`Chat::owner`): a session is attached to at most one thread by construction, and finding it reads no thread.
+- `threads/<name>/`: one thread; it exists once something is attached to it.
+  - `items.jsonl`: the main tree, one `Row` per item; its position is its sequence number.
+  - `sessions.jsonl`: each session's branch here (`Track`: transcript, graft, tip), appended when it changes; the last per session holds.
+  - `agents.jsonl`: subagent records (`Agent`), appended when they change; the last per harness and agent holds. `agents/<harness>/<agent>.jsonl`: the subagent's own rows, numbered from 0; its roots have no parent and `call` links it to the main tree.
+  - `lines.jsonl`: summary line operations (`LineOp`), folded in order.
+  - `sources/<harness>/<session>/<relative path>`: the session's original files, byte for byte.
+- Locks, beside the threads: `sessions/<harness>/<session>.lock` (one session's attach, sync and detach), `sessions.lock` (appends to `sessions.jsonl`), `<name>.write.lock` (a thread's writers), `<name>.lock` (its compactor) and its log `<name>.log`.
 
-Why this split
-- Sync needs source identity and parents for deduplication; the index supplies both without fetching variable-size content. An appended item never rewrites an older one.
-- `heads` reads structure; `items`/`tree` read content for the roll-up and view. Sequence lengths are checked against the index before content is returned.
-- Subagents get their own numbering so the main tree's positions stay its sequence numbers: `Snapshot::tree` is `model::Tree` over the main items, and a subagent's items never show as a branch or tip of the conversation.
-- Lines are one blob each: written once, never rewritten, few per turn.
+Writing
+- Every file but the sources is append-only, so any earlier state of a thread is a prefix of its files. A `Mark` is the lengths of a thread's `items`, `lines` and `sessions` files; `snapshot_at` reads those prefixes (the view's pages, the summariser's change check).
+- A crash can leave an incomplete last line: readers stop at the last newline, and the next writer truncates it under its lock before appending (`jsonl::append`). No fsync: everything but the lines is derived from the transcripts, and a lost line is built again.
+- Writers hold the thread's writer lock and read the files again under it. Order within one write: sources, subagent rows, main rows, agent records, then the session's track. A record is written after the items it names, so a crash between them leaves items no record names yet, which the next sync's dedupe keeps.
+- Sources: a file that extends its archived copy gets the new bytes appended (transcripts only grow); any other change rewrites it. A path that changed between file and directory replaces the entry standing in the way. Missing live files keep their last copy. Earlier versions of a rewritten file are not kept.
+
+Reading
+- A `Snapshot` holds the bytes of the thread's `items`, `lines` and `sessions` files and the store's `sessions.jsonl` as read at one moment, and decodes on demand. Subagent files are read live.
+- Every read checks what it decodes: positions equal sequence numbers and parents are earlier (`check_head`); tips, grafts, calls and line keys lie within the items. Corrupt data is an error naming the thread and the record, never a panic.
+- `Binding` joins a `Track` with the session's attachment changes: attached at its last attachment to this thread, detached at the change after it. A track with no attachment to this thread yet is not a binding.
 
 Items
 - Append-only. An item's sequence number is its position; its parent is an earlier number, so the tree has no cycles and `model::Tree` rebuilt from `items` gives back the stored links (each stored item's `parent` is the source id of its stored parent).
 - Dedupe: by exact harness and entry id, not session: Claude Code copies entries under a new session id when it forks, so a fork attached to the thread adds only its new entries, hung on the copies already there.
-- `ingest`: every item of the transcript the sequence lacks, in transcript order; its parent is its source parent's number, and a root (or an unknown parent) hangs on the binding's `graft`. The adapter gives a longer file the same items plus new ones (claude.rs.md), so re-reading the whole file and keeping the unknown entries is the whole sync. `tip` moves to the item of the transcript's last entry.
+- `ingest`: every item of the transcript the sequence lacks, in transcript order; its parent is its source parent's number, and a root (or an unknown parent) hangs on the track's `graft`. The adapter gives a longer file the same items plus new ones (claude.rs.md), so re-reading the whole file and keeping the unknown entries is the whole sync. `tip` moves to the item of the transcript's last entry.
 - Subagents: each `Subagent` from the adapter goes to its own sequence, deduped the same way; `call` is found by the Agent tool call id among the session's items. A previously resolved call survives observations that cannot resolve it, including a missing main transcript.
 
 Lines
-- `put_line`: first write wins and returns the stored line; a key past the last item is refused. Kind (`chunk`, `turn`, `node`) and who wrote it (`memory::Who`: agent, model, session) are stored with the text; the level numbering is the roll-up's (rollup.rs.md).
-- `put_lines`: the same for many lines in one commit (`line <key>` for one, `<n> lines` for more): the compactor writes each round of free lines at once, so a first summariser over a long history does not make a commit per short turn.
-- `all_lines`: every line by key, one walk per level directory; the compactor reads it once per pass.
+- `put_line`/`put_lines`: first write per key wins and the stored line comes back; a key past the last item is refused. Kind (`chunk`, `turn`, `node`) and who wrote it (`memory::Who`: agent, model, session) are stored with the text; the level numbering is the roll-up's (rollup.rs.md). The compactor writes each round of free lines in one append.
+- `drop_lines` appends `clear`, `drop_keys` a `drop` of the keys built (`summarise --rebuild`, `summarise <id>`).
 
 Queries
-- `Chat::list`: per thread its newest item (harness, session, time) and tips from the index; its turns (turns on the newest branch, from the tree) and its sessions, each with the time of its newest item (else of its attaching), newest first. `Chat::holds(dir)`: `dir` is in this repository (gix discover from it reaches the same canonical common git dir). `Thread::drop_lines`: removes the `lines` tree in one commit (`Changes::remove`), for `summarise --rebuild`. `Snapshot::tree` and `model::Tree::path`/`branch` give the item tree and the path to a tip; `Snapshot::tip(harness, session)` the newest tip of a session; `Snapshot::line`/`lines` lines by key and by level.
-- `Thread::snapshot_at`: the thread as of one of its commits (`Snapshot::as_ref().commit()`), so the parts of a paged view all read one state.
-- A `Snapshot` borrows its `Thread`: bind the thread first (`let t = chat.thread(name)?; let s = t.snapshot()?;`).
-
-Source capture reads complete session files on each sync; no source checkpoint or parser state is kept.
+- `Chat::list`: per thread its newest item (harness, session, time) and tips; its turns (turns on the newest branch, from the tree) and its sessions, each with the time of its newest item (else of its attaching), newest first. `Chat::holds(dir)`: `dir` is in this repository (gix discover from it reaches the same canonical common git dir). `Snapshot::tree` and `model::Tree::path`/`branch` give the item tree and the path to a tip; `Snapshot::tip(harness, session)` the newest tip of a session; `Snapshot::line`/`lines` lines by key and by level.

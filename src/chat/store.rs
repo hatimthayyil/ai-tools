@@ -1,39 +1,39 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fs::{self, File},
+    fmt,
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
     ops::Range,
     path::{Path, PathBuf},
+    str::FromStr,
     time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
-use gix::ObjectId;
 use jiff::Timestamp;
+use serde::Serialize;
 
 use crate::{
     chat::{
         claude::Subagent,
         model::{Item, Kind, SourceId, Tree, turns},
-        record::{Agent, Binding, Head, Key, Line, LineKind, check_id, decode, encode, item},
+        record::{
+            Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Row, State, Track, check_id,
+        },
     },
     file::{self, AtPath},
-    git::{Changes, Ref, Snap, fan_path},
+    jsonl,
     memory::Who,
 };
 
-pub const ME: &str = "ai chat";
-/// Where the threads' refs live: `refs/ai/chat/<name>`.
-pub const REFS: &str = "refs/ai/chat/";
-/// The thread format this ai reads and writes.
-pub const FORMAT: u32 = 2;
-const SEG: u64 = 256;
-const INDEX: &str = "index";
-const ITEMS: &str = "items";
-const RAW: &str = "raw";
-const SESSIONS: &str = "sessions";
-const AGENTS: &str = "agents";
-const AGENT: &str = "agent";
-const LINES: &str = "lines";
+/// The chat store format this ai reads and writes.
+pub const FORMAT: u32 = 3;
+const THREADS: &str = "threads";
+const ITEMS: &str = "items.jsonl";
+const LINES: &str = "lines.jsonl";
+const SESSIONS: &str = "sessions.jsonl";
+const AGENTS: &str = "agents.jsonl";
+const SOURCES: &str = "sources";
 
 /// `name` if it names a thread: letters, digits, `-` and `_`, starting with a letter or digit.
 pub fn check_name(name: &str) -> Result<&str> {
@@ -48,37 +48,6 @@ pub fn check_name(name: &str) -> Result<&str> {
         bail!("'{name}' is not a thread name: letters, digits, '-' and '_'.");
     }
     Ok(name)
-}
-
-fn binding_path(harness: &str, session: &str) -> Result<String> {
-    let (h, s) = (check_id(harness, "harness")?, check_id(session, "session")?);
-    Ok(format!("{SESSIONS}/{h}/{s}"))
-}
-
-pub(super) fn put_binding(ch: &mut Changes, b: &Binding) -> Result<()> {
-    ch.put(binding_path(&b.harness, &b.session)?, encode(b)?);
-    Ok(())
-}
-
-/// Where a subagent's items live; the main tree's are at the root.
-fn agent_dir(harness: &str, agent: &str) -> Result<String> {
-    let (h, a) = (check_id(harness, "harness")?, check_id(agent, "agent")?);
-    Ok(format!("{AGENTS}/{h}/{a}/"))
-}
-
-fn line_path(key: Key) -> String {
-    fan_path(&format!("{LINES}/{}", key.level), key.last)
-}
-
-fn index_seg(b: &[u8]) -> Result<Vec<Head>> {
-    if b.is_empty() {
-        return Ok(Vec::new());
-    }
-    let heads: Vec<Head> = decode(b).context("An index segment is corrupt.")?;
-    if heads.len() > SEG as usize {
-        bail!("An index segment is corrupt: too many items.");
-    }
-    Ok(heads)
 }
 
 /// The items nothing follows, in order.
@@ -134,60 +103,157 @@ pub struct ThreadInfo {
     pub sessions: Vec<(Binding, Timestamp)>,
 }
 
+/// A state of a thread: the lengths of its item, line and session files then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    items: u64,
+    lines: u64,
+    sessions: u64,
+}
+
+impl fmt::Display for Mark {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.items, self.lines, self.sessions)
+    }
+}
+
+impl FromStr for Mark {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Mark> {
+        let n: Vec<u64> = s
+            .split('.')
+            .map(str::parse)
+            .collect::<Result<Vec<u64>, _>>()
+            .ok()
+            .filter(|n| n.len() == 3)
+            .with_context(|| format!("'{s}' is not a thread state. Copy it as printed."))?;
+        Ok(Mark {
+            items: n[0],
+            lines: n[1],
+            sessions: n[2],
+        })
+    }
+}
+
+/// Whether `v`, read from a `format` file, is this ai's chat store format.
+fn readable(v: &[u8]) -> Result<()> {
+    let v: u32 = std::str::from_utf8(v)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .context("The chat store's format file is corrupt.")?;
+    match v {
+        FORMAT => Ok(()),
+        v if v > FORMAT => {
+            bail!("This chat store is format {v}; this ai reads up to {FORMAT}. Upgrade ai.")
+        }
+        v => bail!("This chat store is format {v}, which this ai does not read."),
+    }
+}
+
 /// The threads of one git repository, in its common git dir, so its worktrees share them.
 pub struct Chat {
     repo: gix::Repository,
+    root: PathBuf,
 }
 
 impl Chat {
-    /// The threads of the repository at or above `dir`; `None` outside one.
+    /// The threads of the repository at or above `dir`; `None` outside one. A store of
+    /// another format is refused.
     pub fn find(dir: &Path) -> Result<Option<Chat>> {
-        let Ok(mut repo) = gix::discover(dir) else {
+        let Ok(repo) = gix::discover(dir) else {
             return Ok(None);
         };
-        repo.committer_or_set_fallback(ME, "ai@localhost")?;
-        Ok(Some(Chat { repo }))
+        let root = repo.common_dir().join("ai/chat");
+        let format = root.join("format");
+        match fs::read(&format) {
+            Ok(v) => readable(&v)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).at(&format),
+        }
+        Ok(Some(Chat { repo, root }))
     }
 
     pub(super) fn repo(&self) -> &gix::Repository {
         &self.repo
     }
 
+    /// Makes the store's directory and format file before its first write.
+    fn ensure(root: &Path) -> Result<()> {
+        fs::create_dir_all(root).at(root)?;
+        let p = root.join("format");
+        match OpenOptions::new().write(true).create_new(true).open(&p) {
+            Ok(mut f) => f.write_all(format!("{FORMAT}\n").as_bytes()).at(&p),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e).at(&p),
+        }
+    }
+
     pub(super) fn session_lock(&self, harness: &str, session: &str) -> Result<File> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
-        let dir = self
-            .repo
-            .common_dir()
-            .join("ai/chat/sessions")
-            .join(harness);
+        let dir = self.root.join("sessions").join(harness);
         fs::create_dir_all(&dir).at(&dir)?;
         file::lock(&dir.join(format!("{session}.lock")))
+    }
+
+    /// The attachment changes of every session, in order.
+    fn events(&self) -> Result<Vec<Event>> {
+        let p = self.root.join(SESSIONS);
+        jsonl::decode_all(&jsonl::read(&p)?)
+            .with_context(|| format!("The chat sessions file is corrupt: {}", file::pretty(&p)))
+    }
+
+    /// The thread `session` is attached to, from the last change of its attachment.
+    pub(super) fn owner(&self, harness: &str, session: &str) -> Result<Option<String>> {
+        let last = self
+            .events()?
+            .into_iter()
+            .rfind(|e| e.harness == harness && e.session == session);
+        match last.map(|e| e.state) {
+            Some(State::Attached { thread }) => Ok(Some(check_name(&thread)?.into())),
+            _ => Ok(None),
+        }
+    }
+
+    /// Records an attachment change; the caller holds the session's lock.
+    pub(super) fn record(&self, harness: &str, session: &str, state: State) -> Result<()> {
+        Chat::ensure(&self.root)?;
+        let _lock = file::lock(&self.root.join("sessions.lock"))?;
+        let event = Event {
+            harness: harness.into(),
+            session: session.into(),
+            at: Timestamp::now(),
+            state,
+        };
+        jsonl::append(&self.root.join(SESSIONS), &[event])
     }
 
     /// The thread `name`; it exists once something is attached to it.
     pub fn thread(&self, name: &str) -> Result<Thread> {
         check_name(name)?;
         Ok(Thread {
-            git: Ref::new(self.repo.clone(), format!("{REFS}{name}"), "thread", FORMAT),
             name: name.into(),
-            lock: self
-                .repo
-                .common_dir()
-                .join("ai/chat")
-                .join(format!("{name}.lock")),
+            dir: self.root.join(THREADS).join(name),
+            root: self.root.clone(),
         })
     }
 
     /// Every thread, by name.
     pub fn threads(&self) -> Result<Vec<Thread>> {
+        let dir = self.root.join(THREADS);
         let mut names = Vec::new();
-        for r in self.repo.references()?.prefixed(REFS)? {
-            let r = r?;
-            let full = r.name().as_bstr().to_string();
-            if let Some(n) = full.strip_prefix(REFS).filter(|n| check_name(n).is_ok()) {
-                names.push(n.to_string());
+        match fs::read_dir(&dir) {
+            Ok(entries) => {
+                for e in entries {
+                    let e = e.at(&dir)?;
+                    if let Some(n) = e.file_name().to_str().filter(|n| check_name(n).is_ok()) {
+                        names.push(n.to_string());
+                    }
+                }
             }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).at(&dir),
         }
         names.sort();
         names.iter().map(|n| self.thread(n)).collect()
@@ -209,7 +275,8 @@ impl Chat {
                     .bindings()?
                     .into_iter()
                     .map(|b| {
-                        let at = b.tip.map_or(b.attached, |t| heads[t as usize].ts);
+                        let newest = b.tip.and_then(|t| heads.get(t as usize));
+                        let at = newest.map_or(b.attached, |h| h.ts);
                         (b, at)
                     })
                     .collect();
@@ -234,11 +301,11 @@ impl Chat {
     }
 }
 
-/// One thread: a ref `refs/ai/chat/<name>`.
+/// One thread: a directory `threads/<name>` of the store.
 pub struct Thread {
-    git: Ref,
     name: String,
-    lock: PathBuf,
+    dir: PathBuf,
+    root: PathBuf,
 }
 
 impl Thread {
@@ -247,113 +314,103 @@ impl Thread {
     }
 
     pub fn exists(&self) -> Result<bool> {
-        Ok(self.git.head()?.is_some())
+        Ok(self.dir.is_dir())
     }
 
-    pub(super) fn format(&self) -> Result<u32> {
-        let format = self.git.raw(self.git.head()?)?.format()?;
-        self.git.readable(format)?;
-        Ok(format)
+    /// The thread as it is now; empty if it does not exist.
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        Ok(Snapshot {
+            name: self.name.clone(),
+            dir: self.dir.clone(),
+            items: jsonl::read(&self.dir.join(ITEMS))?,
+            lines: jsonl::read(&self.dir.join(LINES))?,
+            tracks: jsonl::read(&self.dir.join(SESSIONS))?,
+            events: jsonl::read(&self.root.join(SESSIONS))?,
+        })
     }
 
-    pub fn upgrade(&self) -> Result<bool> {
-        let (upgraded, _) = self.git.mutate(
-            "upgrade thread to format 2",
-            |commit| self.git.raw(commit),
-            |source| {
-                let format = source.format()?;
-                self.git.readable(format)?;
-                if format == FORMAT {
-                    return Ok((false, Changes::default()));
-                }
-                Ok((true, super::v1::export(source)?))
-            },
-        )?;
-        Ok(upgraded)
-    }
-
-    /// The thread as of its latest commit; empty if it does not exist.
-    pub fn snapshot(&self) -> Result<Snapshot<'_>> {
-        self.at(self.git.head()?)
-    }
-
-    /// The thread as of `commit`, one of its commits.
-    pub fn snapshot_at(&self, commit: ObjectId) -> Result<Snapshot<'_>> {
-        self.at(Some(commit))
-    }
-
-    fn at(&self, commit: Option<ObjectId>) -> Result<Snapshot<'_>> {
-        let git = self.git.raw(commit)?;
-        let format = git.format()?;
-        self.git.readable(format)?;
-        if format < FORMAT {
-            bail!(
-                "This thread snapshot is format {format}; typed historical views require format {FORMAT}. Original v1 snapshots remain available through Git."
-            );
+    /// The thread as it was at `mark`, one of its states.
+    pub fn snapshot_at(&self, mark: Mark) -> Result<Snapshot> {
+        let mut s = self.snapshot()?;
+        for (b, n) in [
+            (&mut s.items, mark.items),
+            (&mut s.lines, mark.lines),
+            (&mut s.tracks, mark.sessions),
+        ] {
+            let n = usize::try_from(n).unwrap_or(usize::MAX);
+            if n > b.len() || (n > 0 && b[n - 1] != b'\n') {
+                bail!("{mark} is not a state of thread {}.", self.name);
+            }
+            b.truncate(n);
         }
-        Ok(Snapshot { git })
+        Ok(s)
     }
 
-    /// Applies `change` to the latest snapshot as one commit, redoing it until the ref update wins.
-    pub(super) fn mutate<R>(
-        &self,
-        msg: &str,
-        change: impl FnMut(&Snapshot) -> Result<(R, Changes)>,
-    ) -> Result<(R, Snapshot<'_>)> {
-        self.git.mutate(msg, |c| self.at(c), change)
+    /// The writers' lock on this thread's files.
+    pub(super) fn writer(&self) -> Result<File> {
+        Chat::ensure(&self.root)?;
+        file::lock(&self.root.join(format!("{}.write.lock", self.name)))
+    }
+
+    fn append<T: Serialize>(&self, file: &str, rows: &[T]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        fs::create_dir_all(&self.dir).at(&self.dir)?;
+        jsonl::append(&self.dir.join(file), rows)
+    }
+
+    /// Records a session's branch; the caller holds the writer's lock.
+    pub(super) fn put_track(&self, t: &Track) -> Result<()> {
+        self.append(SESSIONS, std::slice::from_ref(t))
     }
 
     /// The compactor's lock on this thread; `None` while another process holds it.
     pub fn try_lock(&self) -> Result<Option<File>> {
-        self.dir()?;
-        file::try_lock(&self.lock)
+        Chat::ensure(&self.root)?;
+        file::try_lock(&self.lock_path())
     }
 
     /// The compactor's lock on this thread, waiting for it until `deadline`; `None` if another
     /// process still holds it then.
     pub fn lock_before(&self, deadline: Instant) -> Result<Option<File>> {
-        self.dir()?;
-        file::lock_before(&self.lock, deadline)
+        Chat::ensure(&self.root)?;
+        file::lock_before(&self.lock_path(), deadline)
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        self.root.join(format!("{}.lock", self.name))
     }
 
     /// The compactor's log, beside its lock; its directory is made if absent.
     pub fn log_path(&self) -> Result<PathBuf> {
-        self.dir()?;
-        Ok(self.lock.with_extension("log"))
+        Chat::ensure(&self.root)?;
+        Ok(self.root.join(format!("{}.log", self.name)))
     }
 
-    fn dir(&self) -> Result<()> {
-        let dir = self.lock.parent().expect("a lock in a dir");
-        fs::create_dir_all(dir).at(dir)
-    }
-
-    /// Drops every line, in one commit; how many it dropped.
+    /// Drops every line; how many it dropped.
     pub fn drop_lines(&self) -> Result<usize> {
-        let (n, _) = self.mutate("drop lines", |s| {
-            let n = s.all_lines()?.len();
-            let mut ch = Changes::default();
-            if n > 0 {
-                ch.remove(LINES.into());
-            }
-            Ok((n, ch))
-        })?;
+        let _w = self.writer()?;
+        let n = self.snapshot()?.all_lines()?.len();
+        if n > 0 {
+            self.append(LINES, &[LineOp::Clear])?;
+        }
         Ok(n)
     }
 
-    /// Drops the lines among `keys` that are built, in one commit; how many it dropped.
+    /// Drops the lines among `keys` that are built; how many it dropped.
     pub fn drop_keys(&self, keys: &[Key]) -> Result<usize> {
-        let (n, _) = self.mutate("drop lines", |s| {
-            let mut ch = Changes::default();
-            let mut n = 0;
-            for &k in keys {
-                if s.line(k)?.is_some() {
-                    ch.remove(line_path(k));
-                    n += 1;
-                }
-            }
-            Ok((n, ch))
-        })?;
-        Ok(n)
+        let _w = self.writer()?;
+        let lines = self.snapshot()?.all_lines()?;
+        let keys: Vec<Key> = keys
+            .iter()
+            .copied()
+            .filter(|k| lines.contains_key(k))
+            .collect();
+        if !keys.is_empty() {
+            self.append(LINES, &[LineOp::Drop { keys: keys.clone() }])?;
+        }
+        Ok(keys.len())
     }
 
     /// Writes the line `key` unless it is built; returns the line stored.
@@ -368,140 +425,141 @@ impl Thread {
         Ok(stored.remove(0))
     }
 
-    /// Writes the lines not built yet, in one commit; returns the line stored under each key.
+    /// Writes the lines not built yet; returns the line stored under each key.
     pub fn put_lines(&self, lines: Vec<(Key, Line)>) -> Result<Vec<Line>> {
-        let msg = match &lines[..] {
-            [(key, _)] => format!("line {key}"),
-            _ => format!("{} lines", lines.len()),
-        };
-        let (stored, _) = self.mutate(&msg, |s| {
-            let n = s.len()?;
-            let mut ch = Changes::default();
-            let mut stored = Vec::with_capacity(lines.len());
-            for (key, line) in &lines {
-                if let Some(l) = s.line(*key)? {
-                    stored.push(l);
-                    continue;
-                }
-                if key.last >= n {
-                    bail!("Line {key} is beyond the thread: it holds {n} items.");
-                }
-                ch.put(line_path(*key), encode(line)?);
-                stored.push(line.clone());
+        let _w = self.writer()?;
+        let s = self.snapshot()?;
+        let n = s.len()?;
+        let mut built = s.all_lines()?;
+        let mut ops = Vec::new();
+        let mut stored = Vec::with_capacity(lines.len());
+        for (key, line) in lines {
+            if let Some(l) = built.get(&key) {
+                stored.push(l.clone());
+                continue;
             }
-            Ok((stored, ch))
-        })?;
+            if key.last >= n {
+                bail!("Line {key} is beyond the thread: it holds {n} items.");
+            }
+            built.insert(key, line.clone());
+            stored.push(line.clone());
+            ops.push(LineOp::Put { key, line });
+        }
+        self.append(LINES, &ops)?;
         Ok(stored)
     }
 }
 
-/// A thread as of one commit: every read through it sees the same state.
-pub struct Snapshot<'t> {
-    git: Snap<'t>,
+/// A thread as read at one moment: every read through it sees the same state.
+pub struct Snapshot {
+    name: String,
+    dir: PathBuf,
+    items: Vec<u8>,
+    lines: Vec<u8>,
+    tracks: Vec<u8>,
+    events: Vec<u8>,
 }
 
-impl<'t> AsRef<Snap<'t>> for Snapshot<'t> {
-    fn as_ref(&self) -> &Snap<'t> {
-        &self.git
+fn check_head(thread: &str, what: &str, i: u64, h: &Head) -> Result<()> {
+    if h.seq != i || h.parent.is_some_and(|p| p >= i) {
+        bail!(
+            "Thread {thread}: {what} {i} is corrupt: it is numbered {} with parent {:?}.",
+            h.seq,
+            h.parent
+        );
     }
+    Ok(())
 }
 
-impl Snapshot<'_> {
+/// The records of one item sequence, checked: positions are sequence numbers, parents earlier.
+fn decode_seq<T: serde::de::DeserializeOwned>(
+    thread: &str,
+    what: &str,
+    b: &[u8],
+    head: impl Fn(&T) -> &Head,
+) -> Result<Vec<T>> {
+    jsonl::lines(b)
+        .enumerate()
+        .map(|(i, l)| {
+            let r: T = jsonl::decode(l)
+                .with_context(|| format!("Thread {thread}: {what} {i} is corrupt"))?;
+            check_head(thread, what, i as u64, head(&r))?;
+            Ok(r)
+        })
+        .collect()
+}
+
+fn heads(thread: &str, what: &str, b: &[u8]) -> Result<Vec<Head>> {
+    decode_seq(thread, what, b, |h| h)
+}
+
+/// Items from the rows of one sequence: each parent's source id from its row.
+fn items(thread: &str, what: &str, b: &[u8]) -> Result<Vec<Item>> {
+    let rows: Vec<Row> = decode_seq(thread, what, b, |r: &Row| &r.head)?;
+    let ids: Vec<SourceId> = rows.iter().map(|r| r.head.source()).collect();
+    Ok(rows
+        .into_iter()
+        .map(|r| Item {
+            id: r.head.source(),
+            parent: r.head.parent.map(|p| ids[p as usize].clone()),
+            ts: r.head.ts,
+            kind: r.kind,
+        })
+        .collect())
+}
+
+impl Snapshot {
+    /// The state this snapshot reads.
+    pub fn mark(&self) -> Mark {
+        Mark {
+            items: self.items.len() as u64,
+            lines: self.lines.len() as u64,
+            sessions: self.tracks.len() as u64,
+        }
+    }
+
     /// How many items the main tree holds.
     pub fn len(&self) -> Result<u64> {
-        self.git.count(ITEMS)
+        Ok(jsonl::count(&self.items))
     }
 
     pub fn is_empty(&self) -> Result<bool> {
-        Ok(self.len()? == 0)
+        Ok(self.items.is_empty())
     }
 
     /// The heads of the main tree's items, in order: position is sequence number.
     pub fn heads(&self) -> Result<Vec<Head>> {
-        self.heads_in("")
-    }
-
-    fn heads_in(&self, dir: &str) -> Result<Vec<Head>> {
-        let mut out: Vec<Head> = Vec::new();
-        self.git.walk(&format!("{dir}{INDEX}"), |s, id| {
-            let seg = index_seg(&self.git.fetch(id)?)?;
-            for (k, head) in seg.into_iter().enumerate() {
-                let seq = s * SEG + k as u64;
-                if seq != out.len() as u64 {
-                    bail!("Item {} is missing from the thread.", out.len());
-                }
-                if head.seq != seq || head.parent.is_some_and(|p| p >= seq) {
-                    bail!("Item {seq} is corrupt.");
-                }
-                out.push(head);
-            }
-            Ok(())
-        })?;
-        if self.git.count(&format!("{dir}{ITEMS}"))? != out.len() as u64 {
-            bail!("The thread's index and item sequence have different lengths.");
-        }
-        Ok(out)
+        heads(&self.name, "item", &self.items)
     }
 
     /// The items of the main tree, in order: position is sequence number.
     pub fn items(&self) -> Result<Vec<Item>> {
-        self.items_in("")
-    }
-
-    fn items_in(&self, dir: &str) -> Result<Vec<Item>> {
-        let heads = self.heads_in(dir)?;
-        let blobs = |sub: &str| -> Result<Vec<ObjectId>> {
-            let mut ids = Vec::with_capacity(heads.len());
-            self.git.walk(&format!("{dir}{sub}"), |i, id| {
-                if i != ids.len() as u64 {
-                    bail!("Item {} is missing from the thread.", ids.len());
-                }
-                ids.push(id);
-                Ok(())
-            })?;
-            if ids.len() != heads.len() {
-                bail!("The thread's index and {sub} sequence have different lengths.");
-            }
-            Ok(ids)
-        };
-        let (kinds, raws) = (blobs(ITEMS)?, blobs(RAW)?);
-        heads
-            .iter()
-            .map(|h| {
-                let i = h.seq as usize;
-                let (Some(&k), Some(&r)) = (kinds.get(i), raws.get(i)) else {
-                    bail!("Item {i} is missing from the thread.");
-                };
-                let parent = h.parent.map(|p| heads[p as usize].source());
-                item(h, parent, &self.git.fetch(k)?, &self.git.fetch(r)?)
-                    .with_context(|| format!("Item {i} is corrupt"))
-            })
-            .collect()
+        items(&self.name, "item", &self.items)
     }
 
     /// Item `seq` of the main tree.
     pub fn item(&self, seq: u64) -> Result<Item> {
-        let head = |seq: u64| -> Result<Head> {
-            let seg = index_seg(&self.git.read(&fan_path(INDEX, seq / SEG))?)?;
-            let head = seg
-                .get((seq % SEG) as usize)
+        let row = |seq: u64| -> Result<Row> {
+            let line = jsonl::lines(&self.items)
+                .nth(seq as usize)
                 .with_context(|| format!("No item {seq}."))?;
-            if head.seq != seq || head.parent.is_some_and(|p| p >= seq) {
-                bail!("Item {seq} is corrupt.");
-            }
-            Ok(head.clone())
+            let row: Row = jsonl::decode(line)
+                .with_context(|| format!("Thread {}: item {seq} is corrupt", self.name))?;
+            check_head(&self.name, "item", seq, &row.head)?;
+            Ok(row)
         };
-        let h = head(seq)?;
-        let parent = h.parent.map(|p| head(p).map(|p| p.source())).transpose()?;
-        let blob = |dir: &str| -> Result<Vec<u8>> {
-            let id = self
-                .git
-                .entry(&fan_path(dir, seq))?
-                .with_context(|| format!("Item {seq} is missing from the thread."))?;
-            self.git.fetch(id)
-        };
-        item(&h, parent, &blob(ITEMS)?, &blob(RAW)?)
-            .with_context(|| format!("Item {seq} is corrupt"))
+        let r = row(seq)?;
+        let parent = r
+            .head
+            .parent
+            .map(|p| row(p).map(|p| p.head.source()))
+            .transpose()?;
+        Ok(Item {
+            id: r.head.source(),
+            parent,
+            ts: r.head.ts,
+            kind: r.kind,
+        })
     }
 
     /// The main tree: positions are sequence numbers.
@@ -514,33 +572,85 @@ impl Snapshot<'_> {
         Ok(tips(&self.heads()?))
     }
 
-    /// Every session bound to this thread, attached or not, by harness and session id.
-    pub fn bindings(&self) -> Result<Vec<Binding>> {
-        let mut out = Vec::new();
-        for (harness, _) in self.git.names(SESSIONS)? {
-            for (session, id) in self.git.names(&format!("{SESSIONS}/{harness}"))? {
-                let b: Binding = decode(&self.git.fetch(id)?)
-                    .with_context(|| format!("The binding of {harness} {session} is corrupt"))?;
-                if b.harness != harness || b.session != session {
-                    bail!("The binding of {harness} {session} has a different identity.");
+    /// The newest branch record of each session, by harness and session id; tips and grafts
+    /// are checked against the items.
+    fn tracks(&self) -> Result<BTreeMap<(String, String), Track>> {
+        let n = self.len()?;
+        let mut out = BTreeMap::new();
+        for (i, l) in jsonl::lines(&self.tracks).enumerate() {
+            let t: Track = jsonl::decode(l).with_context(|| {
+                format!("Thread {}: session record {} is corrupt", self.name, i + 1)
+            })?;
+            for (what, seq) in [("tip", t.tip), ("graft", t.graft)] {
+                if let Some(seq) = seq.filter(|&s| s >= n) {
+                    bail!(
+                        "Thread {}: session record {} is corrupt: {} {} has {what} {seq}, beyond its {n} items.",
+                        self.name,
+                        i + 1,
+                        t.harness,
+                        t.session
+                    );
                 }
-                out.push(b);
             }
+            out.insert((t.harness.clone(), t.session.clone()), t);
         }
         Ok(out)
     }
 
+    /// Session `session`'s branch record in this thread, attached or not.
+    pub(super) fn track(&self, harness: &str, session: &str) -> Result<Option<Track>> {
+        Ok(self.tracks()?.remove(&(harness.into(), session.into())))
+    }
+
+    fn events(&self) -> Result<Vec<Event>> {
+        jsonl::decode_all(&self.events).context("The chat sessions file is corrupt")
+    }
+
+    /// The binding of `t`, from its session's attachment changes `events`: when it was last
+    /// attached here, and detached if a change followed. `None` until an attachment to this
+    /// thread is recorded.
+    fn bind(&self, t: Track, events: &[&Event]) -> Option<Binding> {
+        let i = events.iter().rposition(
+            |e| matches!(&e.state, State::Attached { thread } if *thread == self.name),
+        )?;
+        Some(Binding {
+            attached: events[i].at,
+            detached: events.get(i + 1).map(|e| e.at),
+            harness: t.harness,
+            session: t.session,
+            transcript: t.transcript,
+            graft: t.graft,
+            tip: t.tip,
+        })
+    }
+
+    /// Every session bound to this thread, attached or not, by harness and session id.
+    pub fn bindings(&self) -> Result<Vec<Binding>> {
+        let events = self.events()?;
+        let mut by: HashMap<(&str, &str), Vec<&Event>> = HashMap::new();
+        for e in &events {
+            by.entry((&e.harness, &e.session)).or_default().push(e);
+        }
+        Ok(self
+            .tracks()?
+            .into_values()
+            .filter_map(|t| {
+                let events = by.get(&(t.harness.as_str(), t.session.as_str()))?.clone();
+                self.bind(t, &events)
+            })
+            .collect())
+    }
+
     pub fn binding(&self, harness: &str, session: &str) -> Result<Option<Binding>> {
-        let b = self.git.read(&binding_path(harness, session)?)?;
-        if b.is_empty() {
+        let Some(t) = self.track(harness, session)? else {
             return Ok(None);
-        }
-        let binding: Binding =
-            decode(&b).with_context(|| format!("The binding of {harness} {session} is corrupt"))?;
-        if binding.harness != harness || binding.session != session {
-            bail!("The binding of {harness} {session} has a different identity.");
-        }
-        Ok(Some(binding))
+        };
+        let events = self.events()?;
+        let mine: Vec<&Event> = events
+            .iter()
+            .filter(|e| e.harness == harness && e.session == session)
+            .collect();
+        Ok(self.bind(t, &mine))
     }
 
     /// The newest tip of a session: the item of its transcript's newest entry.
@@ -548,106 +658,118 @@ impl Snapshot<'_> {
         Ok(self.binding(harness, session)?.and_then(|b| b.tip))
     }
 
-    /// Every subagent, by harness and agent id.
+    /// Every subagent, by harness and agent id, as its newest record holds it.
     pub fn agents(&self) -> Result<Vec<Agent>> {
-        let mut out = Vec::new();
-        for (harness, _) in self.git.names(AGENTS)? {
-            for (agent, _) in self.git.names(&format!("{AGENTS}/{harness}"))? {
-                out.extend(self.agent(&harness, &agent)?);
+        let n = self.len()?;
+        let mut out: BTreeMap<(String, String), Agent> = BTreeMap::new();
+        let b = jsonl::read(&self.dir.join(AGENTS))?;
+        for (i, l) in jsonl::lines(&b).enumerate() {
+            let a: Agent = jsonl::decode(l).with_context(|| {
+                format!("Thread {}: agent record {} is corrupt", self.name, i + 1)
+            })?;
+            check_id(&a.harness, "harness")?;
+            check_id(&a.agent, "agent")?;
+            if let Some(call) = a.call.filter(|&c| c >= n) {
+                bail!(
+                    "Thread {}: agent record {} is corrupt: agent {} has call {call}, beyond its {n} items.",
+                    self.name,
+                    i + 1,
+                    a.agent
+                );
             }
+            out.insert((a.harness.clone(), a.agent.clone()), a);
         }
-        Ok(out)
+        Ok(out.into_values().collect())
     }
 
     pub fn agent(&self, harness: &str, agent: &str) -> Result<Option<Agent>> {
-        let b = self
-            .git
-            .read(&format!("{}{AGENT}", agent_dir(harness, agent)?))?;
-        if b.is_empty() {
-            return Ok(None);
-        }
-        let record: Agent =
-            decode(&b).with_context(|| format!("The record of agent {agent} is corrupt"))?;
-        if record.harness != harness || record.agent != agent {
-            bail!("The record of agent {agent} has a different identity.");
-        }
-        Ok(Some(record))
+        Ok(self
+            .agents()?
+            .into_iter()
+            .find(|a| a.harness == harness && a.agent == agent))
+    }
+
+    fn agent_path(&self, harness: &str, agent: &str) -> Result<PathBuf> {
+        let (h, a) = (check_id(harness, "harness")?, check_id(agent, "agent")?);
+        Ok(self.dir.join("agents").join(h).join(format!("{a}.jsonl")))
     }
 
     /// A subagent's items, in order; its roots follow its [`Agent::call`].
     pub fn agent_items(&self, harness: &str, agent: &str) -> Result<Vec<Item>> {
-        self.items_in(&agent_dir(harness, agent)?)
+        let b = jsonl::read(&self.agent_path(harness, agent)?)?;
+        items(&self.name, &format!("agent {agent} item"), &b)
     }
 
     pub fn line(&self, key: Key) -> Result<Option<Line>> {
-        let b = self.git.read(&line_path(key))?;
-        if b.is_empty() {
-            return Ok(None);
-        }
-        decode(&b)
-            .map(Some)
-            .with_context(|| format!("Line {key} is corrupt"))
+        Ok(self.all_lines()?.remove(&key))
     }
 
     /// Every line, by key.
     pub fn all_lines(&self) -> Result<BTreeMap<Key, Line>> {
+        let n = self.len()?;
         let mut out = BTreeMap::new();
-        for (name, _) in self.git.names(LINES)? {
-            let level = name
-                .parse()
-                .with_context(|| format!("A line level is misnamed: {name}."))?;
-            for (last, line) in self.lines(level)? {
-                out.insert(Key { level, last }, line);
+        for (i, l) in jsonl::lines(&self.lines).enumerate() {
+            let op: LineOp = jsonl::decode(l).with_context(|| {
+                format!("Thread {}: line record {} is corrupt", self.name, i + 1)
+            })?;
+            match op {
+                LineOp::Put { key, line } => {
+                    if key.last >= n {
+                        bail!(
+                            "Thread {}: line record {} is corrupt: line {key} is beyond its {n} items.",
+                            self.name,
+                            i + 1
+                        );
+                    }
+                    out.entry(key).or_insert(line);
+                }
+                LineOp::Drop { keys } => {
+                    for k in keys {
+                        out.remove(&k);
+                    }
+                }
+                LineOp::Clear => out.clear(),
             }
         }
         Ok(out)
-    }
-
-    /// The commit this snapshot reads; none for a thread that does not exist.
-    pub fn commit(&self) -> Option<ObjectId> {
-        self.git.commit()
     }
 
     /// Every line of `level`, by the last item it covers.
     pub fn lines(&self, level: u32) -> Result<Vec<(u64, Line)>> {
-        let mut out = Vec::new();
-        self.git.walk(&format!("{LINES}/{level}"), |last, id| {
-            let line = decode(&self.git.fetch(id)?)
-                .with_context(|| format!("Line {} is corrupt", Key { level, last }))?;
-            out.push((last, line));
-            Ok(())
-        })?;
-        Ok(out)
+        Ok(self
+            .all_lines()?
+            .into_iter()
+            .filter(|(k, _)| k.level == level)
+            .map(|(k, l)| (k.last, l))
+            .collect())
     }
 
-    /// Adds the items of `t` this thread lacks, for session `b`: a root hangs on `b.graft`,
-    /// `b.tip` moves to its newest entry. Entries are known by harness and entry id.
-    pub(super) fn ingest(
-        &self,
-        b: &mut Binding,
-        t: &Transcript,
-        ch: &mut Changes,
-    ) -> Result<Added> {
+    /// Adds the items of `t` this thread lacks, for session `b`, and archives its files: a
+    /// root hangs on `b.graft`, `b.tip` moves to its newest entry. Entries are known by
+    /// harness and entry id. The caller holds `thread`'s writer lock and read this snapshot
+    /// under it.
+    pub(super) fn ingest(&self, thread: &Thread, b: &mut Track, t: &Transcript) -> Result<Added> {
+        let sources = self
+            .dir
+            .join(SOURCES)
+            .join(check_id(&b.harness, "harness")?)
+            .join(check_id(&b.session, "session")?);
         for (relative, bytes) in &t.files {
-            let relative = relative
-                .to_str()
-                .context("A source file name is not UTF-8.")?;
-            let path = format!("sources/{}/{}/{relative}", b.harness, b.session);
-            if self.git.entry(&path)?.is_none() || &*self.git.read(&path)? != bytes {
-                ch.put(path, bytes.clone());
-            }
+            archive(&sources, relative, bytes)?;
         }
-        let mut main = Append::new(self, String::new())?;
-        let first = main.len;
+        let mut main = Append::new(self.heads()?);
+        let first = main.len();
         for item in &t.items {
             if main.seq(&item.id).is_none() {
                 let parent = item.parent.as_ref().and_then(|p| main.seq(p));
-                main.push(item, parent.or(b.graft), ch)?;
+                main.push(item, parent.or(b.graft));
             }
         }
         if let Some(last) = t.items.last() {
             b.tip = main.seq(&last.id);
         }
+        let mut agents = self.agents()?;
+        let mut records = Vec::new();
         let mut agent_items = 0;
         for sub in &t.agents {
             let call = sub
@@ -659,72 +781,108 @@ impl Snapshot<'_> {
                         .find(|i| matches!(&i.kind, Kind::ToolCall { id, .. } if id == c))
                 })
                 .and_then(|i| main.seq(&i.id));
-            agent_items += self.ingest_agent(&b.harness, sub, call, ch)?;
+            let path = self.agent_path(&b.harness, &sub.agent)?;
+            let what = format!("agent {} item", sub.agent);
+            let mut items = Append::new(heads(&self.name, &what, &jsonl::read(&path)?)?);
+            for item in &sub.items {
+                if items.seq(&item.id).is_none() {
+                    let parent = item.parent.as_ref().and_then(|p| items.seq(p));
+                    items.push(item, parent);
+                }
+            }
+            agent_items += items.rows.len() as u64;
+            if !items.rows.is_empty() {
+                let dir = path.parent().expect("an agent file in a dir");
+                fs::create_dir_all(dir).at(dir)?;
+                jsonl::append(&path, &items.rows)?;
+            }
+            let i = agents
+                .iter()
+                .position(|a| a.harness == b.harness && a.agent == sub.agent);
+            let agent = Agent {
+                harness: b.harness.clone(),
+                agent: sub.agent.clone(),
+                agent_type: sub.agent_type.clone(),
+                description: sub.description.clone(),
+                call: call.or_else(|| i.and_then(|i| agents[i].call)),
+            };
+            if i.map(|i| &agents[i]) != Some(&agent) {
+                match i {
+                    Some(i) => agents[i] = agent.clone(),
+                    None => agents.push(agent.clone()),
+                }
+                records.push(agent);
+            }
         }
-        let added = first..main.len;
-        main.finish(ch)?;
+        let added = first..main.len();
+        thread.append(ITEMS, &main.rows)?;
+        thread.append(AGENTS, &records)?;
         Ok(Added {
             items: added,
             agent_items,
         })
     }
+}
 
-    fn ingest_agent(
-        &self,
-        harness: &str,
-        sub: &Subagent,
-        call: Option<u64>,
-        ch: &mut Changes,
-    ) -> Result<u64> {
-        let dir = agent_dir(harness, &sub.agent)?;
-        let mut items = Append::new(self, dir.clone())?;
-        let first = items.len;
-        for item in &sub.items {
-            if items.seq(&item.id).is_none() {
-                let parent = item.parent.as_ref().and_then(|p| items.seq(p));
-                items.push(item, parent, ch)?;
+/// Copies `bytes` to `relative` under `root`: appended when they extend the copy there, else
+/// written whole, replacing a file or directory standing in the way.
+fn archive(root: &Path, relative: &Path, bytes: &[u8]) -> Result<()> {
+    let p = root.join(relative);
+    let mut up: Vec<&Path> = relative
+        .ancestors()
+        .skip(1)
+        .filter(|a| !a.as_os_str().is_empty())
+        .collect();
+    up.reverse();
+    for a in up {
+        let a = root.join(a);
+        if fs::symlink_metadata(&a).is_ok_and(|m| !m.is_dir()) {
+            fs::remove_file(&a).at(&a)?;
+        }
+    }
+    match fs::symlink_metadata(&p) {
+        Ok(m) if m.is_dir() => fs::remove_dir_all(&p).at(&p)?,
+        Ok(_) => {
+            let old = fs::read(&p).at(&p)?;
+            if old == bytes {
+                return Ok(());
+            }
+            if let Some(new) = bytes.strip_prefix(old.as_slice()) {
+                return OpenOptions::new()
+                    .append(true)
+                    .open(&p)
+                    .and_then(|mut f| f.write_all(new))
+                    .at(&p);
             }
         }
-        let previous = self.agent(harness, &sub.agent)?;
-        let agent = Agent {
-            harness: harness.into(),
-            agent: sub.agent.clone(),
-            agent_type: sub.agent_type.clone(),
-            description: sub.description.clone(),
-            call: call.or_else(|| previous.as_ref().and_then(|agent| agent.call)),
-        };
-        if previous.as_ref() != Some(&agent) {
-            ch.put(format!("{dir}{AGENT}"), encode(&agent)?);
-        }
-        let added = items.len - first;
-        items.finish(ch)?;
-        Ok(added)
+        Err(_) => {}
     }
+    let dir = p.parent().expect("a source file in a dir");
+    fs::create_dir_all(dir).at(dir)?;
+    fs::write(&p, bytes).at(&p)
 }
 
-/// New items of one item sequence (the main tree's, or a subagent's) in one mutation.
-struct Append<'a, 't> {
-    snap: &'a Snapshot<'t>,
-    dir: String,
-    len: u64,
+/// New rows of one item sequence (the main tree's, or a subagent's).
+struct Append {
+    held: u64,
     keys: HashMap<(String, String), u64>,
-    segs: BTreeMap<u64, Vec<Head>>,
+    rows: Vec<Row>,
 }
 
-impl<'a, 't> Append<'a, 't> {
-    fn new(snap: &'a Snapshot<'t>, dir: String) -> Result<Self> {
-        let heads = snap.heads_in(&dir)?;
-        let keys = heads
-            .iter()
-            .map(|h| ((h.harness.clone(), h.entry.clone()), h.seq))
-            .collect();
-        Ok(Append {
-            snap,
-            len: heads.len() as u64,
-            dir,
-            keys,
-            segs: BTreeMap::new(),
-        })
+impl Append {
+    fn new(heads: Vec<Head>) -> Append {
+        Append {
+            held: heads.len() as u64,
+            keys: heads
+                .into_iter()
+                .map(|h| ((h.harness, h.entry), h.seq))
+                .collect(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn len(&self) -> u64 {
+        self.held + self.rows.len() as u64
     }
 
     /// The number of the item from `id`'s entry, if the sequence holds it.
@@ -732,48 +890,19 @@ impl<'a, 't> Append<'a, 't> {
         self.keys.get(&key(id)).copied()
     }
 
-    fn push(&mut self, item: &Item, parent: Option<u64>, ch: &mut Changes) -> Result<()> {
-        let seq = self.len;
-        let s = seq / SEG;
-        let index = format!("{}{INDEX}", self.dir);
-        if !self.segs.contains_key(&s) {
-            let seg = index_seg(&self.snap.git.read(&fan_path(&index, s))?)?;
-            self.segs.insert(s, seg);
-        }
-        let seg = self.segs.get_mut(&s).expect("inserted above");
-        if seg.len() as u64 != seq % SEG {
-            bail!(
-                "Item {seq} is corrupt: its index segment holds {} items.",
-                seg.len()
-            );
-        }
-        let head = Head {
-            seq,
-            parent,
-            harness: item.id.harness.clone(),
-            session: item.id.session.clone(),
-            entry: item.id.entry.clone(),
-            ts: item.ts,
-        };
-        seg.push(head);
-        ch.put(
-            fan_path(&format!("{}{ITEMS}", self.dir), seq),
-            encode(&item.kind)?,
-        );
-        ch.put(
-            fan_path(&format!("{}{RAW}", self.dir), seq),
-            item.raw.clone().into_bytes(),
-        );
+    fn push(&mut self, item: &Item, parent: Option<u64>) {
+        let seq = self.len();
+        self.rows.push(Row {
+            head: Head {
+                seq,
+                parent,
+                harness: item.id.harness.clone(),
+                session: item.id.session.clone(),
+                entry: item.id.entry.clone(),
+                ts: item.ts,
+            },
+            kind: item.kind.clone(),
+        });
         self.keys.insert(key(&item.id), seq);
-        self.len += 1;
-        Ok(())
-    }
-
-    fn finish(self, ch: &mut Changes) -> Result<()> {
-        let index = format!("{}{INDEX}", self.dir);
-        for (s, seg) in self.segs {
-            ch.put(fan_path(&index, s), encode(&seg)?);
-        }
-        Ok(())
     }
 }

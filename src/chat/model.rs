@@ -64,8 +64,6 @@ pub struct Item {
     pub parent: Option<SourceId>,
     pub ts: Timestamp,
     pub kind: Kind,
-    /// The source line, verbatim.
-    pub raw: String,
 }
 
 /// Where an item sits on the branch from its root: its turn, numbered from 0, and its number
@@ -231,7 +229,6 @@ mod tests {
                     },
                     _ => Kind::Marker(Marker::Compaction),
                 },
-                raw: String::new(),
             })
             .collect()
     }

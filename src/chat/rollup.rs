@@ -425,7 +425,6 @@ mod tests {
             parent: None,
             ts: Timestamp::UNIX_EPOCH,
             kind,
-            raw: String::new(),
         }
     }
 

@@ -30,20 +30,20 @@
 - `leaf`: one note of the notes: one claim, titled (`# <title>`, ≤ 80 characters, the claim in a few words), body ≤ 1024 bytes, file `<id>---<slug of title>.md`; the id is its UTC Denote timestamp, permanent. Frontmatter: `source`, `confidence` (`verified | reported | speculative | assessment`), `checked`, `decay`, `links`, `supersedes`, `invalid_at`.
 - `scope`, `gist`: the two parts of a topic's `_summary.md`: one line on what lies below, and its key claims. Written by the compactor model from the topic's children; out of date when the hash of that input changes.
 - `breadcrumb`: a topic path as `ai notes grep` prints it: `physics › qm › decoherence`.
-- `item`: one normalised harness entry in `ai chat` (`chat::Item`): a user message, work, assistant text, tool call, tool output or marker, with its source id (harness, session, entry), parent, time and raw line. Thinking is dropped.
+- `item`: one normalised harness entry in `ai chat` (`chat::Item`): a user message, work, assistant text, tool call, tool output or marker, with its source id (harness, session, entry), parent and time. Thinking is dropped.
 - `marker`: an item that is a harness event, not content: a compaction point, the harness's own summary, an interrupt.
 - `branch`: the items from a root of the item tree to one tip. Rewinds, edits and two sessions on one thread add branches; nothing is removed.
 - `step`: an assistant text, if any, and the tool calls and results after it, up to the next assistant text.
 - `turn`: a user message or work item and the steps that answer it, up to the next one on the branch; closed once one follows. Codex uses the word the same way (thread, turn, item). Stored line records keep the kind name `exchange`.
 - `human prompt`: a user entry that opens a turn: one the user typed or sent (mid-run included) or a subagent's task. Tool results, hook context, `isMeta` entries, local commands and their output, task notifications are not.
 - `work`: an item that is a message from another agent, with its sender: a subagent's hand-back, a peer's report, a coordinator's instruction. It opens a turn (OptChat's name).
-- `thread`: a named, repo-local `ai chat` conversation: one ref `refs/ai/chat/<name>` in the repository's common git dir, so its worktrees share it. Holds items, bindings and lines; one commit per mutation; format 1.
+- `thread`: a named, repo-local `ai chat` conversation: a directory `threads/<name>` of the chat store in the repository's common git dir (`ai/chat/`), so its worktrees share it. Holds items, session tracks, subagents and lines as append-only JSON Lines, and copies of its sessions' files; format 3.
 - `sequence number`: an item's position in its thread, from 0, permanent. Parents and line keys are sequence numbers. A subagent's items are numbered apart, beside the main tree.
 - `binding`: a harness session's record in a thread (`sessions/<harness>/<session>`): transcript path, graft, tip, attach and detach times. Attached until detached; a session is attached to at most one thread of a repository.
 - `graft`: the item a session's roots hang on: the thread's newest item when the session was first attached; none on a new thread.
 - `tip` (of a session): the item of its transcript's newest entry, the end of its branch.
 - `line` (chat): a summary in a thread, keyed by its level and the last item it covers (`level@last`), of kind chunk, turn or node; written once.
-- `sync` (chat): ingest an attached session's new entries into its thread in one commit, none if nothing is new; an unattached session is reported as such.
+- `sync` (chat): ingest an attached session's new entries into its thread, writing nothing if nothing is new; an unattached session is reported as such.
 - `view` (chat): what `ai chat compact-session` and `ai chat view` print for a session: an instruction, the fold (at most `FOLD_LINES` = 64 lines), the user rail, the open turn; about 56 KB at worst. Computed fresh each time; nothing about it is stored.
 - `fold` (chat): the closed turns of a session's branch in lines, oldest coarsest: from one line per turn, the most due aligned pair merges first, due = (T − last)/2^l, until at most 64 lines are left. An unbuilt line shows what is built under it, else a placeholder.
 - `id` (chat): how a line or item prints, on a branch: `12` turn 12, `8+4` turns 8 to 11 (a node when aligned), `12.3` item 3 of turn 12 (item 0 opens it), `12.3+7` items 3 to 9 of turn 12 (a chunk line). Turns count from 0 along the branch; past a fork, the same id names a different turn on each branch. What `ai chat zoom` takes. Store keys stay `level@last`.

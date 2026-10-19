@@ -1,16 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
-use jiff::Timestamp;
+use anyhow::{Context, Result, bail};
 
-use crate::{
-    chat::{
-        claude,
-        record::{Binding, check_id},
-        source,
-        store::{Added, Chat, Thread, Transcript, put_binding},
-    },
-    git::Changes,
+use crate::chat::{
+    claude,
+    record::{Binding, State, Track, check_id},
+    source,
+    store::{Added, Chat, Thread, Transcript},
 };
 
 /// The outcome of [`sync`].
@@ -63,8 +59,8 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
     }
 }
 
-/// Ingests the new entries of an attached session, in one commit; a session attached to no
-/// thread of the repository at `dir` is [`Synced::NotAttached`].
+/// Ingests the new entries of an attached session; a session attached to no thread of the
+/// repository at `dir` is [`Synced::NotAttached`].
 pub fn sync(dir: &Path, harness: &str, session: &str, transcript: Option<&Path>) -> Result<Synced> {
     match Chat::find(dir)? {
         Some(chat) => chat.sync(harness, session, transcript),
@@ -76,25 +72,20 @@ impl Chat {
     /// The thread `session` is attached to, with its binding there.
     pub fn attached(&self, harness: &str, session: &str) -> Result<Option<(Thread, Binding)>> {
         let _lock = self.session_lock(harness, session)?;
-        self.attached_unlocked(harness, session)
-    }
-
-    fn attached_unlocked(&self, harness: &str, session: &str) -> Result<Option<(Thread, Binding)>> {
-        let mut found: Option<(Thread, Binding)> = None;
-        for t in self.threads()? {
-            let b = t.snapshot()?.binding(harness, session)?;
-            if let Some(b) = b.filter(Binding::is_attached) {
-                if found.is_some() {
-                    bail!("Session {harness} {session} is attached to multiple threads.");
-                }
-                found = Some((t, b));
-            }
-        }
-        Ok(found)
+        let Some(name) = self.owner(harness, session)? else {
+            return Ok(None);
+        };
+        let t = self.thread(&name)?;
+        let b = t.snapshot()?.binding(harness, session)?.with_context(|| {
+            format!(
+                "Session {harness} {session} is attached to {name}, which holds no record of it."
+            )
+        })?;
+        Ok(Some((t, b)))
     }
 
     /// Ingests the new entries of an attached session, from `transcript` or the path its
-    /// binding holds, in one commit; none if nothing is new.
+    /// binding holds; none if nothing is new.
     pub fn sync(&self, harness: &str, session: &str, transcript: Option<&Path>) -> Result<Synced> {
         self.sync_with(harness, session, transcript, read)
     }
@@ -104,37 +95,39 @@ impl Chat {
         harness: &str,
         session: &str,
         transcript: Option<&Path>,
-        mut read: impl FnMut(&str, &str, Option<&Path>) -> Result<Transcript>,
+        read: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
     ) -> Result<Synced> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
-        let Some((thread, _)) = self.attached(harness, session)? else {
+        let _lock = self.session_lock(harness, session)?;
+        let Some(name) = self.owner(harness, session)? else {
             return Ok(Synced::NotAttached);
         };
-        let msg = format!("sync {harness} {session}");
-        let (added, _) = thread.mutate(&msg, |s| {
-            let Some(old) = s.binding(harness, session)?.filter(Binding::is_attached) else {
-                return Ok((None, Changes::default()));
-            };
-            let path = transcript.map(Path::to_path_buf).or(old.transcript.clone());
-            let t = read(harness, session, path.as_deref())?;
-            let mut b = Binding {
-                transcript: path.clone().or(old.transcript.clone()),
-                ..old.clone()
-            };
-            let mut ch = Changes::default();
-            let added = s.ingest(&mut b, &t, &mut ch)?;
-            if b != old {
-                put_binding(&mut ch, &b)?;
-            }
-            Ok((Some(added), ch))
-        })?;
-        Ok(match added {
-            Some(added) => Synced::Attached {
-                thread: thread.name().into(),
-                added,
-            },
-            None => Synced::NotAttached,
+        let thread = self.thread(&name)?;
+        let old = thread
+            .snapshot()?
+            .track(harness, session)?
+            .unwrap_or(Track {
+                harness: harness.into(),
+                session: session.into(),
+                transcript: None,
+                graft: None,
+                tip: None,
+            });
+        let path = transcript.map(Path::to_path_buf).or(old.transcript.clone());
+        let t = read(harness, session, path.as_deref())?;
+        let mut b = Track {
+            transcript: path,
+            ..old.clone()
+        };
+        let _w = thread.writer()?;
+        let added = thread.snapshot()?.ingest(&thread, &mut b, &t)?;
+        if b != old {
+            thread.put_track(&b)?;
+        }
+        Ok(Synced::Attached {
+            thread: name,
+            added,
         })
     }
 
@@ -157,53 +150,53 @@ impl Chat {
         harness: &str,
         session: &str,
         transcript: Option<&Path>,
-        mut read: impl FnMut(&str, &str, Option<&Path>) -> Result<Transcript>,
+        read: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
     ) -> Result<Attached> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let target = self.thread(name)?;
         let _lock = self.session_lock(harness, session)?;
-        if let Some((current, _)) = self.attached_unlocked(harness, session)?
-            && current.name() != name
-        {
+        let owner = self.owner(harness, session)?;
+        if let Some(current) = owner.as_deref().filter(|&o| o != name) {
             bail!(
-                "Session {harness} {session} is attached to {}. Run ai chat detach --harness {harness} --session {session} before attaching to {name}.",
-                current.name()
+                "Session {harness} {session} is attached to {current}. Run ai chat detach --harness {harness} --session {session} before attaching to {name}."
             );
         }
+        let bound = target.snapshot()?.track(harness, session)?;
+        let path: Option<PathBuf> = transcript
+            .map(Path::to_path_buf)
+            .or_else(|| bound.as_ref()?.transcript.clone());
+        let t = read(harness, session, path.as_deref())?;
         let created = !target.exists()?;
-        let msg = format!("attach {harness} {session}");
-        let (added, _) = target.mutate(&msg, |s| {
-            let bound = s.binding(harness, session)?;
-            let path: Option<PathBuf> = transcript
-                .map(Path::to_path_buf)
-                .or_else(|| bound.as_ref()?.transcript.clone());
-            let t = read(harness, session, path.as_deref())?;
-            let now = Timestamp::now();
-            let mut b = match bound.as_ref() {
-                Some(b) => Binding {
-                    transcript: path.clone().or(b.transcript.clone()),
-                    attached: if b.is_attached() { b.attached } else { now },
-                    detached: None,
-                    ..b.clone()
+        let w = target.writer()?;
+        let snap = target.snapshot()?;
+        let mut b = match bound.clone() {
+            Some(b) => Track {
+                transcript: path.or(b.transcript),
+                ..b
+            },
+            None => Track {
+                harness: harness.into(),
+                session: session.into(),
+                transcript: path,
+                graft: snap.len()?.checked_sub(1),
+                tip: None,
+            },
+        };
+        let added = snap.ingest(&target, &mut b, &t)?;
+        if bound.as_ref() != Some(&b) {
+            target.put_track(&b)?;
+        }
+        drop(w);
+        if owner.is_none() {
+            self.record(
+                harness,
+                session,
+                State::Attached {
+                    thread: name.into(),
                 },
-                None => Binding {
-                    harness: harness.into(),
-                    session: session.into(),
-                    transcript: path.clone(),
-                    graft: s.len()?.checked_sub(1),
-                    tip: None,
-                    attached: now,
-                    detached: None,
-                },
-            };
-            let mut ch = Changes::default();
-            let added = s.ingest(&mut b, &t, &mut ch)?;
-            if bound.as_ref() != Some(&b) {
-                put_binding(&mut ch, &b)?;
-            }
-            Ok((added, ch))
-        })?;
+            )?;
+        }
         Ok(Attached {
             thread: name.into(),
             created,
@@ -216,27 +209,12 @@ impl Chat {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let _lock = self.session_lock(harness, session)?;
-        let Some((t, _)) = self.attached_unlocked(harness, session)? else {
+        let Some(name) = self.owner(harness, session)? else {
             return Ok(None);
         };
-        detach(&t, harness, session)?;
-        Ok(Some(t.name().into()))
+        self.record(harness, session, State::Detached)?;
+        Ok(Some(name))
     }
-}
-
-fn detach(t: &Thread, harness: &str, session: &str) -> Result<()> {
-    t.mutate(&format!("detach {harness} {session}"), |s| {
-        let mut ch = Changes::default();
-        if let Some(b) = s.binding(harness, session)?.filter(Binding::is_attached) {
-            let b = Binding {
-                detached: Some(Timestamp::now()),
-                ..b
-            };
-            put_binding(&mut ch, &b)?;
-        }
-        Ok(((), ch))
-    })?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -245,32 +223,32 @@ mod tests {
 
     use super::*;
 
+    fn plain() -> String {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/plain.jsonl");
+        fs::read_to_string(fixture).unwrap()
+    }
+
     #[test]
     fn an_older_sync_finishing_last_preserves_newer_progress() {
         let dir = tempfile::TempDir::new().unwrap();
         gix::init(dir.path()).unwrap();
         let chat = Chat::find(dir.path()).unwrap().unwrap();
-        let fixture =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/plain.jsonl");
-        let all = fs::read_to_string(fixture).unwrap();
+        let all = plain();
         let prefix: String = all.split_inclusive('\n').take(3).collect();
         let transcript = dir.path().join("s-1.jsonl");
         fs::write(&transcript, &prefix).unwrap();
         chat.attach("dev", "claude", "s-1", Some(&transcript))
             .unwrap();
         let (captured, observed) = mpsc::channel();
-        let (resume, resumed) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel::<()>();
         let path = dir.path().to_path_buf();
         let older = thread::spawn(move || {
             let chat = Chat::find(&path).unwrap().unwrap();
-            let mut first = true;
             chat.sync_with("claude", "s-1", None, |harness, session, path| {
                 let transcript = read(harness, session, path)?;
-                if first {
-                    first = false;
-                    captured.send(()).unwrap();
-                    resumed.recv_timeout(Duration::from_secs(5)).unwrap();
-                }
+                captured.send(()).unwrap();
+                resumed.recv_timeout(Duration::from_secs(5)).unwrap();
                 Ok(transcript)
             })
             .unwrap()
@@ -282,19 +260,28 @@ mod tests {
             .unwrap()
             .write_all(&all.as_bytes()[prefix.len()..])
             .unwrap();
-        chat.sync("claude", "s-1", None).unwrap();
-        let thread = chat.thread("dev").unwrap();
-        let before = thread.snapshot().unwrap();
-        let items = before.items().unwrap();
-        let tip = before.tip("claude", "s-1").unwrap();
-        let commit = before.commit();
+        let path = dir.path().to_path_buf();
+        let newer = thread::spawn(move || {
+            let chat = Chat::find(&path).unwrap().unwrap();
+            chat.sync("claude", "s-1", None).unwrap()
+        });
         resume.send(()).unwrap();
         older.join().unwrap();
+        newer.join().unwrap();
 
-        let after = thread.snapshot().unwrap();
-        assert_eq!(after.items().unwrap(), items);
-        assert_eq!(after.tip("claude", "s-1").unwrap(), tip);
-        assert_eq!(after.commit(), commit, "a stale no-op sync adds no commit");
+        let fresh = tempfile::TempDir::new().unwrap();
+        gix::init(fresh.path()).unwrap();
+        let whole = Chat::find(fresh.path()).unwrap().unwrap();
+        whole
+            .attach("dev", "claude", "s-1", Some(&transcript))
+            .unwrap();
+        let expected = whole.thread("dev").unwrap().snapshot().unwrap();
+        let after = chat.thread("dev").unwrap().snapshot().unwrap();
+        assert_eq!(after.items().unwrap(), expected.items().unwrap());
+        assert_eq!(
+            after.tip("claude", "s-1").unwrap(),
+            expected.tip("claude", "s-1").unwrap()
+        );
     }
 
     #[test]
@@ -322,32 +309,21 @@ mod tests {
         assert!(error.to_string().contains("Run ai chat detach"));
 
         let chat = Chat::find(dir.path()).unwrap().unwrap();
-        let owners: Vec<_> = chat
-            .threads()
-            .unwrap()
-            .into_iter()
-            .filter(|thread| {
-                thread
-                    .snapshot()
-                    .unwrap()
-                    .binding("claude", "s-1")
-                    .unwrap()
-                    .is_some_and(|binding| binding.is_attached())
-            })
-            .map(|thread| thread.name().to_string())
-            .collect();
-        assert_eq!(owners.len(), 1, "active attachments: {owners:?}");
+        let (owner, binding) = chat.attached("claude", "s-1").unwrap().unwrap();
+        assert!(binding.is_attached());
         assert_eq!(
             chat.threads().unwrap().len(),
             1,
             "rejected attachment creates no thread"
         );
         assert_eq!(
-            chat.detach("claude", "s-1").unwrap(),
-            Some(owners[0].clone())
+            chat.detach("claude", "s-1").unwrap().as_deref(),
+            Some(owner.name())
         );
         assert!(chat.attached("claude", "s-1").unwrap().is_none());
         assert_eq!(chat.detach("claude", "s-1").unwrap(), None);
+        let b = owner.snapshot().unwrap().binding("claude", "s-1").unwrap();
+        assert!(b.is_some_and(|b| !b.is_attached()));
     }
 
     #[test]
@@ -355,9 +331,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         gix::init(dir.path()).unwrap();
         let chat = Chat::find(dir.path()).unwrap().unwrap();
-        let fixture =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/plain.jsonl");
-        let all = fs::read_to_string(fixture).unwrap();
+        let all = plain();
         let original: String = all.split_inclusive('\n').take(3).collect();
         let path = dir.path().join("s-1.jsonl");
         fs::write(&path, &original).unwrap();
@@ -375,15 +349,14 @@ mod tests {
         )
         .unwrap();
 
-        let thread = chat.thread("dev").unwrap();
-        let snapshot = thread.snapshot().unwrap();
+        let snapshot = chat.thread("dev").unwrap().snapshot().unwrap();
         assert_eq!(snapshot.len().unwrap(), 1);
-        assert!(
-            &*snapshot
-                .as_ref()
-                .read("sources/claude/s-1/s-1.jsonl")
-                .unwrap()
-                == original.as_bytes(),
+        let archived = dir
+            .path()
+            .join(".git/ai/chat/threads/dev/sources/claude/s-1/s-1.jsonl");
+        assert_eq!(
+            fs::read(archived).unwrap(),
+            original.as_bytes(),
             "archived bytes must match the parsed observation"
         );
         assert_ne!(fs::read(path).unwrap(), original.as_bytes());
