@@ -7,7 +7,7 @@ use crate::{
         record::{Key, LineKind},
         render::{Cut, clip, item_line},
     },
-    memory::{NODE, flat, ruler},
+    memory::{NODE, WORDS, flat, ruler},
 };
 
 /// The system prompt of every roll-up call.
@@ -217,7 +217,7 @@ const MERGE: &str = "Merge these two adjacent lines, the earlier first,";
 fn task(what: &str, context: Option<&str>, input: &str) -> String {
     let context = context.map_or(String::new(), |c| format!("<context>\n{c}</context>\n"));
     format!(
-        "{}{what} into one line of at most {NODE} bytes.\n{context}<input>\n{input}</input>",
+        "{}{what} into one line of at most {NODE} bytes, about {WORDS} words.\n{context}<input>\n{input}</input>",
         ruler()
     )
 }

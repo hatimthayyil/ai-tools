@@ -18,7 +18,7 @@ use crate::memory::{
     log,
     record::{Message, Who, flat},
     store::Store,
-    tree::{Coord, NODE},
+    tree::{Coord, NODE, WORDS},
     view::{Mem, VIEW},
 };
 
@@ -54,10 +54,12 @@ fn step_text(step: &Step) -> String {
     let scale = ruler();
     match step {
         Step::Compress(m) => {
-            format!("{scale}Compress this message into one line, in at most {NODE} bytes:\n{m}")
+            format!(
+                "{scale}Compress this message into one line, in at most {NODE} bytes, about {WORDS} words:\n{m}"
+            )
         }
         Step::Merge(a, b) => format!(
-            "{scale}Merge these two lines into one, in at most {NODE} bytes:\n{}\n{}",
+            "{scale}Merge these two lines into one, in at most {NODE} bytes, about {WORDS} words:\n{}\n{}",
             flat(a),
             flat(b)
         ),
@@ -411,13 +413,13 @@ mod tests {
         )));
         assert!(
             m[0].text.ends_with(
-                "Merge these two lines into one, in at most 512 bytes:\nuser: hi\nai: a b"
+                "Merge these two lines into one, in at most 512 bytes, about 70 words:\nuser: hi\nai: a b"
             )
         );
         let c = step_text(&Step::Compress("tool: x\ny".into()));
-        assert!(
-            c.ends_with("Compress this message into one line, in at most 512 bytes:\ntool: x\ny")
-        );
+        assert!(c.ends_with(
+            "Compress this message into one line, in at most 512 bytes, about 70 words:\ntool: x\ny"
+        ));
     }
 
     #[test]

@@ -32,6 +32,6 @@ pub use hook::{LONG_PROMPT, REMIND_EVERY, REMINDER};
 pub use meta::{Field, Meta};
 pub use record::{Kind, Message, Node, Place, Who, flat, now};
 pub use store::{Built, LOG, ME, REF, Snapshot, Store, level_dir};
-pub use tree::{Coord, NODE};
+pub use tree::{Coord, NODE, WORDS};
 pub use view::{HIDDEN, Mem, PLACEHOLDER, VIEW};
 pub use zoom::{page, pages, zoom};

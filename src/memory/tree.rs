@@ -2,6 +2,9 @@ use std::fmt;
 
 pub const NODE: usize = 512;
 
+/// The words in a line of [`NODE`] bytes, at the 7.3 bytes a word summary lines measure.
+pub const WORDS: usize = NODE * 10 / 73;
+
 /// Node `(l, i)`: messages `[i·2^l, (i+1)·2^l)`, printed `id+n`, a leaf as a bare `id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Coord {
