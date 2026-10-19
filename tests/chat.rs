@@ -895,7 +895,8 @@ fn a_corrupt_thread_leaves_other_sessions_working() {
         Synced::Attached { thread, .. } if thread == "other"
     ));
     assert_eq!(chat.detach("claude", "s-b").unwrap(), Some("other".into()));
-    assert_eq!(chat.detach("claude", "s-a").unwrap(), Some("dev".into()));
+    let e = chat.detach("claude", "s-a").unwrap_err().to_string();
+    assert_eq!(e, "Detached from dev without its newest entries");
     chat.attach("other", "claude", "s-a", Some(&pa)).unwrap();
 }
 

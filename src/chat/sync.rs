@@ -114,7 +114,24 @@ impl Chat {
         let Some(name) = self.owner(harness, session)? else {
             return Ok(Synced::NotAttached);
         };
-        let thread = self.thread(&name)?;
+        let added = self.catch_up(&name, harness, session, transcript, read)?;
+        Ok(Synced::Attached {
+            thread: name,
+            added,
+        })
+    }
+
+    /// Ingests the new entries of a session attached to `name`; the caller holds the
+    /// session's lock.
+    fn catch_up(
+        &self,
+        name: &str,
+        harness: &str,
+        session: &str,
+        transcript: Option<&Path>,
+        read: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
+    ) -> Result<Added> {
+        let thread = self.thread(name)?;
         let old = thread
             .snapshot()?
             .track(harness, session)?
@@ -136,10 +153,7 @@ impl Chat {
         if b != old {
             thread.put_track(&b)?;
         }
-        Ok(Synced::Attached {
-            thread: name,
-            added,
-        })
+        Ok(added)
     }
 
     /// Attaches a session to the thread `name`, creating it if new, and ingests its whole
@@ -215,15 +229,28 @@ impl Chat {
         })
     }
 
-    /// Detaches a session from its thread; returns the thread, none if it was not attached.
+    /// Detaches a session from its thread after ingesting its new entries, so nothing written
+    /// since the last sync is left out; returns the thread, none if it was not attached. A
+    /// failed catch-up still detaches, then reports the failure.
     pub fn detach(&self, harness: &str, session: &str) -> Result<Option<String>> {
+        self.detach_with(harness, session, read)
+    }
+
+    fn detach_with(
+        &self,
+        harness: &str,
+        session: &str,
+        read: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
+    ) -> Result<Option<String>> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let _lock = self.session_lock(harness, session)?;
         let Some(name) = self.owner(harness, session)? else {
             return Ok(None);
         };
+        let caught = self.catch_up(&name, harness, session, None, read);
         self.record(harness, session, State::Detached)?;
+        caught.with_context(|| format!("Detached from {name} without its newest entries"))?;
         Ok(Some(name))
     }
 }
@@ -395,5 +422,44 @@ mod tests {
             "archived bytes must match the parsed observation"
         );
         assert_ne!(fs::read(path).unwrap(), original.as_bytes());
+    }
+
+    #[test]
+    fn detach_keeps_entries_written_since_the_last_sync() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init(dir.path());
+        let chat = open(dir.path());
+        let all = plain();
+        let transcript = dir.path().join("s-1.jsonl");
+        let prefix: String = all.split_inclusive('\n').take(3).collect();
+        fs::write(&transcript, prefix).unwrap();
+        chat.attach("dev", "claude", "s-1", Some(&transcript))
+            .unwrap();
+        let len = |c: &Chat| c.thread("dev").unwrap().snapshot().unwrap().len().unwrap();
+        let before = len(&chat);
+        fs::write(&transcript, &all).unwrap();
+        assert_eq!(
+            chat.detach("claude", "s-1").unwrap().as_deref(),
+            Some("dev")
+        );
+        assert!(len(&chat) > before);
+        assert!(chat.attached("claude", "s-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_catch_up_still_detaches() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init(dir.path());
+        let chat = open(dir.path());
+        chat.attach("dev", "claude", "s-1", None).unwrap();
+        let e = chat
+            .detach_with("claude", "s-1", |_, _, _| bail!("unreadable"))
+            .unwrap_err();
+        let e = format!("{e:#}");
+        assert!(
+            e.contains("Detached from dev without its newest entries"),
+            "{e}"
+        );
+        assert!(chat.attached("claude", "s-1").unwrap().is_none());
     }
 }
