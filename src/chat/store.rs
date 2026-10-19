@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write},
     ops::Range,
     path::{Path, PathBuf},
@@ -208,7 +208,7 @@ impl Chat {
         }
     }
 
-    pub(super) fn session_lock(&self, harness: &str, session: &str) -> Result<File> {
+    pub(super) fn session_lock(&self, harness: &str, session: &str) -> Result<file::Lock> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let dir = self.root.join("sessions").join(harness);
@@ -364,7 +364,7 @@ impl Thread {
     }
 
     /// The writers' lock on this thread's files.
-    pub(super) fn writer(&self) -> Result<File> {
+    pub(super) fn writer(&self) -> Result<file::Lock> {
         Chat::ensure(&self.root)?;
         file::lock(&self.root.join(format!("{}.write.lock", self.name)))
     }
@@ -383,14 +383,14 @@ impl Thread {
     }
 
     /// The compactor's lock on this thread; `None` while another process holds it.
-    pub fn try_lock(&self) -> Result<Option<File>> {
+    pub fn try_lock(&self) -> Result<Option<file::Lock>> {
         Chat::ensure(&self.root)?;
         file::try_lock(&self.lock_path())
     }
 
     /// The compactor's lock on this thread, waiting for it until `deadline`; `None` if another
     /// process still holds it then.
-    pub fn lock_before(&self, deadline: Instant) -> Result<Option<File>> {
+    pub fn lock_before(&self, deadline: Instant) -> Result<Option<file::Lock>> {
         Chat::ensure(&self.root)?;
         file::lock_before(&self.lock_path(), deadline)
     }

@@ -34,18 +34,27 @@ impl<T> AtPath<T> for io::Result<T> {
     }
 }
 
+/// An advisory lock on a file, released when dropped.
+pub struct Lock(File);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// The lock on the file `p`; `None` while another process holds it.
-pub fn try_lock(p: &Path) -> Result<Option<File>> {
+pub fn try_lock(p: &Path) -> Result<Option<Lock>> {
     lock_before(p, Instant::now())
 }
 
 /// The lock on the file `p`, waiting for it until `deadline`; `None` if another process still
 /// holds it then.
-pub fn lock_before(p: &Path, deadline: Instant) -> Result<Option<File>> {
+pub fn lock_before(p: &Path, deadline: Instant) -> Result<Option<Lock>> {
     let f = File::create(p).at(p)?;
     loop {
         match f.try_lock() {
-            Ok(()) => return Ok(Some(f)),
+            Ok(()) => return Ok(Some(Lock(f))),
             Err(TryLockError::WouldBlock) => {}
             Err(TryLockError::Error(e)) => return Err(e).at(p),
         }
@@ -58,8 +67,8 @@ pub fn lock_before(p: &Path, deadline: Instant) -> Result<Option<File>> {
 }
 
 /// The lock on the file `p`, waiting for it.
-pub fn lock(p: &Path) -> Result<File> {
+pub fn lock(p: &Path) -> Result<Lock> {
     let f = File::create(p).at(p)?;
     f.lock().at(p)?;
-    Ok(f)
+    Ok(Lock(f))
 }

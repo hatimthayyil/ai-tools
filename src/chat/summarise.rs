@@ -131,7 +131,7 @@ pub fn build(
     run.pass(Some(keys), Some(deadline))?;
     let built = run.built.clone();
     drop(run);
-    lock.unlock()?;
+    drop(lock);
     Ok(built)
 }
 
@@ -166,7 +166,6 @@ pub fn summarise(thread: &Thread, backend: Arc<dyn Backend>) -> Result<Option<Bu
                 break seen;
             }
         };
-        lock.unlock()?;
         drop(lock);
         if thread.snapshot()?.mark() == seen {
             let b = &run.built;
@@ -218,7 +217,7 @@ pub fn rebuild(
     }
     let built = run.built.clone();
     drop(run);
-    lock.unlock()?;
+    drop(lock);
     let secs = log::secs(start.elapsed());
     info!(
         lines = built.lines,
@@ -285,7 +284,7 @@ pub fn rewrite(
     }
     let built = run.built.clone();
     drop(run);
-    lock.unlock()?;
+    drop(lock);
     info!(lines = built.lines, calls = built.calls, "end");
     Ok(Some(Rewrote {
         dropped,
