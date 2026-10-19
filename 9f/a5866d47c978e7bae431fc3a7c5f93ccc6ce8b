@@ -1,0 +1,26 @@
+Cargo.toml
+  s_77b04d9838f161::t_5a73e8925c9a68 3
+ai/spec.md
+  s_77b04d9838f161::t_0f3d28d1b30b56 1-8
+Cargo.lock
+  s_77b04d9838f161::t_39b85150cc8059 16
+README.md
+  s_77b04d9838f161::t_3bcde3835c187f 62
+  s_77b04d9838f161::t_c92b1d747d08d0 58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9fa5866d47c978e7bae431fc3a7c5f93ccc6ce8b",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
