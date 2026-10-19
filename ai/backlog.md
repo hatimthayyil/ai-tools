@@ -5,6 +5,7 @@
 - Configuration system for `ai`: user-level and repo-level settings, layered, with a library built for it (figment, config-rs, confique: research first). Covers the chat view size (64 lines), summariser model, background summariser switch, memory sizes. Today these sit in three places: git config (`ai.chat.model`, `ai.chat.nap`), `ai memory config`, `AI_MEMORY_MODEL`.
 - `ai desk`: a TUI overview of every part of `ai` (memory, chat threads and sessions, notes, code): search and navigate, see stale lines, resummarise a line. Mostly for `ai notes`/`ai code`, where the user takes part; the user doubts session logs need curating.
 - Overlap between `ai memory` and `ai chat` (both fold a log into a summary tree with the same ids): consider consolidating.
+- One JSONL storage module for chat and memory: `src/jsonl.rs` (append, locks, format file, recovery of a half-written last line) serves chat; when memory moves to JSONL it uses the same module, and the Git plumbing in `src/git.rs` (refs, compare-and-swap, fan-out paths) and the record codec in `src/record.rs` go. gix stays for provenance, git config and `ai notes`. Undecided: the user wants it explained first.
 
 ## Memory
 
