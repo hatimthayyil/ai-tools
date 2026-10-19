@@ -1,0 +1,29 @@
+ai/backlog.md
+  s_27dfa1e9a6bec7::t_bf47197f9d2edf 8
+ai/research/20261019T190551---chat-consistency-review.md
+  s_f8f00a8a2e4d02::t_fe40a24bed1d85 1-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d680c0779acc3b172d4d069212eeb06b9a181760",
+  "prompts": {},
+  "sessions": {
+    "s_27dfa1e9a6bec7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a8c1b561c8e0690e0",
+        "model": "unknown"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    },
+    "s_f8f00a8a2e4d02": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a02435a49ebb1a982",
+        "model": "unknown"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
