@@ -566,7 +566,7 @@ fn view_prints_a_thread_in_parts_from_one_state() {
 }
 
 #[test]
-fn view_syncs_its_session_and_writes_the_lines_it_needs() {
+fn view_syncs_its_session_and_writes_no_line() {
     let s = Sandbox::new();
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));
     ok(
@@ -577,7 +577,6 @@ fn view_syncs_its_session_and_writes_the_lines_it_needs() {
         let t = s.chat().thread("dev").unwrap();
         t.snapshot().unwrap().all_lines().unwrap().len()
     };
-    assert_eq!(lines(&s), 0);
     s.transcript("s-1", &talk(4, |k| format!("question {k}")));
 
     let outside = stdout(&s.ai(&["view", "-t", "dev"]));
@@ -585,9 +584,9 @@ fn view_syncs_its_session_and_writes_the_lines_it_needs() {
         section(&outside, "The turn in progress")[0].ends_with("|user: question 1"),
         "outside the session, nothing is synced: {outside}"
     );
-    assert_eq!(lines(&s), 1, "the closed turn's line is written");
-    assert!(
-        section(&outside, "Earlier turns, summarised")[0].starts_with("0|user: question 0 ai: ")
+    assert_eq!(
+        section(&outside, "Earlier turns, summarised"),
+        ["0|(not summarised yet) user: question 0"]
     );
 
     let inside = stdout(&s.ai_in("s-1", &["view"]));
@@ -595,9 +594,24 @@ fn view_syncs_its_session_and_writes_the_lines_it_needs() {
         section(&inside, "The turn in progress")[0].ends_with("|user: question 3"),
         "the session's view syncs it first: {inside}"
     );
-    assert_eq!(lines(&s), 3);
-    assert_eq!(section(&inside, "Earlier turns, summarised").len(), 3);
-    assert!(!inside.contains("not summarised yet"), "{inside}");
+    assert_eq!(
+        section(&inside, "Earlier turns, summarised"),
+        [
+            "0|(not summarised yet) user: question 0",
+            "1|(not summarised yet) user: question 1",
+            "2|(not summarised yet) user: question 2",
+        ]
+    );
+    assert_eq!(lines(&s), 0, "view writes no line");
+
+    let o = s.ai(&["compact-session", "--session", "s-1"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        lines(&s),
+        3,
+        "compact-session writes the lines its view needs"
+    );
+    assert!(!stdout(&o).contains("not summarised yet"), "{}", stdout(&o));
 }
 
 #[test]

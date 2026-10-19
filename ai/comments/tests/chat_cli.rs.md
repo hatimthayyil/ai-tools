@@ -10,7 +10,7 @@ Lines are written through the library (`Thread::put_line`), keyed by `turn_ends`
 - Attach (transcript found from the session id), sync by flags, re-attach, moving threads, detach; errors without a session, with a bad name, outside a repository.
 - `compact-session` syncs first, builds the free lines the fold needs, then prints the instruction, the fold (a written line, two free lines), the rail and the open turn; a session whose harness cannot be read: exit 1, the reason on stderr.
 - `list`: threads with turns, newest time and branches; their sessions newest first, attached or detached, the calling one marked.
-- `view` syncs its session and writes the lines it needs; outside the session it writes them without a sync.
+- `view` syncs its session and writes no line, its unsummarised turns shown by their messages; outside the session it reads without a sync; `compact-session` then writes the lines.
 - `view` in three parts whose footers chain (`-t <name> --part --at`), joined equal to `compact-session`'s output, although a line is built between parts; in and out of the session alike.
 - `zoom` of a node, a node with an unbuilt half, a turn, an item, a long item in two parts, by session and by `-t`; bad ids.
 - `start`: argv and directory, binding with the future transcript path, graft of a second session; `view` of a thread with nothing yet. The seed: `compact-session` of a launched session prints nothing on a new thread, and the view ending at its graft on an existing one.

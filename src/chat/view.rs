@@ -8,7 +8,7 @@ use crate::{
         id::Id,
         model::{Item, Kind, Tree, Turn},
         record::{Binding, Key},
-        render::{Cut, WHOLE, item_line, searched},
+        render::{Cut, WHOLE, item_line, item_text, searched},
         rollup,
         store::Snapshot,
     },
@@ -218,7 +218,7 @@ impl Branch {
                 };
                 let mut out = Vec::new();
                 for c in nodes {
-                    self.push(c, &mut out);
+                    self.push(c, false, &mut out);
                 }
                 out
             }
@@ -393,20 +393,32 @@ impl Branch {
         format!("{id}|(not summarised yet)")
     }
 
+    /// The placeholder of line `c`; with `messages`, a turn's carries its message cut to
+    /// [`LINE`].
+    fn missing(&self, c: Coord, messages: bool) -> String {
+        let id = Id::node(c);
+        let first = self.item(self.span(c).start);
+        match messages && c.l == 0 && first.kind.opens() {
+            true => format!("{id}|(not summarised yet) {}", item_text(first, cut(LINE))),
+            false => Branch::placeholder(id),
+        }
+    }
+
     /// The lines the fold wants: at most [`FOLD_LINES`].
     fn plan(&self) -> Vec<Coord> {
         fold(self.closed(), FOLD_LINES, |_| 1)
     }
 
-    /// The fold's lines: each built line of the plan, else what is built under it; the oldest
-    /// of those fallbacks become placeholders while over [`FOLD_LINES`].
+    /// The fold's lines: each built line of the plan, else what is built under it, else its
+    /// placeholder with a turn's message; the oldest of the fallbacks become placeholders while
+    /// over [`FOLD_LINES`].
     fn render(&self) -> Vec<String> {
         let plan = self.plan();
         let mut parts: Vec<Vec<String>> = plan
             .iter()
             .map(|&c| {
                 let mut out = Vec::new();
-                self.push(c, &mut out);
+                self.push(c, true, &mut out);
                 out
             })
             .collect();
@@ -417,20 +429,21 @@ impl Branch {
             }
             if part.len() > 1 {
                 n = n + 1 - part.len();
-                *part = vec![Branch::placeholder(Id::node(c))];
+                *part = vec![self.missing(c, true)];
             }
         }
         parts.concat()
     }
 
-    /// Line `c`, else the lines built under it, else a placeholder naming it.
-    fn push(&self, c: Coord, out: &mut Vec<String>) {
+    /// Line `c`, else the lines built under it, else its placeholder: with `messages`, a turn's
+    /// carries its message.
+    fn push(&self, c: Coord, messages: bool, out: &mut Vec<String>) {
         match self.text(c) {
             Some(t) => out.push(Branch::line(Id::node(c), t)),
-            None if !self.built_under(c) => out.push(Branch::placeholder(Id::node(c))),
+            None if !self.built_under(c) => out.push(self.missing(c, messages)),
             None if c.l > 0 => {
                 for k in c.children() {
-                    self.push(k, out);
+                    self.push(k, messages, out);
                 }
             }
             None => {
@@ -703,7 +716,7 @@ mod tests {
         assert_eq!(b.closed(), 7);
         let all = b.render();
         assert_eq!(all.len(), 7);
-        assert_eq!(all[0], "0|(not summarised yet)");
+        assert_eq!(all[0], "0|(not summarised yet) user: m0");
         let b = branch(
             chain("utututututututut", short),
             &[(1, 1, "first"), (1, 3, "second"), (1, 7, "fourth")],
@@ -713,11 +726,11 @@ mod tests {
             [
                 "0|first",
                 "1|second",
-                "2|(not summarised yet)",
+                "2|(not summarised yet) user: m4",
                 "3|fourth",
-                "4|(not summarised yet)",
-                "5|(not summarised yet)",
-                "6|(not summarised yet)",
+                "4|(not summarised yet) user: m8",
+                "5|(not summarised yet) user: m10",
+                "6|(not summarised yet) user: m12",
             ],
         );
         let key = |last| Key { level: 1, last };
@@ -742,9 +755,9 @@ mod tests {
             [
                 "0+2|first two",
                 "2+2|(not summarised yet)",
-                "4|(not summarised yet)"
+                "4|(not summarised yet) user: m8"
             ],
-            "2+2 would fall back to two lines, one too many: it stays one"
+            "2+2 would fall back to two lines, one too many: it stays one; a turn keeps its message"
         );
         assert_eq!(fold.last().unwrap(), "65|newest");
         let key = |level, last| Key { level, last };
@@ -781,7 +794,7 @@ mod tests {
         );
         assert_eq!(
             render(&[(0, 9, "ran the tests")]),
-            ["0|(not summarised yet)"],
+            ["0|(not summarised yet) user: m0"],
             "chunk lines count from the first"
         );
     }

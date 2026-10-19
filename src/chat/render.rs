@@ -33,6 +33,11 @@ impl Cut {
 /// Item `id` as `id|kind: text`, cut by `cut`; its text continues on lines indented by two
 /// spaces. A tool call's input is `key=value` per field, strings verbatim.
 pub fn item_line(id: Id, item: &Item, cut: Cut) -> String {
+    format!("{id}|{}", item_text(item, cut))
+}
+
+/// An item as `kind: text`, cut by `cut`: [`item_line`] without its id.
+pub fn item_text(item: &Item, cut: Cut) -> String {
     let text = match &item.kind {
         Kind::User(t) | Kind::Text(t) | Kind::Work { text: t, .. } => clip(t, cut.words),
         Kind::ToolCall { input, .. } => match cut.input {
@@ -49,11 +54,11 @@ pub fn item_line(id: Id, item: &Item, cut: Cut) -> String {
                 Marker::Summary => "the harness's summary of the context it compacted",
                 Marker::Interrupt => "interrupted by the user",
             };
-            return format!("{id}|[{what}]");
+            return format!("[{what}]");
         }
     };
     let text: Vec<&str> = text.trim_end().lines().collect();
-    format!("{id}|{}: {}", label(&item.kind), text.join("\n  "))
+    format!("{}: {}", label(&item.kind), text.join("\n  "))
 }
 
 /// An item's kind and whole text, as grep searches it: a tool output only with `output`, a

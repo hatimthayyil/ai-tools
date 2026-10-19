@@ -3,6 +3,7 @@
 - Attaching a session to another thread requires an explicit detach first; a rejected attach leaves both threads unchanged.
 - The store retains complete, byte-for-byte copies of a thread's original session files, including subagent files.
 - History is an ordered sequence of turns; each opens at a message from the user or another agent.
+- Only `compact-session` and `ai chat summarise` write summary lines; reading a thread never calls the model.
 - Chat records are JSON Lines.
 - Earlier states remain readable as prefixes of append-only files.
 - Unsupported newer formats are refused before writing.

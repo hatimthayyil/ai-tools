@@ -68,7 +68,7 @@ enum Command {
         #[command(flatten)]
         session: Session,
     },
-    #[command(about = "print a thread's view.")]
+    #[command(about = "print a thread's view, from the summaries written so far.")]
     View {
         #[command(flatten)]
         target: Target,
@@ -557,8 +557,8 @@ fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCo
 }
 
 /// The thread's view, in parts from one state of it: of the session's branch when the
-/// session is attached to it (synced first), else of its newest branch. The first part writes
-/// the lines the view needs, as `compact-session` does; `--at` reads the state it names.
+/// session is attached to it (synced first), else of its newest branch. It writes no line: a
+/// turn not summarised yet shows its message; `--at` reads the state it names.
 fn view(
     cwd: &Path,
     out: &mut dyn Write,
@@ -567,18 +567,16 @@ fn view(
     at: Option<&str>,
 ) -> Result<ExitCode> {
     let (chat, t, session) = pick(cwd, target)?;
-    let shown = match at {
-        Some(at) => {
-            let mark: Mark = at.parse()?;
-            view_in(&t, &t.snapshot_at(mark)?, session.as_ref())?.map(|v| (v, mark))
-        }
+    let snap = match at {
+        Some(at) => t.snapshot_at(at.parse()?)?,
         None => {
             if let Some(c) = &session {
                 chat.sync(&c.harness, &c.session, c.transcript.as_deref())?;
             }
-            fresh_view(&chat, &t, session.as_ref())?
+            t.snapshot()?
         }
     };
+    let shown = view_in(&t, &snap, session.as_ref())?.map(|v| (v, snap.mark()));
     let Some((text, mark)) = shown else {
         writeln!(out, "Thread {} holds nothing yet.", t.name())?;
         return Ok(ExitCode::SUCCESS);
