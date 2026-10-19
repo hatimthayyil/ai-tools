@@ -11,7 +11,8 @@ use ai_tools::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const ISOLATE: [&str; 5] = [
+const ISOLATE: [&str; 6] = [
+    "AI_CHAT_DIR",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDECODE",
     "GIT_DIR",
@@ -42,6 +43,22 @@ impl Sandbox {
     /// A git repository at `dir`, with the background summariser off.
     fn init(&self, dir: &Path) {
         gix::init(dir).unwrap();
+        let root = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(["commit", "-q", "--allow-empty", "--no-verify", "-m"])
+            .arg(dir)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap();
+        assert!(root.success());
         let off = Command::new("git")
             .args(["config", "ai.chat.summarise", "false"])
             .current_dir(dir)
@@ -171,7 +188,8 @@ impl Sandbox {
     }
 
     fn chat(&self) -> Chat {
-        Chat::find(&self.repo()).unwrap().unwrap()
+        let base = self.root.join("home/.ai/chat");
+        Chat::find_in(&base, &self.repo()).unwrap().unwrap()
     }
 
     /// Writes line `level@last` of thread `name`.
@@ -893,7 +911,7 @@ fn summarise_writes_rewrites_and_dry_runs_the_lines() {
         t.snapshot().unwrap().all_lines().unwrap().len()
     };
     assert_eq!(all(&s), 1, "a dry run stores nothing");
-    let log = fs::read_to_string(s.repo().join(".git/ai/chat/dev.log")).unwrap();
+    let log = fs::read_to_string(s.chat().dir().join("dev.log")).unwrap();
     assert!(
         log.contains("dry_run{pid=") && log.contains("model=\"opus\""),
         "{log}"
@@ -994,4 +1012,15 @@ fn summarise_writes_or_rewrites_one_line() {
         s.ai_in("s-1", &["summarise", "x"]),
         "'x' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3+7 (a chunk).\n",
     );
+}
+
+#[test]
+fn a_repository_without_commits_has_no_threads() {
+    let s = Sandbox::new();
+    let empty = s.root.join("empty");
+    gix::init(&empty).unwrap();
+    let out = s.ai_at(&empty, "s-1", &["attach", "dev"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no commits yet"), "{err}");
 }

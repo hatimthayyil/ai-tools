@@ -23,7 +23,7 @@ use crate::{
     },
     file::{self, AtPath},
     jsonl,
-    memory::Who,
+    memory::{Who, prov::repo_root, store_dir},
 };
 
 /// The chat store format this ai reads and writes.
@@ -151,31 +151,50 @@ fn readable(v: &[u8]) -> Result<()> {
     }
 }
 
-/// The threads of one git repository, in its common git dir, so its worktrees share them.
+/// `$AI_CHAT_DIR`, else `~/.ai/chat`: every repository's store, named by its root commit.
+pub fn base_dir() -> Result<PathBuf> {
+    store_dir("AI_CHAT_DIR", "chat")
+}
+
+/// The threads of one project: `<base>/<root commit>`, shared by its worktrees and clones.
 pub struct Chat {
     repo: gix::Repository,
+    id: String,
     root: PathBuf,
 }
 
 impl Chat {
-    /// The threads of the repository at or above `dir`; `None` outside one. A store of
-    /// another format is refused.
+    /// The threads of the repository at or above `dir`, in [`base_dir`]; `None` outside a
+    /// repository or before its first commit. A store of another format is refused.
     pub fn find(dir: &Path) -> Result<Option<Chat>> {
+        Chat::find_in(&base_dir()?, dir)
+    }
+
+    /// [`Chat::find`] with the stores in `base`.
+    pub fn find_in(base: &Path, dir: &Path) -> Result<Option<Chat>> {
         let Ok(repo) = gix::discover(dir) else {
             return Ok(None);
         };
-        let root = repo.common_dir().join("ai/chat");
+        let Some(id) = repo_root(&repo) else {
+            return Ok(None);
+        };
+        let root = base.join(&id);
         let format = root.join("format");
         match fs::read(&format) {
             Ok(v) => readable(&v)?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).at(&format),
         }
-        Ok(Some(Chat { repo, root }))
+        Ok(Some(Chat { repo, id, root }))
     }
 
     pub(super) fn repo(&self) -> &gix::Repository {
         &self.repo
+    }
+
+    /// The store's directory.
+    pub fn dir(&self) -> &Path {
+        &self.root
     }
 
     /// Makes the store's directory and format file before its first write.
@@ -292,12 +311,10 @@ impl Chat {
             .collect()
     }
 
-    /// Whether `dir` lies in this repository: an existing directory whose repository shares
-    /// this one's common git dir.
+    /// Whether `dir` lies in this project: an existing directory whose repository has this
+    /// store's root commit, a worktree or clone of this one.
     pub fn holds(&self, dir: &Path) -> bool {
-        let canon = |d: &Path| fs::canonicalize(d).ok();
-        let mine = canon(self.repo.common_dir());
-        mine.is_some() && gix::discover(dir).is_ok_and(|r| canon(r.common_dir()) == mine)
+        gix::discover(dir).is_ok_and(|r| repo_root(&r).as_ref() == Some(&self.id))
     }
 }
 

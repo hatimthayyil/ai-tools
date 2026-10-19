@@ -104,15 +104,32 @@ impl Repo {
     fn new() -> Repo {
         let dir = TempDir::new().unwrap();
         gix::init(dir.path().join("repo")).unwrap();
-        Repo { dir }
+        let r = Repo { dir };
+        r.git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "root",
+        ]);
+        r
     }
 
     fn path(&self) -> PathBuf {
         self.dir.path().join("repo")
     }
 
+    /// Where the chat stores live.
+    fn base(&self) -> PathBuf {
+        self.dir.path().join("chat")
+    }
+
     fn chat(&self) -> Chat {
-        Chat::find(&self.path()).unwrap().unwrap()
+        Chat::find_in(&self.base(), &self.path()).unwrap().unwrap()
     }
 
     /// The thread `t`, with `s` attached as session `s1`.
@@ -262,7 +279,7 @@ fn summarised(t: &Thread, fake: &Arc<Fake>) -> Built {
 }
 
 fn state(r: &Repo) -> String {
-    let chat = Chat::find(&r.path()).unwrap().unwrap();
+    let chat = r.chat();
     chat.thread("t")
         .unwrap()
         .snapshot()
@@ -583,9 +600,13 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
         .lines();
     let slow = Fake::with(Duration::from_millis(300), |_| false);
     let summarising = {
-        let (path, slow) = (r.path(), slow.clone());
+        let (base, path, slow) = (r.base(), r.path(), slow.clone());
         thread::spawn(move || {
-            let t = Chat::find(&path).unwrap().unwrap().thread("t").unwrap();
+            let t = Chat::find_in(&base, &path)
+                .unwrap()
+                .unwrap()
+                .thread("t")
+                .unwrap();
             summarise(&t, slow.backend()).unwrap()
         })
     };

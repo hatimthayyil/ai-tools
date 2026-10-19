@@ -3,7 +3,8 @@
 Design: `ai/research/20261014T002322---chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; JSON Lines files: `src/jsonl.rs`.
 
 Where
-- The store of a repository is `<common git dir>/ai/chat/`, found from a directory (`gix::discover`), so every worktree of a repository sees the same threads. Git never reads it: nothing is committed or pushed.
+- The store of a project is `~/.ai/chat/<root commit>/` (`$AI_CHAT_DIR/<root commit>` if set; `base_dir`), found from a directory (`gix::discover`, then memory's `prov::repo_root`, cached as `ai.root`). Every worktree and clone of a project sees the same threads, and they outlive the clone; forks share them too. A repository without commits has no store: `find` is `None`, and the CLI says to commit first. Git never reads it: nothing is committed or pushed.
+
 - Thread names: letters, digits, `-`, `_`, starting with a letter or digit: a safe directory and lock file name. Harness, session and agent ids become path names: letters, digits, `.`, `_`, `-`, not starting with `.` (record.rs, `check_id`).
 
 Layout (format 3)
@@ -39,4 +40,4 @@ Lines
 - `drop_lines` appends `clear`, `drop_keys` a `drop` of the keys built (`summarise --rebuild`, `summarise <id>`).
 
 Queries
-- `Chat::list`: per thread its newest item (harness, session, time) and tips; its turns (turns on the newest branch, from the tree) and its sessions, each with the time of its newest item (else of its attaching), newest first. `Chat::holds(dir)`: `dir` is in this repository (gix discover from it reaches the same canonical common git dir). `Snapshot::tree` and `model::Tree::path`/`branch` give the item tree and the path to a tip; `Snapshot::tip(harness, session)` the newest tip of a session; `Snapshot::line`/`lines` lines by key and by level.
+- `Chat::list`: per thread its newest item (harness, session, time) and tips; its turns (turns on the newest branch, from the tree) and its sessions, each with the time of its newest item (else of its attaching), newest first. `Chat::holds(dir)`: `dir` is in this project (its repository has the same root commit). `Snapshot::tree` and `model::Tree::path`/`branch` give the item tree and the path to a tip; `Snapshot::tip(harness, session)` the newest tip of a session; `Snapshot::line`/`lines` lines by key and by level.

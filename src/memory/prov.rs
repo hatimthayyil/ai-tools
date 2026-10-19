@@ -44,21 +44,24 @@ pub fn place(cwd: &Path) -> Place {
 /// The root commit of the default branch of the git repository at `cwd`, cached in its
 /// config as `ai.root`; empty outside a repository or before its first commit.
 pub fn root(cwd: &Path) -> String {
-    let Ok(repo) = gix::discover(cwd) else {
-        return String::new();
-    };
+    gix::discover(cwd)
+        .ok()
+        .and_then(|repo| repo_root(&repo))
+        .unwrap_or_default()
+}
+
+/// The root commit of `repo`'s default branch, cached in its config as `ai.root`; `None`
+/// before its first commit.
+pub fn repo_root(repo: &gix::Repository) -> Option<String> {
     if let Some(r) = repo.config_snapshot().string(ROOT) {
-        return r.to_string();
+        return Some(r.to_string());
     }
-    let Some(r) = first_commit(&repo) else {
-        return String::new();
-    };
-    let r = r.to_string();
+    let r = first_commit(repo)?.to_string();
     let _ = edit_config(&repo.common_dir().join("config"), |f| {
         f.set_raw_value_by("ai", None, "root", r.as_str())?;
         Ok(())
     });
-    r
+    Some(r)
 }
 
 /// The oldest root commit (by commit time, then id) reachable from `origin/HEAD`, else

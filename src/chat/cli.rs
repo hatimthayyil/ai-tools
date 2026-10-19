@@ -38,7 +38,7 @@ pub const WAIT: Duration = Duration::from_secs(60);
 #[command(
     name = "chat",
     about = "Named conversations that span agent sessions, kept in this repository.",
-    after_help = "Threads live in the repository's git, under refs/ai/chat/."
+    after_help = "Threads live in ~/.ai/chat/<root commit>, or under $AI_CHAT_DIR if set."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -281,8 +281,13 @@ fn not_attached() -> Result<ExitCode> {
 
 /// The threads of the repository at `cwd`.
 fn find(cwd: &Path) -> Result<Chat> {
-    Chat::find(cwd)?
-        .context("Not in a git repository. Run this inside the repository that holds the thread.")
+    Chat::find(cwd)?.with_context(|| match gix::discover(cwd) {
+        Ok(_) => {
+            "This repository has no commits yet. Its threads are kept under its first \
+                  commit; commit once, then retry."
+        }
+        Err(_) => "Not in a git repository. Run this inside the repository that holds the thread.",
+    })
 }
 
 /// The thread `-t` names, else the one the session is attached to; with the session when it is

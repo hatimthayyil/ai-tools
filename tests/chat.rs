@@ -7,7 +7,7 @@ use std::{
 };
 
 use ai_tools::{
-    chat::{Chat, Item, Key, Kind, LineKind, Synced, Tree, claude, read, sync},
+    chat::{Chat, Item, Key, Kind, LineKind, Synced, Tree, claude, read, sync, sync_in},
     memory::Who,
 };
 use tempfile::TempDir;
@@ -86,7 +86,9 @@ struct Repo {
 impl Repo {
     fn new() -> Repo {
         let dir = TempDir::new().unwrap();
-        gix::init(dir.path().join("repo")).unwrap();
+        let repo = dir.path().join("repo");
+        gix::init(&repo).unwrap();
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "root"]);
         Repo { dir }
     }
 
@@ -94,8 +96,13 @@ impl Repo {
         self.dir.path().join("repo")
     }
 
+    /// Where the chat stores live.
+    fn base(&self) -> PathBuf {
+        self.dir.path().join("chat")
+    }
+
     fn chat(&self) -> Chat {
-        Chat::find(&self.path()).unwrap().unwrap()
+        Chat::find_in(&self.base(), &self.path()).unwrap().unwrap()
     }
 
     /// Writes the transcript of `session`.
@@ -128,7 +135,8 @@ impl Repo {
 
     /// The chat store of the repository.
     fn store(&self) -> PathBuf {
-        self.path().join(".git/ai/chat")
+        let root = git(&self.path(), &["rev-list", "--max-parents=0", "HEAD"]);
+        self.base().join(root.trim())
     }
 }
 
@@ -177,10 +185,10 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     assert!(!first.is_empty() && first.start == 0);
 
     r.transcript("s-1", &all);
-    let more = added(sync(&r.path(), "claude", "s-1", None).unwrap());
+    let more = added(sync_in(&r.base(), &r.path(), "claude", "s-1", None).unwrap());
     assert_eq!(more.start, first.end);
     let head = r.state("dev");
-    let none = added(sync(&r.path(), "claude", "s-1", Some(&path)).unwrap());
+    let none = added(sync_in(&r.base(), &r.path(), "claude", "s-1", Some(&path)).unwrap());
     assert!(none.is_empty());
     assert_eq!(r.state("dev"), head, "no commit when nothing is new");
 
@@ -212,30 +220,30 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
 
 #[test]
 fn an_unattached_session_is_not_attached() {
-    let outside = TempDir::new().unwrap();
-    let s = sync(outside.path(), "claude", "s-1", None).unwrap();
-    assert_eq!(s, Synced::NotAttached, "outside a repository");
     let r = Repo::new();
+    let outside = TempDir::new().unwrap();
+    let s = sync_in(&r.base(), outside.path(), "claude", "s-1", None).unwrap();
+    assert_eq!(s, Synced::NotAttached, "outside a repository");
     assert_eq!(
-        sync(&r.path(), "claude", "s-1", None).unwrap(),
+        sync_in(&r.base(), &r.path(), "claude", "s-1", None).unwrap(),
         Synced::NotAttached
     );
     let path = r.transcript("s-1", &lines("plain.jsonl"));
     let chat = r.chat();
     chat.attach("dev", "claude", "s-1", Some(&path)).unwrap();
     assert_eq!(
-        sync(&r.path(), "claude", "s-2", None).unwrap(),
+        sync_in(&r.base(), &r.path(), "claude", "s-2", None).unwrap(),
         Synced::NotAttached
     );
     assert_eq!(chat.detach("claude", "s-1").unwrap(), Some("dev".into()));
     assert_eq!(chat.detach("claude", "s-1").unwrap(), None);
     let head = r.state("dev");
     assert_eq!(
-        sync(&r.path(), "claude", "s-1", Some(&path)).unwrap(),
+        sync_in(&r.base(), &r.path(), "claude", "s-1", Some(&path)).unwrap(),
         Synced::NotAttached
     );
     assert_eq!(r.state("dev"), head);
-    assert!(sync(&r.path(), "claude", "../s-1", None).is_err());
+    assert!(sync_in(&r.base(), &r.path(), "claude", "../s-1", None).is_err());
 }
 
 #[test]
@@ -248,7 +256,10 @@ fn a_session_without_a_transcript_yet_is_bound_and_synced_later() {
         .unwrap();
     assert!(a.created && a.added.is_empty());
     r.transcript("s-1", &lines("plain.jsonl"));
-    assert_eq!(added(sync(&r.path(), "claude", "s-1", None).unwrap()), 0..4);
+    assert_eq!(
+        added(sync_in(&r.base(), &r.path(), "claude", "s-1", None).unwrap()),
+        0..4
+    );
 }
 
 #[test]
@@ -420,7 +431,7 @@ fn a_session_can_attach_to_another_thread_after_explicit_detach() {
         .map(|t| t.name().to_string())
         .collect();
     assert_eq!(names, ["one", "two"]);
-    match sync(&r.path(), "claude", "s-1", None).unwrap() {
+    match sync_in(&r.base(), &r.path(), "claude", "s-1", None).unwrap() {
         Synced::Attached { thread, added } => assert!(thread == "two" && added.is_empty()),
         Synced::NotAttached => panic!("attached to two"),
     }
@@ -649,7 +660,7 @@ fn subagents_are_kept_beside_the_main_tree() {
     let items = s.agent_items("claude", &agent.agent).unwrap();
     assert_eq!(items, read.agents[0].items);
     let head = r.state("dev");
-    let again = sync(&r.path(), "claude", "s-1", None).unwrap();
+    let again = sync_in(&r.base(), &r.path(), "claude", "s-1", None).unwrap();
     assert!(matches!(again, Synced::Attached { added, .. } if added.is_empty()));
     assert_eq!(r.state("dev"), head);
 }
@@ -740,7 +751,7 @@ fn the_compactor_lock_is_per_thread() {
         a.lock_before(soon).unwrap().is_some(),
         "a spawned child may hold a copy briefly"
     );
-    assert!(r.path().join(".git/ai/chat/a.lock").is_file());
+    assert!(r.store().join("a.lock").is_file());
 }
 
 #[test]
@@ -752,7 +763,7 @@ fn worktrees_share_the_threads() {
     let p = r.transcript("s-1", &lines("plain.jsonl"));
     let sub = wt.join("deep");
     fs::create_dir_all(&sub).unwrap();
-    let chat = Chat::find(&sub).unwrap().unwrap();
+    let chat = Chat::find_in(&r.base(), &sub).unwrap().unwrap();
     chat.attach("dev", "claude", "s-1", Some(&p)).unwrap();
     let names: Vec<String> = r
         .chat()
@@ -764,7 +775,7 @@ fn worktrees_share_the_threads() {
     assert_eq!(names, ["dev"]);
     assert!(r.store().join("threads/dev").is_dir());
     assert!(chat.thread("dev").unwrap().try_lock().unwrap().is_some());
-    assert!(r.path().join(".git/ai/chat/dev.lock").is_file());
+    assert!(r.store().join("dev.lock").is_file());
     let main = r.chat();
     assert_eq!(
         main.thread("dev")
@@ -776,7 +787,7 @@ fn worktrees_share_the_threads() {
         4
     );
     assert!(matches!(
-        sync(&r.path(), "claude", "s-1", None).unwrap(),
+        sync_in(&r.base(), &r.path(), "claude", "s-1", None).unwrap(),
         Synced::Attached { .. }
     ));
 }
@@ -789,9 +800,9 @@ fn a_newer_store_is_refused() {
     let before = r.state("dev");
     fs::write(r.store().join("format"), "4\n").unwrap();
     let want = "This chat store is format 4; this ai reads up to 3. Upgrade ai.";
-    let found = Chat::find(&r.path()).map(|_| ());
+    let found = Chat::find_in(&r.base(), &r.path()).map(|_| ());
     assert_eq!(found.unwrap_err().to_string(), want);
-    let s = sync(&r.path(), "claude", "s-1", None).map(|_| ());
+    let s = sync_in(&r.base(), &r.path(), "claude", "s-1", None).map(|_| ());
     assert_eq!(s.unwrap_err().to_string(), want);
     assert_eq!(r.state("dev"), before);
 }
@@ -934,6 +945,7 @@ fn two_processes_syncing_one_thread_lose_nothing() {
                 Command::new(&me)
                     .args(["--exact", "sync_child", "--test-threads", "1"])
                     .env(CHILD, format!("{} {s}", r.path().display()))
+                    .env("AI_CHAT_DIR", r.base())
                     .stdout(Stdio::null())
                     .spawn()
                     .unwrap()

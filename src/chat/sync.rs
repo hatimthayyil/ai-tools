@@ -6,7 +6,7 @@ use crate::chat::{
     claude,
     record::{Binding, State, Track, check_id},
     source,
-    store::{Added, Chat, Thread, Transcript},
+    store::{Added, Chat, Thread, Transcript, base_dir},
 };
 
 /// The outcome of [`sync`].
@@ -62,7 +62,18 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
 /// Ingests the new entries of an attached session; a session attached to no thread of the
 /// repository at `dir` is [`Synced::NotAttached`].
 pub fn sync(dir: &Path, harness: &str, session: &str, transcript: Option<&Path>) -> Result<Synced> {
-    match Chat::find(dir)? {
+    sync_in(&base_dir()?, dir, harness, session, transcript)
+}
+
+/// [`sync`] with the stores in `base`.
+pub fn sync_in(
+    base: &Path,
+    dir: &Path,
+    harness: &str,
+    session: &str,
+    transcript: Option<&Path>,
+) -> Result<Synced> {
+    match Chat::find_in(base, dir)? {
         Some(chat) => chat.sync(harness, session, transcript),
         None => Ok(Synced::NotAttached),
     }
@@ -223,6 +234,32 @@ mod tests {
 
     use super::*;
 
+    /// A git repository at `dir` with one commit.
+    fn init(dir: &Path) {
+        gix::init(dir).unwrap();
+        let ok = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(["commit", "-q", "--allow-empty", "--no-verify", "-m", "root"])
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    }
+
+    /// The chat store of the repository at `dir`, kept inside it.
+    fn open(dir: &Path) -> Chat {
+        Chat::find_in(&dir.join(".chat"), dir).unwrap().unwrap()
+    }
+
     fn plain() -> String {
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/plain.jsonl");
@@ -232,8 +269,8 @@ mod tests {
     #[test]
     fn an_older_sync_finishing_last_preserves_newer_progress() {
         let dir = tempfile::TempDir::new().unwrap();
-        gix::init(dir.path()).unwrap();
-        let chat = Chat::find(dir.path()).unwrap().unwrap();
+        init(dir.path());
+        let chat = open(dir.path());
         let all = plain();
         let prefix: String = all.split_inclusive('\n').take(3).collect();
         let transcript = dir.path().join("s-1.jsonl");
@@ -244,7 +281,7 @@ mod tests {
         let (resume, resumed) = mpsc::channel::<()>();
         let path = dir.path().to_path_buf();
         let older = thread::spawn(move || {
-            let chat = Chat::find(&path).unwrap().unwrap();
+            let chat = open(&path);
             chat.sync_with("claude", "s-1", None, |harness, session, path| {
                 let transcript = read(harness, session, path)?;
                 captured.send(()).unwrap();
@@ -262,7 +299,7 @@ mod tests {
             .unwrap();
         let path = dir.path().to_path_buf();
         let newer = thread::spawn(move || {
-            let chat = Chat::find(&path).unwrap().unwrap();
+            let chat = open(&path);
             chat.sync("claude", "s-1", None).unwrap()
         });
         resume.send(()).unwrap();
@@ -270,8 +307,8 @@ mod tests {
         newer.join().unwrap();
 
         let fresh = tempfile::TempDir::new().unwrap();
-        gix::init(fresh.path()).unwrap();
-        let whole = Chat::find(fresh.path()).unwrap().unwrap();
+        init(fresh.path());
+        let whole = open(fresh.path());
         whole
             .attach("dev", "claude", "s-1", Some(&transcript))
             .unwrap();
@@ -287,14 +324,14 @@ mod tests {
     #[test]
     fn concurrent_attachments_have_one_owner_and_detach_clears_it() {
         let dir = tempfile::TempDir::new().unwrap();
-        gix::init(dir.path()).unwrap();
+        init(dir.path());
         let start = std::sync::Arc::new(std::sync::Barrier::new(3));
         let mut workers = Vec::new();
         for name in ["one", "two"] {
             let path = dir.path().to_path_buf();
             let start = start.clone();
             workers.push(thread::spawn(move || {
-                let chat = Chat::find(&path).unwrap().unwrap();
+                let chat = open(&path);
                 start.wait();
                 chat.attach(name, "claude", "s-1", None)
             }));
@@ -308,7 +345,7 @@ mod tests {
         let error = results.into_iter().find_map(Result::err).unwrap();
         assert!(error.to_string().contains("Run ai chat detach"));
 
-        let chat = Chat::find(dir.path()).unwrap().unwrap();
+        let chat = open(dir.path());
         let (owner, binding) = chat.attached("claude", "s-1").unwrap().unwrap();
         assert!(binding.is_attached());
         assert_eq!(
@@ -329,8 +366,8 @@ mod tests {
     #[test]
     fn archived_source_and_projection_use_the_same_captured_bytes() {
         let dir = tempfile::TempDir::new().unwrap();
-        gix::init(dir.path()).unwrap();
-        let chat = Chat::find(dir.path()).unwrap().unwrap();
+        init(dir.path());
+        let chat = open(dir.path());
         let all = plain();
         let original: String = all.split_inclusive('\n').take(3).collect();
         let path = dir.path().join("s-1.jsonl");
@@ -351,9 +388,7 @@ mod tests {
 
         let snapshot = chat.thread("dev").unwrap().snapshot().unwrap();
         assert_eq!(snapshot.len().unwrap(), 1);
-        let archived = dir
-            .path()
-            .join(".git/ai/chat/threads/dev/sources/claude/s-1/s-1.jsonl");
+        let archived = chat.dir().join("threads/dev/sources/claude/s-1/s-1.jsonl");
         assert_eq!(
             fs::read(archived).unwrap(),
             original.as_bytes(),
