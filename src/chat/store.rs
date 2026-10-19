@@ -16,9 +16,10 @@ use serde::Serialize;
 use crate::{
     chat::{
         claude::Subagent,
-        model::{Item, Kind, SourceId, Tree, turns},
+        model::{Item, Kind, SourceId, Tree},
         record::{
-            Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Row, State, Track, check_id,
+            Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Row, State, Tag, Track,
+            check_id,
         },
     },
     file::{self, AtPath},
@@ -59,6 +60,18 @@ fn tips(heads: &[Head]) -> Vec<u64> {
     (0..heads.len() as u64)
         .filter(|&i| tip[i as usize])
         .collect()
+}
+
+/// The turns on the branch to `tip`, as `model::turns` counts them: one, plus one per item
+/// below the root that opens a turn.
+fn count_turns(heads: &[Head], opens: &[bool], tip: u64) -> usize {
+    let mut n = 1;
+    let mut at = tip as usize;
+    while let Some(p) = heads[at].parent {
+        n += usize::from(opens[at]);
+        at = p as usize;
+    }
+    n
 }
 
 /// The dedupe key of an entry: its harness and entry id.
@@ -287,7 +300,7 @@ impl Chat {
                 let heads = snap.heads()?;
                 let tips = tips(&heads);
                 let turns = match tips.last() {
-                    Some(&tip) => turns(&snap.tree()?.path(tip as usize)).len(),
+                    Some(&tip) => count_turns(&heads, &snap.opens()?, tip),
                     None => 0,
                 };
                 let mut sessions: Vec<(Binding, Timestamp)> = snap
@@ -552,6 +565,18 @@ impl Snapshot {
     /// The items of the main tree, in order: position is sequence number.
     pub fn items(&self) -> Result<Vec<Item>> {
         items(&self.name, "item", &self.items)
+    }
+
+    /// Whether each item of the main tree opens a turn, from its kind tag alone.
+    fn opens(&self) -> Result<Vec<bool>> {
+        jsonl::lines(&self.items)
+            .enumerate()
+            .map(|(i, l)| {
+                let t: Tag = jsonl::decode(l)
+                    .with_context(|| format!("Thread {}: item {i} is corrupt", self.name))?;
+                Ok(t.opens())
+            })
+            .collect()
     }
 
     /// Item `seq` of the main tree.
@@ -921,5 +946,60 @@ impl Append {
             kind: item.kind.clone(),
         });
         self.keys.insert(key(&item.id), seq);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::model::turns;
+
+    #[test]
+    fn turn_counts_match_the_tree() {
+        // (parent, opens): a root that does not open, two branches, a second root that opens.
+        let spec = [
+            (None, false),
+            (Some(0), true),
+            (Some(1), false),
+            (Some(2), true),
+            (Some(0), true),
+            (Some(4), false),
+            (None, true),
+        ];
+        let heads: Vec<Head> = (0..)
+            .zip(spec)
+            .map(|(seq, (parent, _))| Head {
+                seq,
+                parent,
+                harness: "test".into(),
+                session: "s".into(),
+                entry: seq.to_string(),
+                ts: Timestamp::UNIX_EPOCH,
+            })
+            .collect();
+        let opens: Vec<bool> = spec.iter().map(|s| s.1).collect();
+        let tree = Tree::new(
+            heads
+                .iter()
+                .zip(&opens)
+                .map(|(h, &o)| Item {
+                    id: h.source(),
+                    parent: h.parent.map(|p| heads[p as usize].source()),
+                    ts: h.ts,
+                    kind: if o {
+                        Kind::User(String::new())
+                    } else {
+                        Kind::Text(String::new())
+                    },
+                })
+                .collect(),
+        );
+        for tip in tips(&heads) {
+            assert_eq!(
+                count_turns(&heads, &opens, tip),
+                turns(&tree.path(tip as usize)).len(),
+                "tip {tip}"
+            );
+        }
     }
 }
