@@ -1,0 +1,23 @@
+src/chat/sync.rs
+  s_77b04d9838f161::t_854a4f84a55a3f 117-134,156,232-234,236-244,251,253,426-464
+ai/comments/src/chat/sync.rs.md
+  s_77b04d9838f161::t_5f96558d2aa241 9
+tests/chat.rs
+  s_77b04d9838f161::t_71ceda30b285a0 898-899
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6eaef24c8a8f10285977cabb27f95eaf37d80002",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
