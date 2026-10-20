@@ -4,6 +4,7 @@
 - The store retains complete, byte-for-byte copies of a thread's original session files, including subagent files.
 - History is an ordered sequence of turns; each opens at a message from the user or another agent, and closes at the next one or where the harness ends the assistant's turn.
 - Only `compact-session` and `ai chat summarise` write summary lines; reading a thread never calls the model.
+- Only `/ai` compacts a session into its thread's view, and only once the view is built; otherwise it compacts nothing. `/compact` and automatic compaction stay Claude Code's own.
 - Chat records are JSON Lines.
 - Earlier states remain readable as prefixes of append-only files.
 - Unsupported newer formats are refused before writing.

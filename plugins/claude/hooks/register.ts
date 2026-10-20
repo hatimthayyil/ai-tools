@@ -3,9 +3,11 @@ import type { EngineInterface, Register } from 'claude-code'
 const NOT_ATTACHED = 3
 const LONG_MS = 600_000
 const FLUSH_MS = 1_100
-const USAGE = 'Usage: /ai compress | /ai attach <name> | /ai detach'
+const USAGE = 'Usage: /ai | /ai attach <name> | /ai detach'
 
 const transcript = { plugin: 'ai', key: 'transcript' } as const
+const prepared = { plugin: 'ai', key: 'view' } as const
+const requested = { plugin: 'ai', key: 'compress' } as const
 
 type Ran = { exitCode: number; stdout: string; stderr: string }
 
@@ -45,16 +47,28 @@ function reply(ran: Ran): string {
   return ran.stderr.trim() || `ai chat exited with code ${ran.exitCode}.`
 }
 
-function queueCompact($: EngineInterface): void {
+async function compress($: EngineInterface): Promise<string | undefined> {
+  await $.clock.sleep(FLUSH_MS)
+  const ran = await chat($, ['compact-session', ...(await session($))], LONG_MS)
+  if (ran.exitCode === NOT_ATTACHED) return reply(ran)
+  if (ran.exitCode !== 0) return `Not compacted: ${reply(ran)}`
+  if (ran.stdout === '') return 'Not compacted: the thread holds nothing yet.'
+  await $.state.set(prepared, ran.stdout)
   $.clock.after(0, () => $.command.run({ command: 'compact' }))
+  return undefined
+}
+
+async function compressNow($: EngineInterface): Promise<void> {
+  const failed = await compress($)
+  if (failed !== undefined) $.ui.log(failed)
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ai',
-      description: 'ai chat: compress, attach <name>, detach',
-      argumentHint: 'compress | attach <name> | detach',
+      description: "ai chat: compact into the thread's view; attach <name>, detach",
+      argumentHint: '[attach <name> | detach]',
     })
     await $.tool.register({
       name: 'compress',
@@ -76,13 +90,18 @@ export const register: Register = on => {
 
   on('session.compact', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
-    await $.clock.sleep(FLUSH_MS)
-    const text = await view($, await session($), "using Claude Code's own compaction")
-    if (text === undefined) return next(e)
+    const text = (await $.state.get(prepared)).value
+    if (!text) return next(e)
+    await $.state.set(prepared, '')
     return { messages: [{ role: 'user', text, toolUses: [] }] }
   })
 
   on('classic.Stop', async ($, e, next) => {
+    if ((await $.state.get(requested)).value) {
+      await $.state.set(requested, false)
+      $.clock.after(0, () => compressNow($))
+      return next(e)
+    }
     const args = sessionArgs(e.session_id, e.transcript_path)
     $.clock.after(FLUSH_MS, () => sync($, args))
     return next(e)
@@ -96,10 +115,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'ai' }, async ($, e) => {
     const [sub, ...rest] = e.args.trim().split(/\s+/)
-    if (sub === 'compress' && rest.length === 0) {
-      queueCompact($)
-      return { text: 'Compacting.' }
-    }
+    if (sub === '' && rest.length === 0) return { text: (await compress($)) ?? 'Compacting.' }
     if (sub === 'attach' && rest.length === 1) {
       return { text: reply(await chat($, ['attach', rest[0]!, ...(await session($))], LONG_MS)) }
     }
@@ -112,7 +128,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__ai__compress' }, async $ => {
     const ran = await chat($, ['sync-session', ...(await session($))])
     if (ran.exitCode !== 0) return { result: reply(ran) }
-    queueCompact($)
+    await $.state.set(requested, true)
     return { result: 'Compaction queued for the end of this turn.' }
   })
 }

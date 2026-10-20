@@ -4,7 +4,7 @@ The `ai` CLI: an all-in-one AI tool.
 
 - `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory wake` prints the whole memory as one short view.
 - `ai notes`: a global knowledge store for AI agents. Each note is one claim, filed in a tree of topics; Claude Code summarises every topic from its children, so an agent can browse the tree or search it.
-- `ai chat`: named conversations that span agent sessions. A thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and replaces the session's compaction with a view of the whole thread.
+- `ai chat`: named conversations that span agent sessions. A thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
 
 ## Install
 
@@ -55,7 +55,7 @@ ai chat grep -t dev <regex>          # search it
 ai chat summarise -t dev             # write its summaries now; --rebuild, --model, --dry-run
 ```
 
-Inside a session, `/ai attach <name>`, `/ai detach` and `/ai compress`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/compact` and auto-compaction replace the context with the thread's view. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
+Inside a session, `/ai attach <name>` and `/ai detach`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with the thread's view; if it cannot build the view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
 
 A session has one active thread. Detach it explicitly before attaching it elsewhere; its previous thread retains the recorded history.
 

@@ -83,9 +83,7 @@ enum Command {
         #[command(flatten)]
         session: Session,
     },
-    #[command(
-        about = "detach this session from its thread; /compact goes back to Claude Code's own."
-    )]
+    #[command(about = "detach this session from its thread.")]
     Detach {
         #[command(flatten)]
         session: Session,
