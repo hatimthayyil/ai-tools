@@ -47,19 +47,17 @@ pub struct Job {
 
 /// What every task starts with: [`SCALE`] as the size of a line.
 pub fn ruler() -> String {
-    format!("For scale only, this meaningless filler is exactly {NODE} bytes:\n{SCALE}\n\n")
+    format!("For scale only, this meaningless filler is exactly {WORDS} words:\n{SCALE}\n\n")
 }
 
 fn step_text(step: &Step) -> String {
     let scale = ruler();
     match step {
         Step::Compress(m) => {
-            format!(
-                "{scale}Compress this message into one line, in at most {NODE} bytes, about {WORDS} words:\n{m}"
-            )
+            format!("{scale}Compress this message into one line, in at most {WORDS} words:\n{m}")
         }
         Step::Merge(a, b) => format!(
-            "{scale}Merge these two lines into one, in at most {NODE} bytes, about {WORDS} words:\n{}\n{}",
+            "{scale}Merge these two lines into one, in at most {WORDS} words:\n{}\n{}",
             flat(a),
             flat(b)
         ),
@@ -71,11 +69,13 @@ pub fn message(job: &Job) -> Vec<Block> {
     vec![Block::new(step_text(&job.step), false)]
 }
 
+/// Asks for [`WORDS`] words, or fewer for a line whose words are long enough to overrun
+/// [`NODE`] in fewer: as many as fill the room [`WORDS`] words take on average.
 pub fn retry_text(line: &str) -> String {
+    let words = line.split_whitespace().count();
+    let want = (words * WORDS * 73 / 10 / line.len()).clamp(1, WORDS);
     format!(
-        "That line is {} bytes, {} over the limit of {NODE}. Rewrite it whole, as one complete line of at most {NODE} bytes: shorten the minor items, never cut it off.",
-        line.len(),
-        line.len() - NODE
+        "That line is {words} words, too long. Rewrite it whole, as one complete line of at most {want} words: shorten the minor items, never cut it off."
     )
 }
 
@@ -388,15 +388,11 @@ mod tests {
 
     #[test]
     fn prompts_are_the_spec_s() {
-        assert_eq!(SCALE.len(), NODE);
+        assert_eq!(SCALE.split_whitespace().count(), WORDS);
         assert!(SCALE.starts_with("Lorem ipsum") && SCALE.is_ascii() && !SCALE.contains('\n'));
         assert!(COMPACT.starts_with("You write the memory of ai: AI agents"));
-        assert!(!COMPACT.contains("OptChat"));
-        assert!(
-            COMPACT
-                .trim_end()
-                .ends_with("non-ASCII characters cost 2-4 bytes.")
-        );
+        assert!(!COMPACT.contains("OptChat") && !COMPACT.contains("bytes"));
+        assert!(COMPACT.trim_end().ends_with("Output\nonly the line."));
     }
 
     #[test]
@@ -409,23 +405,28 @@ mod tests {
         assert_eq!(m.len(), 1, "the step alone: no context");
         assert!(!m[0].cache);
         assert!(m[0].text.starts_with(&format!(
-            "For scale only, this meaningless filler is exactly 512 bytes:\n{SCALE}\n\n"
+            "For scale only, this meaningless filler is exactly 50 words:\n{SCALE}\n\n"
         )));
         assert!(
             m[0].text.ends_with(
-                "Merge these two lines into one, in at most 512 bytes, about 60 words:\nuser: hi\nai: a b"
+                "Merge these two lines into one, in at most 50 words:\nuser: hi\nai: a b"
             )
         );
         let c = step_text(&Step::Compress("tool: x\ny".into()));
-        assert!(c.ends_with(
-            "Compress this message into one line, in at most 512 bytes, about 60 words:\ntool: x\ny"
-        ));
+        assert!(
+            c.ends_with("Compress this message into one line, in at most 50 words:\ntool: x\ny")
+        );
+        assert!(!c.contains("bytes"));
     }
 
     #[test]
-    fn retries_ask_for_a_shorter_rewrite() {
-        let r = retry_text(&format!("{}ééé", "x".repeat(NODE - 1)));
-        assert!(r.starts_with("That line is 517 bytes, 5 over the limit of 512. Rewrite it whole"));
-        assert!(r.ends_with("never cut it off."));
+    fn retries_ask_for_the_target_in_words() {
+        let r = retry_text(&"word ".repeat(104));
+        assert!(r.starts_with(
+            "That line is 104 words, too long. Rewrite it whole, as one complete line of at most 50 words:"
+        ));
+        assert!(r.ends_with("never cut it off.") && !r.contains("bytes"));
+        let dense = retry_text("0123456789ab ".repeat(45).trim_end());
+        assert!(dense.contains("at most 28 words"), "{dense}");
     }
 }

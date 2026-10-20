@@ -2,9 +2,9 @@ use std::fmt;
 
 pub const NODE: usize = 512;
 
-/// About 440 bytes at the 7.3 bytes a word summary lines average: room below [`NODE`] for a
-/// model's miscount.
-pub const WORDS: usize = 60;
+/// The length a summariser is asked for, the only one it sees: about 365 bytes at the 7.3 bytes
+/// a word summary lines average, so a model overshooting it still fits [`NODE`].
+pub const WORDS: usize = 50;
 
 /// Node `(l, i)`: messages `[i·2^l, (i+1)·2^l)`, printed `id+n`, a leaf as a bare `id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

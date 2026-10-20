@@ -51,4 +51,4 @@ be found again. Tag each part with its speaker (user:, ai:, or the
 agent's name), credit quoted text to its author, keep negations, and
 report each thing as far along as it got, no further. Your line sits
 among neighbours you cannot see, so it must make sense alone. Output
-only the line; non-ASCII characters cost 2 to 4 bytes.
+only the line.

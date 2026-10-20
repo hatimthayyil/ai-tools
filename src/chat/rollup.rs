@@ -227,7 +227,7 @@ const MERGE: &str = "Merge these two adjacent lines, the earlier first,";
 fn task(what: &str, context: Option<&str>, input: &str) -> String {
     let context = context.map_or(String::new(), |c| format!("<context>\n{c}</context>\n"));
     format!(
-        "{}{what} into one line of at most {NODE} bytes, about {WORDS} words.\n{context}<input>\n{input}</input>",
+        "{}{what} into one line of at most {WORDS} words.\n{context}<input>\n{input}</input>",
         ruler()
     )
 }
