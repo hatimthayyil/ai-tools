@@ -25,7 +25,8 @@ Writing
 - Sources: a file that extends its archived copy gets the new bytes appended (transcripts only grow); any other change rewrites it. A path that changed between file and directory replaces the entry standing in the way. Missing live files keep their last copy. Earlier versions of a rewritten file are not kept.
 
 Reading
-- A `Snapshot` holds the bytes of the thread's `items`, `lines` and `sessions` files and the store's `sessions.jsonl` as read at one moment, and decodes on demand. Subagent files are read live.
+- A `Snapshot` holds the bytes of the thread's `items`, `lines`, `sessions` and `agents` files and the store's `sessions.jsonl` as read at one moment, and decodes on demand. Subagent item files are read live.
+- Readers take no lock, so `snapshot` reads the files that name items (sessions, lines, agents) before `items`: a writer appends items before any record naming them, so every item a record names is there. Read the other way, a sync landing between the reads gave a session record with a tip past the items read (`two_processes_syncing_one_thread_lose_nothing` failed about 1 in 16 runs under parallel load).
 - Every read checks what it decodes: positions equal sequence numbers and parents are earlier (`check_head`); tips, grafts, calls and line keys lie within the items. Corrupt data is an error naming the thread and the record, never a panic.
 - `Binding` joins a `Track` with the session's attachment changes: attached at its last attachment to this thread, detached at the change after it. A track with no attachment to this thread yet is not a binding.
 

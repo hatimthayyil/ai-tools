@@ -347,15 +347,22 @@ impl Thread {
         Ok(self.dir.is_dir())
     }
 
-    /// The thread as it is now; empty if it does not exist.
+    /// The thread as it is now; empty if it does not exist. A record names only items appended
+    /// before it, so the records are read first and the items last: the state is whole without
+    /// the writer's lock.
     pub fn snapshot(&self) -> Result<Snapshot> {
+        let events = jsonl::read(&self.root.join(SESSIONS))?;
+        let tracks = jsonl::read(&self.dir.join(SESSIONS))?;
+        let lines = jsonl::read(&self.dir.join(LINES))?;
+        let agents = jsonl::read(&self.dir.join(AGENTS))?;
         Ok(Snapshot {
             name: self.name.clone(),
             dir: self.dir.clone(),
             items: jsonl::read(&self.dir.join(ITEMS))?,
-            lines: jsonl::read(&self.dir.join(LINES))?,
-            tracks: jsonl::read(&self.dir.join(SESSIONS))?,
-            events: jsonl::read(&self.root.join(SESSIONS))?,
+            lines,
+            tracks,
+            agents,
+            events,
         })
     }
 
@@ -487,6 +494,7 @@ pub struct Snapshot {
     items: Vec<u8>,
     lines: Vec<u8>,
     tracks: Vec<u8>,
+    agents: Vec<u8>,
     events: Vec<u8>,
 }
 
@@ -711,8 +719,7 @@ impl Snapshot {
     pub fn agents(&self) -> Result<Vec<Agent>> {
         let n = self.len()?;
         let mut out: BTreeMap<(String, String), Agent> = BTreeMap::new();
-        let b = jsonl::read(&self.dir.join(AGENTS))?;
-        for (i, l) in jsonl::lines(&b).enumerate() {
+        for (i, l) in jsonl::lines(&self.agents).enumerate() {
             let a: Agent = jsonl::decode(l).with_context(|| {
                 format!("Thread {}: agent record {} is corrupt", self.name, i + 1)
             })?;

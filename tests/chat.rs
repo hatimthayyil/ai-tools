@@ -943,13 +943,20 @@ fn two_processes_syncing_one_thread_lose_nothing() {
                     .args(["--exact", "sync_child", "--test-threads", "1"])
                     .env(CHILD, format!("{} {s}", r.path().display()))
                     .env("AI_CHAT_DIR", r.base())
-                    .stdout(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
                     .spawn()
                     .unwrap()
             })
             .collect();
-        for mut k in kids {
-            assert!(k.wait().unwrap().success());
+        for kid in kids {
+            let o = kid.wait_with_output().unwrap();
+            assert!(
+                o.status.success(),
+                "a sync failed at step {k}:\n{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
         }
     }
     let t = r.chat().thread("dev").unwrap();
