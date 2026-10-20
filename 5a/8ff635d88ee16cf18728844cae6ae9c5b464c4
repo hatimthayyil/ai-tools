@@ -19,6 +19,7 @@ src/chat/cli.rs
   s_77b04d9838f161::t_4aca7a1eba605f 201-204,207
   s_77b04d9838f161::t_5be6e78c666b07 285-290
   s_77b04d9838f161::t_7df14814837999 416
+  s_77b04d9838f161::t_b7cfd4682a034f 276-277
 src/chat/mod.rs
   s_77b04d9838f161::t_687823501ba9d3 14
 ai/comments/src/chat/cli.rs.md
