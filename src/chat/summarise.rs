@@ -20,7 +20,7 @@ use crate::{
         rollup::{PROMPT, Rollup, Source},
         store::{Chat, Mark, Thread},
     },
-    memory::{Backend, Block, ClaudeCode, JOBS, Who, claude, log, write_line},
+    memory::{Backend, Block, ClaudeCode, JOBS, NODE, TRIES, Who, claude, log, write_line},
 };
 
 const MODEL: &str = "ai.chat.model";
@@ -59,7 +59,7 @@ impl Chat {
         Ok(Arc::new(ClaudeCode::compactor_at(claude::find()?, &model)?))
     }
 
-    /// Starts `ai chat summarise -t <name>` in the background, unless `ai.chat.summarise` is false;
+    /// Starts `ai chat summarise -t <name> --background`, unless `ai.chat.summarise` is false;
     /// whether it started.
     pub fn spawn_summariser(&self, thread: &Thread) -> Result<bool> {
         if !self.config()?.summarise {
@@ -68,11 +68,21 @@ impl Chat {
         let repo = self.repo();
         let cwd = repo.workdir().unwrap_or(repo.git_dir());
         log::spawn(&thread.log_path()?, |c| {
-            c.args(["chat", "summarise", "-t", thread.name()])
+            c.args(["chat", "summarise", "-t", thread.name(), "--background"])
                 .current_dir(cwd)
         })?;
         Ok(true)
     }
+}
+
+/// What a run does once a line fails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnFail {
+    /// Starts no more calls: a request someone waits on.
+    Stop,
+    /// Builds what does not need the failed line, until [`JOBS`] calls fail in a row: the
+    /// background summariser, which only logs.
+    Continue,
 }
 
 /// What a compactor run did.
@@ -105,9 +115,8 @@ pub struct DryLine {
 
 /// Under the thread's lock, waiting for it until `deadline`, builds `keys` and the unbuilt
 /// lines they are made from, up to [`JOBS`] calls at once, until they are built, `deadline`
-/// passes, or failures leave nothing to start; logs to [`Thread::log_path`]. Calls still
-/// running at the deadline are stopped through `backend`. A key that is no line of the thread
-/// is an error.
+/// passes, or a line fails; logs to [`Thread::log_path`]. Calls still running at the deadline
+/// are stopped through `backend`. A key that is no line of the thread is an error.
 pub fn build(
     thread: &Thread,
     backend: Arc<dyn Backend>,
@@ -127,7 +136,7 @@ pub fn build(
             lock
         }
     };
-    let mut run = Run::new(thread, backend);
+    let mut run = Run::new(thread, backend, OnFail::Stop);
     run.pass(Some(keys), Some(deadline))?;
     let built = run.built.clone();
     drop(run);
@@ -135,10 +144,14 @@ pub fn build(
     Ok(built)
 }
 
-/// The background compactor: under the thread's lock, builds every line that is ready on any
-/// branch, over each newer snapshot, until none is; logs to [`Thread::log_path`]. `None` if
-/// another compactor holds the lock.
-pub fn summarise(thread: &Thread, backend: Arc<dyn Backend>) -> Result<Option<Built>> {
+/// Under the thread's lock, builds every line that is ready on any branch, over each newer
+/// snapshot, until none is or failures stop it as `on_fail` says; logs to
+/// [`Thread::log_path`]. `None` if another compactor holds the lock.
+pub fn summarise(
+    thread: &Thread,
+    backend: Arc<dyn Backend>,
+    on_fail: OnFail,
+) -> Result<Option<Built>> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
         "summarise",
@@ -148,7 +161,7 @@ pub fn summarise(thread: &Thread, backend: Arc<dyn Backend>) -> Result<Option<Bu
     )
     .entered();
     let start = Instant::now();
-    let mut run = Run::new(thread, backend);
+    let mut run = Run::new(thread, backend, on_fail);
     let mut started = false;
     loop {
         let Some(lock) = thread.try_lock()? else {
@@ -167,7 +180,7 @@ pub fn summarise(thread: &Thread, backend: Arc<dyn Backend>) -> Result<Option<Bu
             }
         };
         drop(lock);
-        if thread.snapshot()?.mark() == seen {
+        if run.halted() || thread.snapshot()?.mark() == seen {
             let b = &run.built;
             let secs = log::secs(start.elapsed());
             info!(
@@ -207,7 +220,7 @@ pub fn rebuild(
     info!("start");
     let dropped = thread.drop_lines()?;
     info!(dropped, "dropped");
-    let mut run = Run::new(thread, backend);
+    let mut run = Run::new(thread, backend, OnFail::Stop);
     loop {
         let tried = run.tried();
         run.pass(None, None)?;
@@ -274,7 +287,7 @@ pub fn rewrite(
         .collect::<Result<Vec<bool>>>()?;
     let dropped = thread.drop_keys(&[&[key][..], &above].concat())?;
     info!(dropped, "dropped");
-    let mut run = Run::new(thread, backend);
+    let mut run = Run::new(thread, backend, OnFail::Stop);
     loop {
         let tried = run.tried();
         run.pass(Some(&[key]), None)?;
@@ -311,7 +324,7 @@ pub fn dry_run(
     )
     .entered();
     info!(rebuild, "start");
-    let mut run = Run::new(thread, backend);
+    let mut run = Run::new(thread, backend, OnFail::Stop);
     run.dry = Some(Vec::new());
     run.anew = match (rebuild, line) {
         (false, _) => Anew::None,
@@ -364,7 +377,8 @@ struct Run<'t> {
     rx: Receiver<Done>,
     busy: HashSet<Key>,
     failed: HashSet<Key>,
-    /// Calls failed since the last that succeeded; at [`JOBS`] no more start.
+    on_fail: OnFail,
+    /// Calls failed since the last that succeeded.
     streak: usize,
     built: Built,
     /// A dry run's lines, kept here instead of stored; `None` stores them.
@@ -391,7 +405,7 @@ fn key((last, level): (u64, u32)) -> Key {
 }
 
 impl<'t> Run<'t> {
-    fn new(thread: &'t Thread, backend: Arc<dyn Backend>) -> Run<'t> {
+    fn new(thread: &'t Thread, backend: Arc<dyn Backend>, on_fail: OnFail) -> Run<'t> {
         let (tx, rx) = channel();
         Run {
             thread,
@@ -400,6 +414,7 @@ impl<'t> Run<'t> {
             rx,
             busy: HashSet::new(),
             failed: HashSet::new(),
+            on_fail,
             streak: 0,
             built: Built::default(),
             dry: None,
@@ -410,6 +425,14 @@ impl<'t> Run<'t> {
     /// Lines written or failed so far.
     fn tried(&self) -> usize {
         self.built.lines as usize + self.built.failed.len()
+    }
+
+    /// Whether failures stop new calls: one under [`OnFail::Stop`], else [`JOBS`] in a row.
+    fn halted(&self) -> bool {
+        match self.on_fail {
+            OnFail::Stop => !self.built.failed.is_empty(),
+            OnFail::Continue => self.streak >= JOBS,
+        }
     }
 
     /// Builds on the latest snapshot what is ready, of `want` and what it is made from if
@@ -528,9 +551,10 @@ impl<'t> Run<'t> {
         }
     }
 
-    /// Starts the calls of `todo` that are ready, in order, up to [`JOBS`] running.
+    /// Starts the calls of `todo` that are ready, in order, up to [`JOBS`] running, unless
+    /// failures halted the run. A line still over [`NODE`] bytes after [`TRIES`] fails.
     fn start(&mut self, roll: &Rollup, lines: &HashMap<Key, String>, todo: &BTreeSet<(u64, u32)>) {
-        if self.streak >= JOBS {
+        if self.halted() {
             return;
         }
         for k in todo.iter().map(|&o| key(o)) {
@@ -551,7 +575,15 @@ impl<'t> Run<'t> {
                 let _s = span.enter();
                 let at = Instant::now();
                 let r = catch_unwind(AssertUnwindSafe(|| {
-                    write_line(&*backend, PROMPT, &[Block::new(task, false)], &k)
+                    let (who, line) =
+                        write_line(&*backend, PROMPT, &[Block::new(task, false)], &k)?;
+                    if line.len() > NODE {
+                        bail!(
+                            "{} bytes after {TRIES} tries; a line holds at most {NODE}",
+                            line.len()
+                        );
+                    }
+                    Ok((who, line))
                 }))
                 .unwrap_or_else(|_| Err(anyhow!("the call panicked")));
                 let _ = tx.send((k, at.elapsed(), r));
@@ -593,8 +625,14 @@ impl<'t> Run<'t> {
                 self.failed.insert(k);
                 self.built.failed.push((k, error));
                 self.streak += 1;
-                if self.streak == JOBS {
-                    warn!(failures = JOBS, "stopping: calls keep failing");
+                match self.on_fail {
+                    OnFail::Stop if self.built.failed.len() == 1 => {
+                        warn!("stopping: a line failed")
+                    }
+                    OnFail::Continue if self.streak == JOBS => {
+                        warn!(failures = JOBS, "stopping: calls keep failing")
+                    }
+                    _ => {}
                 }
             }
         }

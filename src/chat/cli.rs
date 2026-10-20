@@ -14,10 +14,10 @@ use crate::{
     chat::{
         claude,
         id::Id,
-        record::Binding,
+        record::{Binding, Key},
         rollup::Rollup,
-        store::{Chat, Mark, Snapshot, Thread, check_name},
-        summarise::{build, dry_run, first, rebuild, rewrite, summarise},
+        store::{Chat, Snapshot, Thread, check_name},
+        summarise::{OnFail, build, dry_run, first, rebuild, rewrite, summarise},
         sync::Synced,
         view::Branch,
     },
@@ -48,7 +48,8 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     #[command(
-        about = "start Claude Code in a new session attached to a thread, creating it if new."
+        about = "start Claude Code in a new session attached to a thread, creating it if new.",
+        after_help = "It first writes the summary lines the session's view needs; if one fails, Claude Code does not start."
     )]
     Start {
         #[arg(help = "the thread: letters, digits, '-' and '_'")]
@@ -114,28 +115,10 @@ enum Command {
         )]
         before: Option<String>,
     },
-    #[command(about = "write a thread's summary lines that are ready, or one line.")]
-    Summarise {
-        #[command(flatten)]
-        target: Target,
-        #[arg(help = "one line: 12 (a turn), 8+4 (a node), 12.3+7 (a chunk)")]
-        id: Option<String>,
-        #[arg(
-            long,
-            help = "rewrite lines already written, all or the one named, and drop the lines above them"
-        )]
-        rebuild: bool,
-        #[arg(
-            long,
-            help = "the model for this run [default: ai.chat.model, else sonnet]"
-        )]
-        model: Option<String>,
-        #[arg(
-            long,
-            help = "print each line it would write beside the line it replaces; store nothing"
-        )]
-        dry_run: bool,
-    },
+    #[command(
+        about = "write a thread's summary lines that are ready, or one line, stopping at the first that fails."
+    )]
+    Summarise(Summarise),
     #[command(
         hide = true,
         about = "plumbing: copy this session's new entries into its thread."
@@ -146,12 +129,43 @@ enum Command {
     },
     #[command(
         hide = true,
-        about = "plumbing: sync, then print the view this session compacts to."
+        about = "plumbing: sync, then print the view this session compacts to; fails if a line it needs cannot be written."
     )]
     CompactSession {
         #[command(flatten)]
         session: Session,
     },
+}
+
+/// What `summarise` writes, and how.
+#[derive(Args, Debug)]
+struct Summarise {
+    #[command(flatten)]
+    target: Target,
+    #[arg(help = "one line: 12 (a turn), 8+4 (a node), 12.3+7 (a chunk)")]
+    id: Option<String>,
+    #[arg(
+        long,
+        help = "rewrite lines already written, all or the one named, and drop the lines above them"
+    )]
+    rebuild: bool,
+    #[arg(
+        long,
+        help = "the model for this run [default: ai.chat.model, else sonnet]"
+    )]
+    model: Option<String>,
+    #[arg(
+        long,
+        help = "print each line it would write beside the line it replaces; store nothing"
+    )]
+    dry_run: bool,
+    #[arg(
+        long,
+        hide = true,
+        conflicts_with_all = ["id", "rebuild", "dry_run"],
+        help = "run as the background summariser: build what it can past a failed line"
+    )]
+    background: bool,
 }
 
 /// The harness session a command is for: its flags, else the harness's environment.
@@ -252,21 +266,7 @@ impl Cli {
                 tool_output,
                 before,
             } => grep(cwd, out, target, &pat, tool_output, before.as_deref()),
-            Command::Summarise {
-                target,
-                id,
-                rebuild,
-                model,
-                dry_run,
-            } => summarise_cmd(
-                cwd,
-                out,
-                target,
-                id.as_deref(),
-                rebuild,
-                model.as_deref(),
-                dry_run,
-            ),
+            Command::Summarise(a) => summarise_cmd(cwd, out, a),
             Command::SyncSession { session } => sync_session(cwd, session),
             Command::CompactSession { session } => compact_session(cwd, out, session),
         }
@@ -338,24 +338,55 @@ fn view_in(t: &Thread, s: &Snapshot, c: Option<&Current>) -> Result<Option<Strin
     Ok(read_branch(s, c)?.map(|b| b.view(t.name())))
 }
 
-/// The view of the branch `c` reads in the thread's latest snapshot, once the lines it needs
-/// are written: built within [`WAIT`], waiting first for a running summariser. With the state
-/// it was read from; `None` while that branch holds no item.
-fn fresh_view(chat: &Chat, t: &Thread, c: Option<&Current>) -> Result<Option<(String, Mark)>> {
+/// The thread's latest snapshot, once the lines the view of `branch` (read in it) needs are
+/// written: built within [`WAIT`], waiting first for a running summariser, stopping at the
+/// first line that fails. Else an error naming each failed line, or how many lines are missing.
+fn ready(
+    chat: &Chat,
+    t: &Thread,
+    branch: impl Fn(&Snapshot) -> Result<Option<Branch>>,
+) -> Result<Snapshot> {
     let snap = t.snapshot()?;
-    let Some(branch) = read_branch(&snap, c)? else {
-        return Ok(None);
+    let keys = branch(&snap)?.map_or_else(Vec::new, |b| b.needed());
+    if keys.is_empty() {
+        return Ok(snap);
+    }
+    let built = build(t, chat.backend(None)?, &keys, Instant::now() + WAIT)?;
+    let snap = t.snapshot()?;
+    let missing = branch(&snap)?.map_or(0, |b| b.needed().len());
+    if missing == 0 {
+        return Ok(snap);
+    }
+    let name = t.name();
+    let mut msg = match built.failed.len() {
+        0 => format!(
+            "Cannot build the view of thread {name}: after {} s it still lacks {}.",
+            WAIT.as_secs(),
+            plural(missing as u64, "line")
+        ),
+        n => format!(
+            "Cannot build the view of thread {name}: {} failed.",
+            plural(n as u64, "line")
+        ),
     };
-    let keys = branch.needed();
-    let snap = match keys.is_empty() {
-        true => snap,
-        false => {
-            build(t, chat.backend(None)?, &keys, Instant::now() + WAIT)?;
-            t.snapshot()?
-        }
-    };
-    let mark = snap.mark();
-    Ok(view_in(t, &snap, c)?.map(|v| (v, mark)))
+    for f in failures(&snap, &built.failed)? {
+        msg += &format!("\n{f}");
+    }
+    bail!("{msg}\nWrite them, then try again: ai chat summarise -t {name}")
+}
+
+/// Each failed line as `Failed <id>: <error>`, by its id in `snap`.
+fn failures(snap: &Snapshot, failed: &[(Key, String)]) -> Result<Vec<String>> {
+    let tree = snap.tree()?;
+    let roll = Rollup::new(&tree);
+    let place = |seq: u64| tree.place(seq as usize);
+    Ok(failed
+        .iter()
+        .map(|(k, e)| {
+            let id = Id::line(k.level, place(first(&roll, *k)), place(k.last));
+            format!("Failed {id}: {e}")
+        })
+        .collect())
 }
 
 /// Starts the thread's background summariser, unless `ai.chat.summarise` is false.
@@ -391,10 +422,17 @@ fn exec_claude(dir: &Path, args: &[&str]) -> Result<ExitCode> {
     Err(e).context("Cannot start claude.")
 }
 
-/// A new Claude Code session attached to `name`, bound with its future transcript.
+/// A new Claude Code session attached to `name`, bound with its future transcript, once the
+/// lines its view needs are written.
 fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let chat = find(cwd)?;
     check_name(name)?;
+    let t = chat.thread(name)?;
+    if t.exists()? {
+        ready(&chat, &t, |s| {
+            s.graft()?.map(|g| Branch::load(s, Some(g))).transpose()
+        })?;
+    }
     let session = uuid()?;
     let config = claude_config().context("No home directory: set CLAUDE_CONFIG_DIR.")?;
     let path = config
@@ -537,7 +575,7 @@ fn sync_session(cwd: &Path, s: Session) -> Result<ExitCode> {
 }
 
 /// Sync, the lines the view needs built within [`WAIT`], then the view; nothing for a session
-/// whose branch holds no item yet.
+/// whose branch holds no item yet. An error, and no view, if a line it needs is not written.
 fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
     let (Some(c), Some(chat)) = (s.current(), Chat::find(cwd)?) else {
         return not_attached();
@@ -548,7 +586,8 @@ fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCo
     let Some((t, _)) = chat.attached(&c.harness, &c.session)? else {
         return not_attached();
     };
-    if let Some((view, _)) = fresh_view(&chat, &t, Some(&c))? {
+    let snap = ready(&chat, &t, |s| read_branch(s, Some(&c)))?;
+    if let Some(view) = view_in(&t, &snap, Some(&c))? {
         write!(out, "{view}")?;
     }
     Ok(ExitCode::SUCCESS)
@@ -692,17 +731,19 @@ fn grep(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Writes the thread's ready lines, or with `again` rewrites them all; with `id`, that one
-/// line. With `dry`, prints what it would write and stores nothing.
-fn summarise_cmd(
-    cwd: &Path,
-    out: &mut dyn Write,
-    target: Target,
-    id: Option<&str>,
-    again: bool,
-    model: Option<&str>,
-    dry: bool,
-) -> Result<ExitCode> {
+/// Writes the thread's ready lines, or with `rebuild` rewrites them all; with `id`, that one
+/// line. With `dry_run`, prints what it would write and stores nothing. It stops at the first
+/// line that fails, unless it is the `background` summariser.
+fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCode> {
+    let Summarise {
+        target,
+        id,
+        rebuild: again,
+        model,
+        dry_run: dry,
+        background,
+    } = a;
+    let (id, model) = (id.as_deref(), model.as_deref());
     let (chat, t, session) = pick(cwd, target)?;
     let line = match id {
         Some(v) => {
@@ -795,7 +836,11 @@ fn summarise_cmd(
             b
         }
         (false, false, None) => {
-            let Some(b) = summarise(&t, backend)? else {
+            let on_fail = match background {
+                true => OnFail::Continue,
+                false => OnFail::Stop,
+            };
+            let Some(b) = summarise(&t, backend, on_fail)? else {
                 writeln!(
                     out,
                     "A summariser is already running on {}; it writes these lines too.",
@@ -816,12 +861,8 @@ fn summarise_cmd(
         }
     };
     if !built.failed.is_empty() {
-        let tree = t.snapshot()?.tree()?;
-        let roll = Rollup::new(&tree);
-        let place = |seq: u64| tree.place(seq as usize);
-        for (k, e) in &built.failed {
-            let id = Id::line(k.level, place(first(&roll, *k)), place(k.last));
-            writeln!(out, "Failed {id}: {e}")?;
+        for f in failures(&t.snapshot()?, &built.failed)? {
+            writeln!(out, "{f}")?;
         }
     }
     Ok(match built.failed.is_empty() {

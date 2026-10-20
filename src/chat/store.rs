@@ -558,6 +558,11 @@ impl Snapshot {
         Ok(self.items.is_empty())
     }
 
+    /// The item a new session's branch hangs on: the newest; `None` while there is none.
+    pub fn graft(&self) -> Result<Option<u64>> {
+        Ok(self.len()?.checked_sub(1))
+    }
+
     /// The heads of the main tree's items, in order: position is sequence number.
     pub fn heads(&self) -> Result<Vec<Head>> {
         heads(&self.name, "item", &self.items)

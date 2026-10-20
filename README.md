@@ -59,6 +59,8 @@ Inside a session, `/ai attach <name>` and `/ai detach`; `-t` defaults to the ses
 
 A session has one active thread. Detach it explicitly before attaching it elsewhere; its previous thread retains the recorded history.
 
+Summary lines hold at most 512 bytes. A command you run, `/ai` included, writes the lines it needs and stops at the first that fails, naming each failed line with its error: `/ai` then compacts nothing, and `ai chat start` starts no session. The background summariser, started after each turn, builds what it can and only logs, to `<thread>.log` beside the threads.
+
 A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Earlier states are prefixes of those files (`--at`). A newer store format is refused. Re-attaching a session rebuilds its thread from the transcript.
 
 This needs the Claude Code plugin in `share/ai/plugins/claude` of the package (`plugins/claude` here). Load it in every session with the `env` block of `~/.claude/settings.json`:

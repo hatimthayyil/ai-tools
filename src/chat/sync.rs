@@ -204,7 +204,7 @@ impl Chat {
                 harness: harness.into(),
                 session: session.into(),
                 transcript: path,
-                graft: snap.len()?.checked_sub(1),
+                graft: snap.graft()?,
                 tip: None,
             },
         };

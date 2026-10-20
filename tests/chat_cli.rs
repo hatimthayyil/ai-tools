@@ -122,6 +122,61 @@ impl Sandbox {
         fs::set_permissions(&dst, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     }
 
+    /// A `claude` that also answers as the compactor (`-p`), by the first message it gets: one
+    /// holding `BAD` fails, one holding `LONG` gets a 600-byte line each time, any other gets
+    /// a short line after `delay` seconds. Started as Claude Code, it records as
+    /// [`Sandbox::fake_claude`].
+    fn fake_compactor(&self, delay: &str) {
+        let path = std::env::var("PATH").unwrap();
+        let bash = std::env::split_paths(&path)
+            .map(|d| d.join("bash"))
+            .find(|p| p.is_file())
+            .expect("bash on PATH");
+        let out = self.root.join("out");
+        let body = format!(
+            r#"#!{bash}
+if [ "$1" != "-p" ]; then
+  printf '%s\n' "$@" > {argv}
+  pwd > {cwd}
+  exit 0
+fi
+long=$(printf '%0600d' 0)
+mode=
+while IFS= read -r l; do
+  if [ -z "$mode" ]; then
+    case "$l" in
+      *BAD*) mode=bad ;;
+      *LONG*) mode=long ;;
+      *) mode=good ;;
+    esac
+  fi
+  case $mode in
+    bad) printf '%s\n' '{{"type":"result","is_error":true,"result":"overloaded"}}' ;;
+    long) printf '{{"type":"result","result":"%s"}}\n' "$long" ;;
+    good) sleep {delay}; printf '%s\n' '{{"type":"result","result":"a line"}}' ;;
+  esac
+done
+"#,
+            bash = bash.display(),
+            argv = out.join("argv").display(),
+            cwd = out.join("cwd").display(),
+        );
+        let dst = self.root.join("bin/claude");
+        fs::remove_file(&dst).unwrap();
+        fs::write(&dst, body).unwrap();
+        fs::set_permissions(&dst, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
+    /// Whether thread `name` holds line `level@last`.
+    fn has_line(&self, name: &str, level: u32, last: u64) -> bool {
+        let t = self.chat().thread(name).unwrap();
+        t.snapshot()
+            .unwrap()
+            .line(Key { level, last })
+            .unwrap()
+            .is_some()
+    }
+
     /// The arguments the fake `claude` was last run with.
     fn argv(&self) -> Vec<String> {
         let p = self.root.join("out/argv");
@@ -523,11 +578,15 @@ fn view_prints_a_thread_in_parts_from_one_state() {
     for (k, &end) in ends.iter().enumerate() {
         s.line("long-one", 1, end, &text(k));
     }
-    // 99 closed turns fold to 64 lines: the 35 oldest pairs as nodes.
-    for i in (0..35).filter(|&i| i != 30) {
+    // 99 closed turns fold to 64 lines: the 20 oldest in nodes of 4, the next 40 in pairs.
+    for i in 0..35 {
         s.line("long-one", 2, ends[2 * i + 1], &text(i));
     }
+    for i in 0..5 {
+        s.line("long-one", 3, ends[4 * i + 3], &text(i));
+    }
     let o = s.ai(&["compact-session", "--session", "s-2"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
     let view = stdout(&o);
     assert!(
         view.len() > 2 * 20_000 && view.len() < 3 * 19_000,
@@ -544,7 +603,13 @@ fn view_prints_a_thread_in_parts_from_one_state() {
     let next = footer.strip_prefix("Part 1 of 3. Next: ai chat ").unwrap();
     assert!(next.starts_with("view -t long-one --part 2 --at "));
     let mut parts = body.to_string() + "\n";
-    s.line("long-one", 2, ends[61], &text(30));
+    s.transcript("s-2", &talk(101, ask));
+    ok(s.ai_in("s-2", &["sync-session"]), "");
+    assert_ne!(
+        stdout(&s.ai_in("s-2", &["view"])),
+        first,
+        "the thread moved on"
+    );
     let args: Vec<&str> = next.split(' ').collect();
     let second = stdout(&s.ai(&args));
     let (body, footer) = second.trim_end().rsplit_once('\n').unwrap();
@@ -1026,6 +1091,104 @@ fn summarise_writes_or_rewrites_one_line() {
     fails(
         s.ai_in("s-1", &["summarise", "x"]),
         "'x' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3+7 (a chunk).\n",
+    );
+}
+
+/// A question too long to be its own line, so its turn's line takes a call.
+fn long(tag: &str, k: usize) -> String {
+    format!("{tag} question {k} {}", "q".repeat(600))
+}
+
+/// Thread dev, attached to session s-1: `n` closed turns that each take a call, the first
+/// failing, and one open.
+fn failing(s: &Sandbox, n: usize) -> Vec<u64> {
+    s.fake_compactor("0.5");
+    let tag = |k| if k == 0 { "BAD" } else { "ok" };
+    s.transcript("s-1", &talk(n + 1, |k| long(tag(k), k)));
+    ok(
+        s.ai_in("s-1", &["attach", "dev"]),
+        "Attached to dev, a new thread.\n",
+    );
+    turn_ends(s, "dev")
+}
+
+/// Whether each of the first `n` turns of dev has its line.
+fn built(s: &Sandbox, ends: &[u64], n: usize) -> Vec<bool> {
+    ends[..n].iter().map(|&e| s.has_line("dev", 1, e)).collect()
+}
+
+#[test]
+fn summarise_stops_at_the_first_line_that_fails() {
+    let s = Sandbox::new();
+    let ends = failing(&s, 10);
+    let o = s.ai_in("s-1", &["summarise"]);
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    assert!(
+        stdout(&o).ends_with("Failed 0: claude: overloaded\n"),
+        "{}",
+        stdout(&o)
+    );
+    assert_eq!(
+        built(&s, &ends, 10),
+        [
+            false, true, true, true, true, true, true, true, false, false
+        ],
+        "8 calls run at once: the 7 running beside the failure are kept, the rest never start"
+    );
+}
+
+#[test]
+fn the_background_summariser_builds_past_a_failed_line() {
+    let s = Sandbox::new();
+    let ends = failing(&s, 10);
+    let o = s.ai(&["summarise", "-t", "dev", "--background"]);
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    assert_eq!(
+        built(&s, &ends, 10),
+        [false, true, true, true, true, true, true, true, true, true]
+    );
+    let o = s.ai(&["summarise", "-t", "dev", "--background", "--rebuild"]);
+    assert_eq!(code(&o), 2, "only for the background run");
+}
+
+#[test]
+fn a_line_still_over_the_limit_fails_and_is_not_stored() {
+    let s = Sandbox::new();
+    s.fake_compactor("0");
+    s.transcript("s-1", &talk(2, |k| long("LONG", k)));
+    ok(
+        s.ai_in("s-1", &["attach", "dev"]),
+        "Attached to dev, a new thread.\n",
+    );
+    let ends = turn_ends(&s, "dev");
+    let o = s.ai_in("s-1", &["summarise"]);
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    assert!(
+        stdout(&o).ends_with("Failed 0: 600 bytes after 5 tries; a line holds at most 512\n"),
+        "{}",
+        stdout(&o)
+    );
+    assert!(!s.has_line("dev", 1, ends[0]));
+}
+
+#[test]
+fn a_failed_line_stops_compaction_and_start() {
+    let s = Sandbox::new();
+    failing(&s, 3);
+    let failed = "Cannot build the view of thread dev: 1 line failed.\n\
+                  Failed 0: claude: overloaded\n\
+                  Write them, then try again: ai chat summarise -t dev\n";
+    fails(s.ai(&["compact-session", "--session", "s-1"]), failed);
+    fails(s.ai(&["start", "dev"]), failed);
+    assert!(
+        !s.root.join("out/argv").exists(),
+        "Claude Code did not start"
+    );
+    let t = s.chat().thread("dev").unwrap();
+    assert_eq!(
+        t.snapshot().unwrap().bindings().unwrap().len(),
+        1,
+        "no session was bound"
     );
 }
 

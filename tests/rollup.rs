@@ -13,8 +13,8 @@ use std::{
 
 use ai_tools::{
     chat::{
-        Built, Chat, Id, Key, Line, LineKind, Rollup, Source, Thread, build, dry_run, rebuild,
-        rewrite, rollup, summarise,
+        Built, Chat, Id, Key, Line, LineKind, OnFail, Rollup, Source, Thread, build, dry_run,
+        rebuild, rewrite, rollup, summarise,
     },
     memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, claude},
 };
@@ -273,7 +273,7 @@ fn key(level: u32, last: u64) -> Key {
 }
 
 fn summarised(t: &Thread, fake: &Arc<Fake>) -> Built {
-    summarise(t, fake.backend())
+    summarise(t, fake.backend(), OnFail::Continue)
         .unwrap()
         .expect("the lock is free")
 }
@@ -572,7 +572,10 @@ fn a_held_lock_makes_a_second_summariser_exit_at_once() {
     let t = r.thread(&s);
     let fake = Fake::new();
     let lock = t.try_lock().unwrap().expect("free");
-    assert_eq!(summarise(&t, fake.backend()).unwrap(), None);
+    assert_eq!(
+        summarise(&t, fake.backend(), OnFail::Continue).unwrap(),
+        None
+    );
     assert_eq!(fake.calls(), 0);
     let other = r.chat().thread("t").unwrap();
     assert!(other.try_lock().unwrap().is_none());
@@ -607,7 +610,7 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
                 .unwrap()
                 .thread("t")
                 .unwrap();
-            summarise(&t, slow.backend()).unwrap()
+            summarise(&t, slow.backend(), OnFail::Continue).unwrap()
         })
     };
     while slow.calls() == 0 {
@@ -837,6 +840,33 @@ fn rebuild_drops_every_line_and_writes_them_again() {
         "nothing dropped while the lock is held"
     );
     drop(held);
+}
+
+#[test]
+fn a_run_that_stops_at_a_failure_starts_no_call_after_it() {
+    let r = Repo::new();
+    let mut s = Script::new();
+    s.user("poison");
+    s.ai(&"p".repeat(600));
+    for k in 1..2 * JOBS {
+        s.turn(k);
+    }
+    s.user("open");
+    let t = r.thread(&s);
+    let fake = Fake::with(Duration::ZERO, |t| {
+        let poison = t.contains("poison");
+        if !poison {
+            thread::sleep(Duration::from_millis(300));
+        }
+        poison
+    });
+    let b = summarise(&t, fake.backend(), OnFail::Stop)
+        .unwrap()
+        .expect("the lock is free");
+    assert_eq!(b.failed.len(), 1);
+    assert_eq!(fake.calls(), JOBS, "only the calls running at the failure");
+    assert_eq!(b.calls as usize, JOBS - 1, "their lines are kept");
+    assert_eq!(lines(&t).len(), JOBS - 1);
 }
 
 #[test]
