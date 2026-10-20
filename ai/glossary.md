@@ -20,7 +20,7 @@
 - `show`: every field of one message or node.
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes); off a terminal, in parts newest first.
 - `snapshot`: the memory as of one commit; every command reads one.
-- `knob`: a per-machine size in the memory repo's git config, set with `ai memory config NAME=VALUE`: `WAKE_LINES`, `ENTRY_CHARS`.
+- `knob`: a per-machine size in the memory repo's git config, set with `ai memory config NAME=VALUE`: `VIEW_LINES`, `ENTRY_CHARS`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.
 - `format`: the store's format number, the `format` blob at the tree root (absent: 1). This ai reads and writes only its own (`FORMAT`); it refuses a newer store and upgrades an older one.

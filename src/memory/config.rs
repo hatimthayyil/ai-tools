@@ -11,37 +11,37 @@ pub const NOTE_MAX: u64 = NODE as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Knob {
-    WakeLines,
+    ViewLines,
     EntryChars,
 }
 
 impl Knob {
-    pub const ALL: [Knob; 2] = [Knob::WakeLines, Knob::EntryChars];
+    pub const ALL: [Knob; 2] = [Knob::ViewLines, Knob::EntryChars];
 
     pub fn name(self) -> &'static str {
         match self {
-            Knob::WakeLines => "WAKE_LINES",
+            Knob::ViewLines => "VIEW_LINES",
             Knob::EntryChars => "ENTRY_CHARS",
         }
     }
 
     pub fn key(self) -> &'static str {
         match self {
-            Knob::WakeLines => "wakeLines",
+            Knob::ViewLines => "viewLines",
             Knob::EntryChars => "entryChars",
         }
     }
 
     pub fn default(self) -> u64 {
         match self {
-            Knob::WakeLines => 96,
+            Knob::ViewLines => 96,
             Knob::EntryChars => 280,
         }
     }
 
     pub fn what(self) -> &'static str {
         match self {
-            Knob::WakeLines => "how many lines view prints (96 is about 8k tokens)",
+            Knob::ViewLines => "how many lines view prints (96 is about 8k tokens)",
             Knob::EntryChars => "the longest one note may be, in bytes",
         }
     }

@@ -114,8 +114,8 @@ agent   -
 model   -
 session -
 text    imported first note imported second note, with spaces imported third note imported fourth
-$ config WAKE_LINES=3
-WAKE_LINES   3       how many lines view prints (96 is about 8k tokens) (default 96)
+$ config VIEW_LINES=3
+VIEW_LINES   3       how many lines view prints (96 is about 8k tokens) (default 96)
 ENTRY_CHARS  280     the longest one note may be, in bytes
 $ view -o session
 2020-01-01

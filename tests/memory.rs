@@ -803,7 +803,7 @@ fn a_life_through_the_cli() {
     }
     assert_eq!(run(d, &["build"]).stdout, "Nothing to build.\n");
 
-    assert_eq!(run(d, &["config", "WAKE_LINES=8"]).code, 0);
+    assert_eq!(run(d, &["config", "VIEW_LINES=8"]).code, 0);
     let view = run(d, &["view"]).stdout;
     let ids = line_ids(&view);
     assert_eq!(ids.len(), 8, "{view}");
@@ -813,7 +813,7 @@ fn a_life_through_the_cli() {
     );
     assert!(ids.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0), "{view}");
     assert_eq!(ids[7].0 + ids[7].1, 42, "{view}");
-    assert_eq!(run(d, &["config", "WAKE_LINES="]).code, 0);
+    assert_eq!(run(d, &["config", "VIEW_LINES="]).code, 0);
 
     let one = run(d, &["view"]).stdout;
     assert!(is_day(one.lines().next().unwrap()), "{one}");

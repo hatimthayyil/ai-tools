@@ -449,7 +449,7 @@ fn nothing_is_written_outside_the_store_but_the_root_cache() {
         vec!["note", "first"],
         vec!["note", "second"],
         vec!["view"],
-        vec!["config", "WAKE_LINES=4"],
+        vec!["config", "VIEW_LINES=4"],
         vec!["grep", "first", "-t"],
         vec!["zoom", "0+2"],
         vec!["show", "0+2"],

@@ -471,7 +471,7 @@ fn view_text(snap: &Snapshot, meta: &Meta) -> Result<String> {
         ));
     }
     let mut lines = Vec::new();
-    for c in cover(t, snap.cfg().get(Knob::WakeLines)) {
+    for c in cover(t, snap.cfg().get(Knob::ViewLines)) {
         view_lines(snap, c, meta, &mut lines)?;
     }
     let mut text: String = dated(&lines).into_iter().map(|l| l + "\n").collect();
