@@ -11,12 +11,16 @@ const requested = { plugin: 'ai', key: 'compress' } as const
 
 type Ran = { exitCode: number; stdout: string; stderr: string }
 
-async function chat($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
+async function ai($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
   try {
-    return await $.process.run(['ai', 'chat', ...args], { timeoutMs })
+    return await $.process.run(['ai', ...args], { timeoutMs })
   } catch (err) {
     return { exitCode: -1, stdout: '', stderr: String(err) }
   }
+}
+
+function chat($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
+  return ai($, ['chat', ...args], timeoutMs)
 }
 
 function sessionArgs(id: string, path: string | undefined): string[] {
@@ -49,11 +53,14 @@ function reply(ran: Ran): string {
 
 async function compress($: EngineInterface): Promise<string | undefined> {
   await $.clock.sleep(FLUSH_MS)
-  const ran = await chat($, ['compact-session', ...(await session($))], LONG_MS)
-  if (ran.exitCode === NOT_ATTACHED) return reply(ran)
-  if (ran.exitCode !== 0) return `Not compacted: ${reply(ran)}`
-  if (ran.stdout === '') return 'Not compacted: the thread holds nothing yet.'
-  await $.state.set(prepared, ran.stdout)
+  const args = await session($)
+  const ready = await chat($, ['compact-session', ...args], LONG_MS)
+  if (ready.exitCode === NOT_ATTACHED) return reply(ready)
+  if (ready.exitCode !== 0) return `Not compacted: ${reply(ready)}`
+  if (ready.stdout === '') return 'Not compacted: the thread holds nothing yet.'
+  const shown = await ai($, ['view', ...args])
+  if (shown.exitCode !== 0) return `Not compacted: ${reply(shown)}`
+  await $.state.set(prepared, shown.stdout)
   $.clock.after(0, () => $.command.run({ command: 'compact' }))
   return undefined
 }
@@ -67,13 +74,13 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ai',
-      description: "ai chat: compact into the thread's view; attach <name>, detach",
+      description: "ai: compact into your memory and the thread's view; attach <name>, detach",
       argumentHint: '[attach <name> | detach]',
     })
     await $.tool.register({
       name: 'compress',
       description:
-        "Compact this session into its ai chat thread's view when the current turn ends. Works only in a session attached to a thread.",
+        "Compact this session into your memory and its ai chat thread's view when the current turn ends. Works only in a session attached to a thread.",
       inputSchema: { type: 'object', properties: {} },
     })
     return next(e)

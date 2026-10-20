@@ -171,7 +171,7 @@ struct Summarise {
 
 /// The harness session a command is for: its flags, else the harness's environment.
 #[derive(Args, Debug)]
-struct Session {
+pub struct Session {
     #[arg(long, default_value = claude::HARNESS, help = "the harness running the session")]
     harness: String,
     #[arg(long, help = "the session's id [default: $CLAUDE_CODE_SESSION_ID]")]
@@ -564,16 +564,24 @@ fn sync_session(cwd: &Path, s: Session) -> Result<ExitCode> {
     }
 }
 
+/// Session `s`, synced, with its threads and the thread it is attached to; `None` outside an
+/// agent session or a repository with commits, or for an unattached session.
+fn synced(cwd: &Path, s: Session) -> Result<Option<(Chat, Thread, Current)>> {
+    let (Some(c), Some(chat)) = (s.current(), Chat::find(cwd)?) else {
+        return Ok(None);
+    };
+    if chat.sync(&c.harness, &c.session, c.transcript.as_deref())? == Synced::NotAttached {
+        return Ok(None);
+    }
+    Ok(chat
+        .attached(&c.harness, &c.session)?
+        .map(|(t, _)| (chat, t, c)))
+}
+
 /// Sync, the lines the view needs built within [`WAIT`], then the view; nothing for a session
 /// whose branch holds no item yet. An error, and no view, if a line it needs is not written.
 fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
-    let (Some(c), Some(chat)) = (s.current(), Chat::find(cwd)?) else {
-        return not_attached();
-    };
-    if chat.sync(&c.harness, &c.session, c.transcript.as_deref())? == Synced::NotAttached {
-        return not_attached();
-    }
-    let Some((t, _)) = chat.attached(&c.harness, &c.session)? else {
+    let Some((chat, t, c)) = synced(cwd, s)? else {
         return not_attached();
     };
     let snap = ready(&chat, &t, |s| read_branch(s, Some(&c)))?;
@@ -581,6 +589,15 @@ fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCo
         write!(out, "{view}")?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The view of the thread session `s` is attached to, of its branch, synced first; `None` where
+/// [`synced`] finds no attached session, or while its branch holds no item. It writes no line.
+pub fn session_view(cwd: &Path, s: Session) -> Result<Option<String>> {
+    match synced(cwd, s)? {
+        Some((_, t, c)) => view_in(&t, &t.snapshot()?, Some(&c)),
+        None => Ok(None),
+    }
 }
 
 /// The thread's view, in parts from one state of it: of the session's branch when the

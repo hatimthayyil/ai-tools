@@ -5,3 +5,4 @@ pub mod jsonl;
 pub mod memory;
 pub mod notes;
 pub mod record;
+pub mod view;

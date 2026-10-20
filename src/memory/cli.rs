@@ -112,6 +112,12 @@ enum Command {
     Wake {
         #[arg(help = "the message to read on from, as printed")]
         from: Option<u64>,
+        #[arg(
+            long,
+            hide = true,
+            help = "plumbing: the whole view at once, not in parts"
+        )]
+        whole: bool,
         #[command(flatten)]
         meta: Meta,
     },
@@ -160,9 +166,14 @@ impl Command {
         let part = |p: &Option<u64>| p.map(|p| p.to_string());
         match self {
             Command::Init => ("init", Vec::new()),
-            Command::Wake { from, meta } => {
-                ("wake", part(from).into_iter().chain(meta.args()).collect())
-            }
+            Command::Wake { from, whole, meta } => (
+                "wake",
+                part(from)
+                    .into_iter()
+                    .chain(whole.then(|| "--whole".into()))
+                    .chain(meta.args())
+                    .collect(),
+            ),
             Command::Note { .. } => ("note", Vec::new()),
             Command::Summarise => ("summarise", Vec::new()),
             Command::Grep(g) => ("grep", g.typed()),
@@ -229,6 +240,17 @@ pub fn default_dir() -> Result<PathBuf> {
 }
 
 impl Cli {
+    /// `wake --whole`: the whole view at once, read and recorded as any wake.
+    pub fn wake_whole() -> Cli {
+        Cli {
+            command: Command::Wake {
+                from: None,
+                whole: true,
+                meta: Meta::default(),
+            },
+        }
+    }
+
     /// Runs against the default memory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         match self.run(&default_dir()?, &mut io::stdout().lock()) {
@@ -283,7 +305,7 @@ impl Command {
     ) -> Result<ExitCode> {
         match self {
             Command::Init | Command::PromptHook => unreachable!(),
-            Command::Wake { from, meta } => wake(s, out, from.unwrap_or(0), &meta),
+            Command::Wake { from, whole, meta } => wake(s, out, from.unwrap_or(0), whole, &meta),
             Command::Note { text } => note(s, out, &text, rt, place, who),
             Command::Summarise => summarise(s, out, rt),
             Command::Grep(g) => grep(&s.snapshot()?, out, &g),
@@ -372,7 +394,8 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
 /// Printed at the top of every part of a read that takes more than one.
 const IN_PARTS: &str = "Your memory comes in parts, oldest first. Run the command at the end of each part until you see \"You are awake.\"";
 
-fn wake(s: &Store, out: &mut dyn Write, from: u64, meta: &Meta) -> Result<ExitCode> {
+/// The view from message `from`: in parts, else `whole`.
+fn wake(s: &Store, out: &mut dyn Write, from: u64, whole: bool, meta: &Meta) -> Result<ExitCode> {
     let snap = s.snapshot()?;
     let t = snap.log_len()?;
     if t == 0 {
@@ -393,11 +416,14 @@ fn wake(s: &Store, out: &mut dyn Write, from: u64, meta: &Meta) -> Result<ExitCo
     for c in cover::from(&cover(t, s.cfg.get(Knob::WakeLines)), from) {
         wake_lines(&snap, c, meta, &mut lines)?;
     }
-    let mut parts = parts(
-        lines,
-        s.cfg.get(Knob::PartLines),
-        s.cfg.get(Knob::PartChars),
-    )
+    let mut parts = match whole {
+        true => vec![lines],
+        false => parts(
+            lines,
+            s.cfg.get(Knob::PartLines),
+            s.cfg.get(Knob::PartChars),
+        ),
+    }
     .into_iter();
     let part = parts.next().unwrap_or_default();
     let more = parts.next().is_some();

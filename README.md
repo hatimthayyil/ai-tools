@@ -23,6 +23,7 @@ nix profile add github:hatimthayyil/ai-tools
 ```sh
 ai memory init                  # create the memory; prints the block for your agent instructions
 ai memory wake                  # read the memory
+ai view                         # the whole memory at once, then this session's thread
 ai memory note "what happened"  # record one line
 ai memory zoom <id>             # open a line of the view
 ai memory grep <regex>          # search every message
@@ -55,7 +56,7 @@ ai chat grep -t dev <regex>          # search it
 ai chat summarise -t dev             # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
-Inside a session, `/ai attach <name>` and `/ai detach`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with the thread's view; if it cannot build the view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
+Inside a session, `/ai attach <name>` and `/ai detach`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
 
 A session has one active thread. Detach it explicitly before attaching it elsewhere; its previous thread retains the recorded history.
 

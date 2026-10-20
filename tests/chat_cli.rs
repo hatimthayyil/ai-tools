@@ -11,8 +11,9 @@ use ai_tools::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const ISOLATE: [&str; 6] = [
+const ISOLATE: [&str; 7] = [
     "AI_CHAT_DIR",
+    "AI_MEMORY_DIR",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDECODE",
     "GIT_DIR",
@@ -197,7 +198,8 @@ done
         dir
     }
 
-    fn cmd(&self, dir: &Path) -> Command {
+    /// `ai` run in `dir`.
+    fn bin(&self, dir: &Path) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ai"));
         for k in ISOLATE {
             c.env_remove(k);
@@ -208,16 +210,31 @@ done
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CEILING_DIRECTORIES", &self.root)
+            .env("AI_MEMORY_SUMMARISE", "0")
             .env(
                 "PATH",
                 format!("{}:{path}", self.root.join("bin").display()),
-            )
-            .arg("chat");
+            );
+        c
+    }
+
+    fn cmd(&self, dir: &Path) -> Command {
+        let mut c = self.bin(dir);
+        c.arg("chat");
         c
     }
 
     fn ai(&self, args: &[&str]) -> Output {
         self.cmd(&self.repo()).args(args).output().unwrap()
+    }
+
+    /// `ai args` run in the repository, inside `session` if given.
+    fn top(&self, session: Option<&str>, args: &[&str]) -> Output {
+        let mut c = self.bin(&self.repo());
+        if let Some(id) = session {
+            c.env("CLAUDE_CODE_SESSION_ID", id);
+        }
+        c.args(args).output().unwrap()
     }
 
     /// `ai chat args` run outside any repository.
@@ -677,6 +694,51 @@ fn view_syncs_its_session_and_writes_no_line() {
         "compact-session writes the lines its view needs"
     );
     assert!(!stdout(&o).contains("not summarised yet"), "{}", stdout(&o));
+}
+
+#[test]
+fn ai_view_prints_the_whole_memory_then_the_sessions_thread() {
+    let s = Sandbox::new();
+    let memory = |args: &[&str]| s.top(None, &[&["memory"][..], args].concat());
+    assert_eq!(code(&memory(&["init"])), 0);
+    for k in 0..30 {
+        assert_eq!(code(&memory(&["note", &format!("note {k}")])), 0);
+    }
+    assert_eq!(code(&memory(&["config", "PART_CHARS=200"])), 0);
+    assert!(stdout(&memory(&["wake"])).starts_with("Your memory comes in parts"));
+    s.transcript("s-1", &talk(2, |k| format!("question {k}")));
+    ok(
+        s.ai_in("s-1", &["attach", "dev"]),
+        "Attached to dev, a new thread.\n",
+    );
+
+    let alone = s.top(None, &["view"]);
+    assert_eq!((code(&alone), stderr(&alone).as_str()), (0, ""));
+    let alone = stdout(&alone);
+    assert!(alone.starts_with("# Memory\n\n"), "{alone}");
+    assert!(alone.contains("\n0|note 0\n") && alone.contains("\n29|note 29\n"));
+    assert!(!alone.contains("comes in parts"), "{alone}");
+    assert!(
+        alone.ends_with(
+            "\nYou are awake. Zoom the marked lines that touch your task before you act.\n"
+        ),
+        "outside a session, only the memory: {alone}"
+    );
+
+    let both = stdout(&s.top(Some("s-1"), &["view"]));
+    let (mem, thread) = both.split_once("\n# Thread `dev`\n").expect(&both);
+    assert_eq!(mem, alone);
+    assert!(thread.contains("|user: question 1"), "{thread}");
+
+    let usage = fs::read_to_string(s.root.join("home/.ai/memory/usage.jsonl")).unwrap();
+    assert_eq!(
+        usage
+            .lines()
+            .filter(|l| l.contains(r#""cmd":"wake","args":["--whole"]"#))
+            .count(),
+        2,
+        "each view is a wake: {usage}"
+    );
 }
 
 #[test]

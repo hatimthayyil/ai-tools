@@ -855,6 +855,10 @@ fn a_life_through_the_cli() {
         }
     }
     assert!(tiles(&all, 0, 43), "parts tile the log: {all:?}");
+    let whole = run(d, &["wake", "--whole"]).stdout;
+    assert!(is_day(whole.lines().next().unwrap()), "{whole}");
+    assert!(whole.ends_with(&format!("\n{AWAKE}\n")), "{whole}");
+    assert!(tiles(&line_ids(&whole), 0, 43), "one part: {whole}");
     assert!(run(d, &["wake", "43"]).stderr.contains("No message 43"));
     assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
 
