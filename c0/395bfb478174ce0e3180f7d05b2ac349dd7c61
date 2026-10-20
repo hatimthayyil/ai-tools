@@ -33,6 +33,8 @@ src/chat/cli.rs
   s_77b04d9838f161::t_d4f8027b060550 266-267,273-274
   s_77b04d9838f161::t_45ea55a700a32d 748,750
   s_77b04d9838f161::t_fe324564c82bdf 699,701,703,715,721-723,726-729,735
+  s_77b04d9838f161::t_aed0e2ba066dab 23
+  s_77b04d9838f161::t_0d7ff1e7401b9e 290-297
 ai/comments/tests/chat_cli.rs.md
   s_77b04d9838f161::t_e8b9c9f2d2ec8a 15
 ai/glossary.md
@@ -51,6 +53,8 @@ src/memory/zoom.rs
   s_77b04d9838f161::t_6865f519f1be1a 1
 src/view.rs
   s_77b04d9838f161::t_dec087b8d738e1 2-3,6,9,12,21,23-29,34-66,71-77,83-91,99-104,106,109,110-123
+  s_77b04d9838f161::t_06019296fd1d57 15,20,22
+  s_77b04d9838f161::t_8d1691b48ef20e 92-98
 ai/comments/src/memory/zoom.rs.md
   s_77b04d9838f161::t_6e443154ef9a6b 3
 plugins/claude/hooks/register.ts
@@ -91,6 +95,8 @@ src/memory/cli.rs
   s_77b04d9838f161::t_a53e5781b75a26 21,25,29,33,35
   s_77b04d9838f161::t_69fea89c89a774 337-342
   s_77b04d9838f161::t_00cc331e83251e 627
+  s_77b04d9838f161::t_849b577e06d9ac 115,117-121
+  s_77b04d9838f161::t_907fe44f940cf4 291-292
 src/memory/config.rs
   s_77b04d9838f161::t_a22a601bfaeacf 71
   s_77b04d9838f161::t_5eddb44132c987 19
