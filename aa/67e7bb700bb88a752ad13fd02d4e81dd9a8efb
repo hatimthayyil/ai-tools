@@ -59,6 +59,7 @@ src/chat/summarise.rs
   s_77b04d9838f161::t_437bed46db2864 86-87
 ai/spec.md
   s_77b04d9838f161::t_e05732e63e035a 6,8
+  s_77b04d9838f161::t_aae8155d23c381 9
 README.md
   s_77b04d9838f161::t_090ac239ec2280 62-63
 tests/chat_cli.rs
