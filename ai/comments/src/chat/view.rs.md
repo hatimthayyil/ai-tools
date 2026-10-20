@@ -9,7 +9,7 @@ Branch
 
 Fold
 - Computed fresh at every call: start from one line per closed turn, merge the most due aligned pair, due = (T − last)/2^l with `last` the pair's last turn, oldest first on ties, until the lines fit. No high/low-water batches and no persisted view: the view is sent once per compaction, so its prefix never has to stay stable from one call to the next; only the merge order matters.
-- `plan`: the fold of the closed turns into at most `FOLD_LINES` (64) lines, as `ai memory view` caps its view by lines: the fold the view wants if everything were built. `needed` is its unbuilt lines; `compact` asks the roll-up to build them before rendering. 64 lines of at most 512 bytes is about 33 KB, 8,000 tokens.
+- `plan`: the fold of the closed turns into at most `FOLD_LINES` (64) lines, as `ai memory view` caps its view by lines: the fold the view wants if everything were built. `needed` is its unbuilt lines; `compact` asks the roll-up to build them before rendering. 64 lines of 512 to 2,048 bytes (50 to 200 words, rollup.rs.md) is 33 to 131 KB.
 - `render`: each planned line if built; else what is built under it (a node's halves, recursively; a turn's message cut to `LINE`, its chunk lines, a placeholder for the rest); else one placeholder naming its id, a turn's carrying its message cut to `LINE` (`12|(not summarised yet) user: …`). Fallbacks can outgrow the plan, so while over `FOLD_LINES` the oldest multi-line fallbacks collapse back to one placeholder each. A full fold has no room for multi-line fallbacks, but a turn's placeholder is one line, so an unsummarised turn shows its message at any size: `view` writes no line, so it shows unsummarised turns often.
 - Zoom keeps bare placeholders: it opens what is built, and a turn zooms into its items.
 

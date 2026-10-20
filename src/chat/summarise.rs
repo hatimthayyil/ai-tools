@@ -21,7 +21,7 @@ use crate::{
         rollup::{PROMPT, Rollup, Source},
         store::{Chat, Mark, Thread},
     },
-    memory::{Backend, Block, ClaudeCode, JOBS, NODE, Spend, TRIES, Who, claude, log, write_line},
+    memory::{Backend, Block, ClaudeCode, JOBS, Spend, TRIES, Who, claude, limit, log, write_line},
 };
 
 const MODEL: &str = "ai.chat.model";
@@ -588,7 +588,8 @@ impl<'t> Run<'t> {
     }
 
     /// Starts the calls of `todo` that are ready, in order, up to [`JOBS`] running, unless
-    /// failures halted the run. A line still over [`NODE`] bytes after [`TRIES`] fails.
+    /// failures halted the run. A line still over the [`limit`] of its words after [`TRIES`]
+    /// fails.
     fn start(&mut self, roll: &Rollup, lines: &HashMap<Key, String>, todo: &BTreeSet<(u64, u32)>) {
         if self.halted() {
             return;
@@ -603,6 +604,7 @@ impl<'t> Run<'t> {
             let Some(task) = roll.task(k, |c| lines.get(&c).map(String::as_str)) else {
                 continue;
             };
+            let words = roll.words(k);
             self.busy.insert(k);
             let (backend, tx) = (self.backend.clone(), self.tx.clone());
             let (span, dispatch) = (Span::current(), dispatcher::get_default(Clone::clone));
@@ -613,10 +615,12 @@ impl<'t> Run<'t> {
                 let mut spent = Spend::default();
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     let message = [Block::new(task)];
-                    let (who, line) = write_line(&*backend, PROMPT, &message, &k, &mut spent)?;
-                    if line.len() > NODE {
+                    let (who, line) =
+                        write_line(&*backend, PROMPT, &message, words, &k, &mut spent)?;
+                    let max = limit(words);
+                    if line.len() > max {
                         bail!(
-                            "{} bytes after {TRIES} tries; a line holds at most {NODE}",
+                            "{} bytes after {TRIES} tries; this line holds at most {max}",
                             line.len()
                         );
                     }

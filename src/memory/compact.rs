@@ -19,7 +19,7 @@ use crate::memory::{
     log,
     record::{Message, Who, flat},
     store::Store,
-    tree::{Coord, NODE, WORDS},
+    tree::{Coord, WORDS, limit},
     view::{Mem, VIEW},
 };
 
@@ -46,13 +46,18 @@ pub struct Job {
     pub step: Step,
 }
 
-/// What every task starts with: [`SCALE`] as the size of a line.
-pub fn ruler() -> String {
-    format!("For scale only, this meaningless filler is exactly {WORDS} words:\n{SCALE}\n\n")
+/// What every task starts with: the size of a line of `words` words, [`SCALE`]'s words repeated
+/// to that many.
+pub fn ruler(words: usize) -> String {
+    let filler: Vec<&str> = SCALE.split_whitespace().cycle().take(words).collect();
+    format!(
+        "For scale only, this meaningless filler is exactly {words} words:\n{}\n\n",
+        filler.join(" ")
+    )
 }
 
 fn step_text(step: &Step) -> String {
-    let scale = ruler();
+    let scale = ruler(WORDS);
     match step {
         Step::Compress(m) => {
             format!("{scale}Compress this message into one line, in at most {WORDS} words:\n{m}")
@@ -70,11 +75,11 @@ pub fn message(job: &Job) -> Vec<Block> {
     vec![Block::new(step_text(&job.step))]
 }
 
-/// Asks for [`WORDS`] words, or fewer for a line whose words are long enough to overrun
-/// [`NODE`] in fewer: as many as fill the room [`WORDS`] words take on average.
-pub fn retry_text(line: &str) -> String {
+/// Asks for `target` words, or fewer for a line whose words are long enough to overrun its
+/// [`limit`] in fewer: as many as fill the room `target` words take on average.
+pub fn retry_text(line: &str, target: usize) -> String {
     let words = line.split_whitespace().count();
-    let want = (words * WORDS * 73 / 10 / line.len()).clamp(1, WORDS);
+    let want = (words * target * 73 / 10 / line.len()).clamp(1, target);
     format!(
         "That line is {words} words, too long. Rewrite it whole, as one complete line of at most {want} words: shorten the minor items, never cut it off."
     )
@@ -112,7 +117,7 @@ impl AddAssign for Spend {
 /// Builds one node with [`write_line`], adding what its requests took to `spent`. Returns who
 /// wrote it, and the line.
 pub fn summarize(backend: &dyn Backend, job: &Job, spent: &mut Spend) -> Result<(Who, String)> {
-    write_line(backend, COMPACT, &message(job), &job.node, spent)
+    write_line(backend, COMPACT, &message(job), WORDS, &job.node, spent)
 }
 
 /// `conv`'s reply to `message`; what the request took goes into `spent`, failed or not.
@@ -127,23 +132,26 @@ fn ask(
     reply
 }
 
-/// The line the model writes for `message` under the system prompt `system`, retried in the
-/// same conversation while over [`NODE`] bytes, up to [`TRIES`]; the shortest try wins.
+/// The line the model writes for `message`, which asks for `words` words, under the system
+/// prompt `system`, retried in the same conversation while over their [`limit`] in bytes, up
+/// to [`TRIES`]; the shortest try wins.
 /// Returns who wrote it, and the line; `node` names it in the log. What every request took
 /// goes into `spent`, even when the line fails.
 pub fn write_line(
     backend: &dyn Backend,
     system: &str,
     message: &[Block],
+    words: usize,
     node: &dyn fmt::Display,
     spent: &mut Spend,
 ) -> Result<(Who, String)> {
+    let max = limit(words);
     let mut conv = backend.open(system)?;
     let mut reply = ask(&mut *conv, message, false, spent)?;
     let mut tries: Vec<String> = Vec::new();
     loop {
         let line = flat(reply.trim());
-        if line.len() > NODE {
+        if line.len() > max {
             let u = conv.used();
             warn!(
                 node = %node,
@@ -160,11 +168,16 @@ pub fn write_line(
         if line.is_empty() {
             bail!("empty reply");
         }
-        if line.len() <= NODE || tries.len() + 1 >= TRIES {
+        if line.len() <= max || tries.len() + 1 >= TRIES {
             tries.push(line);
             break;
         }
-        reply = ask(&mut *conv, &[Block::new(retry_text(&line))], true, spent)?;
+        reply = ask(
+            &mut *conv,
+            &[Block::new(retry_text(&line, words))],
+            true,
+            spent,
+        )?;
         tries.push(line);
     }
     let who = Who {
@@ -485,12 +498,26 @@ mod tests {
 
     #[test]
     fn retries_ask_for_the_target_in_words() {
-        let r = retry_text(&"word ".repeat(104));
+        let r = retry_text(&"word ".repeat(104), WORDS);
         assert!(r.starts_with(
             "That line is 104 words, too long. Rewrite it whole, as one complete line of at most 50 words:"
         ));
         assert!(r.ends_with("never cut it off.") && !r.contains("bytes"));
-        let dense = retry_text("0123456789ab ".repeat(45).trim_end());
+        let dense = retry_text("0123456789ab ".repeat(45).trim_end(), WORDS);
         assert!(dense.contains("at most 28 words"), "{dense}");
+        let long = retry_text(&"word ".repeat(300), 150);
+        assert!(long.contains("at most 150 words"), "{long}");
+    }
+
+    #[test]
+    fn the_ruler_is_as_long_as_the_target() {
+        assert_eq!(
+            ruler(WORDS),
+            format!("For scale only, this meaningless filler is exactly 50 words:\n{SCALE}\n\n")
+        );
+        let r = ruler(120);
+        let filler = r.lines().nth(1).unwrap();
+        assert!(r.starts_with("For scale only, this meaningless filler is exactly 120 words:\n"));
+        assert!(filler.starts_with(SCALE) && filler.split_whitespace().count() == 120);
     }
 }

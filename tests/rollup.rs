@@ -433,6 +433,62 @@ fn every_level_is_built_and_only_once() {
 }
 
 #[test]
+fn a_line_is_asked_for_more_words_as_the_ai_s_words_and_calls_grow() {
+    let r = Repo::new();
+    let mut s = Script::new();
+    let e0 = s.turn(0);
+    s.user("task 1");
+    s.ai(&"word ".repeat(1200));
+    for j in 0..10 {
+        let c = s.call("Read", json!({"file_path": format!("/src/f{j}.rs")}));
+        s.result(c, &"out ".repeat(500));
+    }
+    let e1 = s.ai("done");
+    s.user("task 2");
+    let e2 = s.ai(&"word ".repeat(3000));
+    let e3 = s.turn(3);
+    s.user("next");
+    let t = r.thread(&s);
+
+    let tree = t.snapshot().unwrap().tree().unwrap();
+    let roll = Rollup::new(&tree);
+    assert_eq!(
+        [e0, e1, e2, e3].map(|e| roll.words(key(1, e))),
+        [50, 140, 200, 50],
+        "a tenth of the AI's words, a call as 20, from 50 up to 200; tool output adds nothing"
+    );
+    assert_eq!(
+        [key(2, e1), key(2, e3), key(3, e3)].map(|k| roll.words(k)),
+        [140, 200, 200],
+        "a merged line scales with what it covers"
+    );
+
+    let fake = Fake::new();
+    let built = summarised(&t, &fake);
+    assert_eq!(
+        built.calls, 4,
+        "each merge fits its larger line, so joins free"
+    );
+    let tasks = fake.tasks();
+    for (k, n) in [(0, 50), (1, 140), (2, 200), (3, 50)] {
+        let task = tasks
+            .iter()
+            .find(|t| t.contains(&format!("|user: task {k}\n")))
+            .unwrap();
+        let ruler = format!("For scale only, this meaningless filler is exactly {n} words:\n");
+        assert!(task.starts_with(&ruler), "{task}");
+        assert!(task.contains(&format!(
+            "Compress this turn into one line of at most {n} words."
+        )));
+    }
+    let l = lines(&t);
+    assert_eq!(
+        l[&key(2, e1)].text,
+        format!("{} {}", l[&key(1, e0)].text, l[&key(1, e1)].text)
+    );
+}
+
+#[test]
 fn a_second_summariser_finds_nothing_to_build() {
     let r = Repo::new();
     let mut s = Script::new();

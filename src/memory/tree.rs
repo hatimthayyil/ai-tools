@@ -6,6 +6,12 @@ pub const NODE: usize = 512;
 /// a word summary lines average, so a model overshooting it still fits [`NODE`].
 pub const WORDS: usize = 50;
 
+/// The most bytes a line asked for in `words` words is accepted at: [`NODE`] for [`WORDS`], in
+/// proportion, so every target keeps the same margin.
+pub fn limit(words: usize) -> usize {
+    words * NODE / WORDS
+}
+
 /// Node `(l, i)`: messages `[i·2^l, (i+1)·2^l)`, printed `id+n`, a leaf as a bare `id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Coord {

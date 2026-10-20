@@ -7,11 +7,17 @@ use crate::{
         record::{Key, LineKind},
         render::{Cut, clip, item_line},
     },
-    memory::{NODE, WORDS, flat, ruler},
+    memory::{WORDS, flat, limit, ruler},
 };
 
 /// The system prompt of every roll-up call.
 pub const PROMPT: &str = include_str!("prompts/compact.txt");
+/// The most words a line is asked for, however much it covers.
+pub const MAX_WORDS: usize = 200;
+/// The words of the AI's own a line covers per word it is asked for.
+const RATIO: usize = 10;
+/// What a tool call adds to what a line covers, in words of the AI's own.
+const CALL: usize = 20;
 /// The most one call reads of a turn, in bytes; a longer turn is cut into chunks.
 pub const INPUT: usize = 48 * 1024;
 /// The most a call reads of one tool call's input or one tool output: its head and tail.
@@ -27,6 +33,16 @@ const CUT: Cut = Cut {
 /// The item at `place` as a call reads it: its line, cut by [`CUT`], and a newline.
 pub fn render(place: Place, item: &Item) -> String {
     item_line(Id::item(place), item, CUT) + "\n"
+}
+
+/// What an item adds to what a line covers: the AI's own words, and [`CALL`] for a tool call.
+/// Messages and tool output add nothing.
+fn weight(item: &Item) -> usize {
+    match &item.kind {
+        Kind::Text(t) => t.split_whitespace().count(),
+        Kind::ToolCall { .. } => CALL,
+        _ => 0,
+    }
 }
 
 /// An item as a call reads it, without its id or the indent of its continued lines.
@@ -223,12 +239,13 @@ const CHUNKED: &str =
     "Compress this long turn, given as its message and the lines of its parts in order,";
 const MERGE: &str = "Merge these two adjacent lines, the earlier first,";
 
-/// A call's message: the size of a line, what to do, the context and the input.
-fn task(what: &str, context: Option<&str>, input: &str) -> String {
+/// A call's message: the size of a line of `words` words, what to do, the context and the
+/// input.
+fn task(what: &str, words: usize, context: Option<&str>, input: &str) -> String {
     let context = context.map_or(String::new(), |c| format!("<context>\n{c}</context>\n"));
     format!(
-        "{}{what} into one line of at most {WORDS} words.\n{context}<input>\n{input}</input>",
-        ruler()
+        "{}{what} into one line of at most {words} words.\n{context}<input>\n{input}</input>",
+        ruler(words)
     )
 }
 
@@ -266,6 +283,7 @@ fn cut(tree: &Tree, seqs: Vec<usize>, size: impl Fn(usize) -> usize) -> Branch {
 pub struct Rollup {
     texts: Vec<String>,
     places: Vec<Place>,
+    weights: Vec<usize>,
     lines: BTreeMap<Key, Source>,
 }
 
@@ -280,6 +298,7 @@ impl Rollup {
         let mut r = Rollup {
             texts,
             places,
+            weights: tree.items().iter().map(weight).collect(),
             lines: BTreeMap::new(),
         };
         for tip in tree.tips() {
@@ -356,6 +375,24 @@ impl Rollup {
         self.places[seq as usize]
     }
 
+    /// What line `key` covers, by [`weight`].
+    fn size(&self, key: Key) -> usize {
+        match self.lines.get(&key) {
+            Some(Source::Chunk { items, .. } | Source::Turn(items)) => {
+                items.iter().map(|&s| self.weights[s as usize]).sum()
+            }
+            Some(Source::Chunked { chunks, .. }) => chunks.iter().map(|&k| self.size(k)).sum(),
+            Some(Source::Node([a, b])) => self.size(*a) + self.size(*b),
+            None => 0,
+        }
+    }
+
+    /// The words line `key` is asked for: one per [`RATIO`] of what it covers, at least
+    /// [`WORDS`] and at most [`MAX_WORDS`].
+    pub fn words(&self, key: Key) -> usize {
+        (self.size(key) / RATIO).clamp(WORDS, MAX_WORDS)
+    }
+
     /// What line `key` is made from, as a call reads it; `None` until every line it is made
     /// from is `built`.
     fn input<'a>(&self, key: Key, built: impl Fn(Key) -> Option<&'a str>) -> Option<String> {
@@ -379,12 +416,13 @@ impl Rollup {
         })
     }
 
-    /// The text of line `key` when what it is made from fits a line, so it needs no call;
-    /// `None` when it needs one, or until every line it is made from is `built`.
+    /// The text of line `key` when what it is made from fits its [`limit`], so it needs no
+    /// call; `None` when it needs one, or until every line it is made from is `built`.
     pub fn free<'a>(&self, key: Key, built: impl Fn(Key) -> Option<&'a str>) -> Option<String> {
+        let max = limit(self.words(key));
         let text = match self.lines.get(&key)? {
             Source::Chunk { items, .. } | Source::Turn(items) => {
-                if items.iter().map(|&s| self.text(s).len()).sum::<usize>() > NODE {
+                if items.iter().map(|&s| self.text(s).len()).sum::<usize>() > max {
                     return None;
                 }
                 items.iter().map(|&s| bare(self.text(s))).collect()
@@ -398,7 +436,7 @@ impl Rollup {
             }
             Source::Node(_) => self.input(key, built)?,
         };
-        (text.len() <= NODE).then(|| flat(text.trim_end()))
+        (text.len() <= max).then(|| flat(text.trim_end()))
     }
 
     /// The message of the call that writes line `key`; `None` until every line it is made
@@ -406,15 +444,17 @@ impl Rollup {
     pub fn task<'a>(&self, key: Key, built: impl Fn(Key) -> Option<&'a str>) -> Option<String> {
         let source = self.lines.get(&key)?;
         let input = self.input(key, built)?;
+        let words = self.words(key);
         Some(match source {
             Source::Chunk { message, .. } => task(
                 CHUNK,
+                words,
                 message.map(|m| clip(self.text(m), CLIP)).as_deref(),
                 &input,
             ),
-            Source::Turn(_) => task(TURN, None, &input),
-            Source::Chunked { .. } => task(CHUNKED, None, &input),
-            Source::Node(_) => task(MERGE, None, &input),
+            Source::Turn(_) => task(TURN, words, None, &input),
+            Source::Chunked { .. } => task(CHUNKED, words, None, &input),
+            Source::Node(_) => task(MERGE, words, None, &input),
         })
     }
 }
