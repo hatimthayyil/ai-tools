@@ -415,6 +415,16 @@ fn plumbing_is_hidden_from_help() {
     for cmd in ["sync-session", "compact-session", "nap", "claude"] {
         assert!(!help.contains(cmd), "{cmd}: {help}");
     }
+    for cmd in ["list", "view", "attach", "detach", "zoom", "grep", "build"] {
+        let help = stdout(&s.ai(&[cmd, "--help"]));
+        for flag in ["--harness", "--session", "--transcript", "--part", "--at"] {
+            assert!(!help.contains(flag), "{cmd} {flag}: {help}");
+        }
+    }
+    let help = stdout(&s.top(None, &["view", "--help"]));
+    for flag in ["--harness", "--session", "--transcript"] {
+        assert!(!help.contains(flag), "ai view {flag}: {help}");
+    }
 }
 
 #[test]

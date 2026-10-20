@@ -74,13 +74,18 @@ enum Command {
     View {
         #[command(flatten)]
         target: Target,
-        #[arg(long, help = "the part of the view to print, as printed")]
+        #[arg(long, hide = true, help = "the part of the view to print, as printed")]
         part: Option<u64>,
-        #[arg(long, help = "the thread state the parts come from, as printed")]
+        #[arg(
+            long,
+            hide = true,
+            help = "the thread state the parts come from, as printed"
+        )]
         at: Option<String>,
     },
     #[command(about = "attach this session to a thread, creating it if new.")]
     Attach {
+        #[arg(help = "the thread: letters, digits, '-' and '_'")]
         name: String,
         #[command(flatten)]
         session: Session,
@@ -172,11 +177,19 @@ struct Build {
 /// The harness session a command is for: its flags, else the harness's environment.
 #[derive(Args, Debug)]
 pub struct Session {
-    #[arg(long, default_value = claude::HARNESS, help = "the harness running the session")]
+    #[arg(long, hide = true, default_value = claude::HARNESS, help = "the harness running the session")]
     harness: String,
-    #[arg(long, help = "the session's id [default: $CLAUDE_CODE_SESSION_ID]")]
+    #[arg(
+        long,
+        hide = true,
+        help = "the session's id [default: $CLAUDE_CODE_SESSION_ID]"
+    )]
     session: Option<String>,
-    #[arg(long, help = "the session's transcript [default: found from its id]")]
+    #[arg(
+        long,
+        hide = true,
+        help = "the session's transcript [default: found from its id]"
+    )]
     transcript: Option<PathBuf>,
 }
 
