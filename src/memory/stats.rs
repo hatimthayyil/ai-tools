@@ -13,7 +13,7 @@ use crate::memory::{
     usage::{self, Use},
 };
 
-const CMDS: [&str; 5] = ["wake", "note", "zoom", "grep", "show"];
+const CMDS: [&str; 5] = ["view", "note", "zoom", "grep", "show"];
 const DAYS: i32 = 14;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]

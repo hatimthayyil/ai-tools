@@ -2,7 +2,7 @@
 
 The `ai` CLI: an all-in-one AI tool.
 
-- `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory wake` prints the whole memory as one short view.
+- `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory view` prints the whole memory as one short view.
 - `ai notes`: a global knowledge store for AI agents. Each note is one claim, filed in a tree of topics; Claude Code summarises every topic from its children, so an agent can browse the tree or search it.
 - `ai chat`: named conversations that span agent sessions. A thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
 
@@ -22,7 +22,7 @@ nix profile add github:hatimthayyil/ai-tools
 
 ```sh
 ai memory init                  # create the memory; prints the block for your agent instructions
-ai memory wake                  # read the memory
+ai memory view                  # read the memory
 ai view                         # the whole memory at once, then this session's thread
 ai memory note "what happened"  # record one line
 ai memory zoom <id>             # open a line of the view
@@ -53,7 +53,7 @@ ai chat list                         # the threads here and their sessions
 ai chat view -t dev                  # dev's view, from the summaries written so far
 ai chat zoom -t dev <id>             # open a line of it; --tool-output adds tool output
 ai chat grep -t dev <regex>          # search it
-ai chat summarise -t dev             # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
+ai chat build -t dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
 Inside a session, `/ai attach <name>` and `/ai detach`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.

@@ -395,7 +395,7 @@ fn summaries_build_bottom_up_and_only_when_out_of_date() {
     n.add("a.b.c", "Deep claim.");
     n.add("a.b", "Middle claim.");
     n.add("a.d", "Side claim.");
-    assert_eq!(n.ok(&["summarise"]), "Built 4 summaries.\n");
+    assert_eq!(n.ok(&["build"]), "Built 4 summaries.\n");
     let order = n.fake.take();
     let at = |t: &str| order.iter().position(|o| o == t).unwrap();
     assert_eq!(order.len(), 4);
@@ -413,11 +413,11 @@ fn summaries_build_bottom_up_and_only_when_out_of_date() {
     );
     n.clean();
 
-    assert_eq!(n.ok(&["summarise"]), "Nothing to build.\n");
+    assert_eq!(n.ok(&["build"]), "Nothing to build.\n");
     assert!(n.fake.take().is_empty());
 
     n.add("a.d", "Another side claim.");
-    assert_eq!(n.ok(&["summarise"]), "Built 2 summaries.\n");
+    assert_eq!(n.ok(&["build"]), "Built 2 summaries.\n");
     assert_eq!(n.fake.take(), ["d", "a"]);
     let a = n.fake.inputs.lock().unwrap().clone();
     assert!(a.is_empty());
@@ -428,7 +428,7 @@ fn summaries_build_bottom_up_and_only_when_out_of_date() {
 fn a_topic_holding_one_subtopic_takes_its_summary_without_a_model_call() {
     let n = Notes::new();
     n.add("linguistics.syntax.minimalism", "Merge is binary.");
-    assert_eq!(n.ok(&["summarise"]), "Built 3 summaries.\n");
+    assert_eq!(n.ok(&["build"]), "Built 3 summaries.\n");
     assert_eq!(n.fake.take(), ["minimalism"]);
     assert_eq!(
         n.ok(&[]),
@@ -451,13 +451,13 @@ fn a_topic_holding_one_subtopic_takes_its_summary_without_a_model_call() {
         );
     }
     assert_eq!(
-        n.ok(&["summarise"]),
+        n.ok(&["build"]),
         "Nothing to build.\n",
         "the copies carry their hashes"
     );
 
     n.add("linguistics.syntax", "Move is internal merge.");
-    assert_eq!(n.ok(&["summarise"]), "Built 2 summaries.\n");
+    assert_eq!(n.ok(&["build"]), "Built 2 summaries.\n");
     assert_eq!(
         n.fake.take(),
         ["syntax"],
@@ -491,7 +491,7 @@ fn the_model_sees_children_and_retries_overlong_replies() {
         "--confidence",
         "speculative",
     ]);
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     let inputs = n.fake.inputs.lock().unwrap().clone();
     assert!(
         inputs[0].ends_with("\nTopic: b\n- note [verified] Child claim.: Child claim."),
@@ -525,7 +525,7 @@ fn invalid_notes_stay_out_of_summaries() {
         text.replace("---\nconfidence", "---\ninvalid_at: 2026-10-13\nconfidence"),
     )
     .unwrap();
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     let inputs = n.fake.inputs.lock().unwrap().clone();
     assert!(inputs[0].contains("The new claim.") && !inputs[0].contains("The old claim."));
     assert!(n.ok(&["show", &old]).contains("invalid_at: 2026-10-13\n"));
@@ -552,7 +552,7 @@ fn view_zoom_grep_and_show_read_the_tree() {
              physics (1): {PLACEHOLDER}\n  physics.qm (1): {PLACEHOLDER}\n    physics.qm.decoherence (1): {PLACEHOLDER}\n"
         )
     );
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     assert_eq!(n.ok(&[]), n.ok(&["view"]));
     assert_eq!(
         n.ok(&[]),
@@ -629,19 +629,19 @@ fn mv_moves_notes_and_topics_and_resummarises_both_sides() {
     let a = n.add("x.y", "First.");
     n.add("x.y", "Second.");
     n.add("x.z.w", "Deep.");
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     n.fake.take();
 
     assert_eq!(n.ok(&["mv", &a, "q"]), format!("Moved {a} to q.\n"));
     assert!(n.leaf_file(&a).starts_with(n.dir.join("q")));
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     let mut t = n.fake.take();
     t.sort();
     assert_eq!(t, ["q", "x", "y"]);
 
     n.ok(&["mv", "x.z", "r.z"]);
     assert!(!n.dir.join("x/z").exists());
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     assert!(
         n.fake.take().is_empty(),
         "the moved summaries stay valid; r and x each take their one child's"
@@ -659,7 +659,7 @@ fn mv_moves_notes_and_topics_and_resummarises_both_sides() {
     assert!(n.fail(&["mv", "nope", "q"]).starts_with("No topic nope."));
     assert!(n.fail(&["mv", &a, "q"]).contains("already"));
     assert_eq!(n.log()[0], "mv x.y s");
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     n.clean();
 }
 
@@ -669,7 +669,7 @@ fn links_are_weak_references_that_do_not_touch_summaries() {
     let a = n.add("p", "A claim.");
     let b = n.add("q.r", "Related claim.");
     let hub = n.add("p", &format!("Hub: see [[{b}]]."));
-    n.ok(&["summarise"]);
+    n.ok(&["build"]);
     n.fake.take();
     assert_eq!(n.ok(&["link", &a, &b]), format!("Linked {a} to {b}.\n"));
     assert_eq!(
@@ -692,7 +692,7 @@ fn links_are_weak_references_that_do_not_touch_summaries() {
         n.ok(&["show", &hub])
             .ends_with(&format!("Links:\nq › r › {b}: Related claim.\n"))
     );
-    assert_eq!(n.ok(&["summarise"]), "Nothing to build.\n");
+    assert_eq!(n.ok(&["build"]), "Nothing to build.\n");
 
     let old = n.leaf_file(&a);
     let text = fs::read_to_string(&old).unwrap();

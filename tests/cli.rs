@@ -165,7 +165,7 @@ fn defaults_to_the_home_dir() {
         ),
         "true"
     );
-    let r = s.cmd(s.path(), None).arg("wake").output().unwrap();
+    let r = s.cmd(s.path(), None).arg("view").output().unwrap();
     assert!(r.status.success() && text(&r.stdout).contains("You are awake."));
 }
 
@@ -173,13 +173,13 @@ fn defaults_to_the_home_dir() {
 fn exit_codes_and_streams() {
     let s = Sandbox::new();
     let d = s.store();
-    let r = s.ai(&["wake"]);
+    let r = s.ai(&["view"]);
     assert_eq!(r.status.code(), Some(1));
     assert!(text(&r.stderr).contains("No memory at") && text(&r.stderr).contains("ai memory init"));
     assert!(!d.exists());
 
     assert!(s.ai(&["init"]).status.success());
-    let r = s.ai(&["wake"]);
+    let r = s.ai(&["view"]);
     assert!(r.status.success() && text(&r.stdout).contains("No memories yet"));
     assert!(!s.ai(&["zoom"]).status.success());
 
@@ -398,8 +398,8 @@ fn every_mutation_is_one_named_commit() {
     fs::write(&seed, "2020-01-01 an imported memory\n").unwrap();
     s.ai(&["import", seed.to_str().unwrap()]);
     s.ai(&["note", "a noted memory"]);
-    s.ai(&["wake"]);
-    s.ai(&["summarise"]);
+    s.ai(&["view"]);
+    s.ai(&["build"]);
     assert_eq!(
         s.store_git(&["log", "--format=%s|%cn <%ce>", REF]),
         "note|ai memory <ai@localhost>\n\
@@ -448,7 +448,7 @@ fn nothing_is_written_outside_the_store_but_the_root_cache() {
         vec!["import", seed.to_str().unwrap()],
         vec!["note", "first"],
         vec!["note", "second"],
-        vec!["wake"],
+        vec!["view"],
         vec!["config", "PART_LINES=4"],
         vec!["grep", "first", "-t"],
         vec!["zoom", "0+2"],
@@ -524,7 +524,7 @@ fn every_command_logs_one_usage_line() {
             .unwrap()
     };
     for (args, session) in [
-        (&["wake"][..], "s1"),
+        (&["view"][..], "s1"),
         (&["note", "a noted memory"], "s1"),
         (&["note", "two\nlines"], "s1"),
         (&["zoom", "0", "--time", "-o", "repo"], "s1"),
@@ -545,7 +545,7 @@ fn every_command_logs_one_usage_line() {
     };
     assert_eq!(
         fields("cmd"),
-        ["wake", "note", "note", "zoom", "zoom", "grep", "show"]
+        ["view", "note", "note", "zoom", "zoom", "grep", "show"]
     );
     assert_eq!(
         fields("args"),
@@ -586,7 +586,7 @@ fn every_command_logs_one_usage_line() {
     assert_eq!(
         text(&r.stdout),
         "Since 2020-01-01, UTC.\n\
-         agent  wake  note  zoom  grep  show\n\
+         agent  view  note  zoom  grep  show\n\
          pi        1     1     1     1     1\n\
          all       1     1     1     1     1\n\
          \n\
@@ -635,7 +635,7 @@ fn an_unwritable_usage_log_fails_nothing() {
     fs::create_dir(s.store().join("usage.jsonl")).unwrap();
     let r = s.ai(&["note", "still saved"]);
     assert!(r.status.success() && text(&r.stderr).is_empty());
-    let r = s.ai(&["wake"]);
+    let r = s.ai(&["view"]);
     assert!(r.status.success() && text(&r.stdout).contains("still saved"));
 }
 
@@ -715,7 +715,7 @@ fn a_note_is_summarised_in_the_background() {
     }
     let r = s
         .cmd(s.path(), Some(&s.store()))
-        .arg("summarise")
+        .arg("build")
         .env("PATH", &path)
         .output()
         .unwrap();
@@ -849,7 +849,7 @@ fn concurrent_opens_upgrade_once() {
     let kids: Vec<_> = (0..8)
         .map(|_| {
             s.cmd(s.path(), Some(&s.store()))
-                .arg("wake")
+                .arg("view")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -893,8 +893,8 @@ fn a_newer_format_is_refused_before_any_write() {
     s.store_git(&["update-ref", REF, &commit]);
     for args in [
         &["note", "x"][..],
-        &["wake"],
-        &["summarise"],
+        &["view"],
+        &["build"],
         &["show", "0"],
         &["init"],
     ] {

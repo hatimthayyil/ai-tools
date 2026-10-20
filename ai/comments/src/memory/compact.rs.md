@@ -1,6 +1,6 @@
 # compact.rs
 
-Spec §4. Library for `ai memory summarise`.
+Spec §4. Library for `ai memory build`.
 
 - Prompts: `prompts/compact.txt` is the spec's COMPACT verbatim with "OptChat" → "ai" (line breaks shift; whitespace only). `prompts/scale.txt` is a 50-word (`WORDS`) lorem ipsum size reference, introduced as meaningless filler. Tasks and retries give the model a word target only, never `NODE`: told "at most 512 bytes, about 60 words", Sonnet aimed at the ceiling and missed it (38 of ~95 first tries over 512; all 4 failures 513-524 bytes after 5 retries stating the bytes over). The prompts drop "non-ASCII characters cost 2-4 bytes" for the same reason. It replaced shitty-optchat's realistic SCALE line, whose content (export.py, --verbose, ship tonight) Haiku 5.5 copied into summaries.
 - `message`: the step alone, no context and no ids. OptChat gave the compactor the whole view (up to 128 KB) so chat messages could be resolved; notes stand alone (OptMem's `nap` prompt also carries only the block), and the context made every call ~50k tokens.

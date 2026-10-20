@@ -25,15 +25,15 @@ use crate::{
 };
 
 const MODEL: &str = "ai.chat.model";
-const SUMMARISE: &str = "ai.chat.summarise";
+const BACKGROUND: &str = "ai.chat.background";
 
 /// The compactor's settings, from the repository's git config.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     /// `ai.chat.model`; default the memory compactor's.
     pub model: String,
-    /// `ai.chat.summarise`; default true: `sync-session` starts the background summariser.
-    pub summarise: bool,
+    /// `ai.chat.background`; default true: `sync-session` starts the background summariser.
+    pub background: bool,
 }
 
 impl Chat {
@@ -44,11 +44,11 @@ impl Chat {
             .map(|m| m.to_string())
             .filter(|m| !m.trim().is_empty())
             .unwrap_or_else(claude::model);
-        let summarise = c
-            .try_boolean(SUMMARISE)
-            .with_context(|| format!("{SUMMARISE} is true or false"))?
+        let background = c
+            .try_boolean(BACKGROUND)
+            .with_context(|| format!("{BACKGROUND} is true or false"))?
             .unwrap_or(true);
-        Ok(Config { model, summarise })
+        Ok(Config { model, background })
     }
 
     /// `model`, else the configured one, through the `claude` on `PATH`, keeping its calls in
@@ -65,16 +65,16 @@ impl Chat {
         )?))
     }
 
-    /// Starts `ai chat summarise -t <name> --background`, unless `ai.chat.summarise` is false;
+    /// Starts `ai chat build -t <name> --background`, unless `ai.chat.background` is false;
     /// whether it started.
     pub fn spawn_summariser(&self, thread: &Thread) -> Result<bool> {
-        if !self.config()?.summarise {
+        if !self.config()?.background {
             return Ok(false);
         }
         let repo = self.repo();
         let cwd = repo.workdir().unwrap_or(repo.git_dir());
         log::spawn(&thread.log_path()?, |c| {
-            c.args(["chat", "summarise", "-t", thread.name(), "--background"])
+            c.args(["chat", "build", "-t", thread.name(), "--background"])
                 .current_dir(cwd)
         })?;
         Ok(true)

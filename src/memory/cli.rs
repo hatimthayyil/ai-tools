@@ -46,7 +46,7 @@ Without it you do not know who you are, or what was decided and tried.
 
 ### At startup: activating memory (mandatory)
 
-Run `{memo} wake` before any other tool call, in every session, and
+Run `ai view` before any other tool call, in every session, and
 then do exactly what it prints, to the end of its output.
 
 ### While working: register memories (mandatory)
@@ -66,22 +66,23 @@ Never edit or delete anything under `{data}`: the tool manages it.
 
 ### Reading it: the view, zoom, grep
 
-`wake` prints the view: the whole memory in a fixed number of one-line
+`ai view` prints the view: the whole memory in a fixed number of one-line
 summaries, oldest first, under UTC date headers (`2026-10-11`). A line
 is `id|text` for message id, or `id+n|text` for the n messages from id
 on; one that runs past its header's day shows its last day,
 `256+8|..10-12|text`. A short message is its own line, word for word;
 the older the messages, the more a line covers. Notes (what sessions
 like this one noted) are bare text; a chat with the user is tagged by
-speaker, `user:` and `ai:`. A long view comes in parts: run the
-`{memo} wake <id>` each part ends with until it says you are awake.
+speaker, `user:` and `ai:`. `{memo} view` prints it alone, in parts
+when long: run the `{memo} view <id>` each part ends with until it says
+you are awake.
 
 `{memo} zoom <id+n>` opens a line two levels down: the four lines of n/4
 it was made from, or its messages when n is 2 or 4; `{memo} zoom <id>`
 gives message id in full. Zoom whenever a line
 only mentions something you need, before you act, guess or ask.
 `{memo} grep <regex>` searches every message, word for word; `-t` adds
-the summaries, `--help` lists the filters. `wake`, `zoom` and `grep`
+the summaries, `--help` lists the filters. `{memo} view`, `zoom` and `grep`
 take `--time` for the time of day and `-o repo,branch,...` for more
 fields. `{memo} show <id>` prints where a message or summary came
 from.
@@ -108,8 +109,8 @@ pub struct Cli {
 enum Command {
     #[command(about = "create this memory; print the setup block.")]
     Init,
-    #[command(about = "read your memory: print the view. Run first, every session.")]
-    Wake {
+    #[command(about = "read your memory: print the view.")]
+    View {
         #[arg(help = "the message to read on from, as printed")]
         from: Option<u64>,
         #[arg(
@@ -127,7 +128,7 @@ enum Command {
         text: String,
     },
     #[command(about = "build every summary that can be built now, with Claude Code.")]
-    Summarise,
+    Build,
     #[command(about = "search every message ever recorded, newest page first.")]
     Grep(Grep),
     #[command(about = "open a line of the view into the four lines two levels under it.")]
@@ -151,7 +152,7 @@ enum Command {
     },
     #[command(about = "bulk-load dated notes (bootstrap only).")]
     Import { file: PathBuf },
-    #[command(about = "count how often agents wake, note, zoom, grep and show.")]
+    #[command(about = "count how often agents view, note, zoom, grep and show.")]
     Stats(Stats),
     #[command(
         hide = true,
@@ -166,8 +167,8 @@ impl Command {
         let part = |p: &Option<u64>| p.map(|p| p.to_string());
         match self {
             Command::Init => ("init", Vec::new()),
-            Command::Wake { from, whole, meta } => (
-                "wake",
+            Command::View { from, whole, meta } => (
+                "view",
                 part(from)
                     .into_iter()
                     .chain(whole.then(|| "--whole".into()))
@@ -175,7 +176,7 @@ impl Command {
                     .collect(),
             ),
             Command::Note { .. } => ("note", Vec::new()),
-            Command::Summarise => ("summarise", Vec::new()),
+            Command::Build => ("build", Vec::new()),
             Command::Grep(g) => ("grep", g.typed()),
             Command::Zoom { id, part: p, meta } => (
                 "zoom",
@@ -197,9 +198,9 @@ impl Command {
 pub struct Runtime {
     pub backend: Box<MakeBackend>,
     pub opts: Options,
-    /// Whether `note` starts a background `summarise`.
+    /// Whether `note` starts a background `build`.
     pub summarise_on_note: bool,
-    /// Called by `summarise` when a round is done, while it still holds the compactor lock.
+    /// Called by `build` when a round is done, while it still holds the compactor lock.
     pub before_release: Box<dyn Fn()>,
     pub stdin: Box<dyn Fn() -> io::Result<String>>,
 }
@@ -216,11 +217,11 @@ impl Default for Runtime {
     }
 }
 
-/// Starts `ai <tool> summarise` on the store at `dir` (named to it by `$var`), detached; it logs to
+/// Starts `ai <tool> build` on the store at `dir` (named to it by `$var`), detached; it logs to
 /// `summarise.log` in `log_dir`, its stderr too.
 pub fn spawn_summariser(tool: &str, var: &str, dir: &Path, log_dir: &Path) -> Result<()> {
     log::spawn(&log_dir.join(log::SUMMARISE_LOG), |c| {
-        c.args([tool, "summarise"]).env(var, dir)
+        c.args([tool, "build"]).env(var, dir)
     })
 }
 
@@ -240,10 +241,10 @@ pub fn default_dir() -> Result<PathBuf> {
 }
 
 impl Cli {
-    /// `wake --whole`: the whole view at once, read and recorded as any wake.
-    pub fn wake_whole() -> Cli {
+    /// `view --whole`: the whole view at once, read and recorded as any view.
+    pub fn view_whole() -> Cli {
         Cli {
-            command: Command::Wake {
+            command: Command::View {
                 from: None,
                 whole: true,
                 meta: Meta::default(),
@@ -305,9 +306,9 @@ impl Command {
     ) -> Result<ExitCode> {
         match self {
             Command::Init | Command::PromptHook => unreachable!(),
-            Command::Wake { from, whole, meta } => wake(s, out, from.unwrap_or(0), whole, &meta),
+            Command::View { from, whole, meta } => view(s, out, from.unwrap_or(0), whole, &meta),
             Command::Note { text } => note(s, out, &text, rt, place, who),
-            Command::Summarise => summarise(s, out, rt),
+            Command::Build => build(s, out, rt),
             Command::Grep(g) => grep(&s.snapshot()?, out, &g),
             Command::Zoom { id, part, meta } => {
                 zoom_cmd(&s.snapshot()?, out, &id, part.unwrap_or(1), &meta)
@@ -395,7 +396,7 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
 const IN_PARTS: &str = "Your memory comes in parts, oldest first. Run the command at the end of each part until you see \"You are awake.\"";
 
 /// The view from message `from`: in parts, else `whole`.
-fn wake(s: &Store, out: &mut dyn Write, from: u64, whole: bool, meta: &Meta) -> Result<ExitCode> {
+fn view(s: &Store, out: &mut dyn Write, from: u64, whole: bool, meta: &Meta) -> Result<ExitCode> {
     let snap = s.snapshot()?;
     let t = snap.log_len()?;
     if t == 0 {
@@ -408,13 +409,13 @@ fn wake(s: &Store, out: &mut dyn Write, from: u64, whole: bool, meta: &Meta) -> 
     }
     if from >= t {
         bail!(
-            "No message {from}: the memory has {}. Run: {ME} wake",
+            "No message {from}: the memory has {}. Run: {ME} view",
             plural(t, "message")
         );
     }
     let mut lines = Vec::new();
     for c in cover::from(&cover(t, s.cfg.get(Knob::WakeLines)), from) {
-        wake_lines(&snap, c, meta, &mut lines)?;
+        view_lines(&snap, c, meta, &mut lines)?;
     }
     let mut parts = match whole {
         true => vec![lines],
@@ -436,7 +437,7 @@ fn wake(s: &Store, out: &mut dyn Write, from: u64, whole: bool, meta: &Meta) -> 
     match part.last().filter(|_| more) {
         Some(l) => writeln!(
             out,
-            "Not awake yet. Run: {ME} wake {}{}",
+            "Not awake yet. Run: {ME} view {}{}",
             l.c.end(),
             meta.flags()
         )?,
@@ -449,14 +450,14 @@ fn wake(s: &Store, out: &mut dyn Write, from: u64, whole: bool, meta: &Meta) -> 
 }
 
 /// Line `c`, or its halves' lines while its summary is not built; tool calls have none.
-fn wake_lines(snap: &Snapshot, c: Coord, meta: &Meta, out: &mut Vec<Line>) -> Result<()> {
+fn view_lines(snap: &Snapshot, c: Coord, meta: &Meta, out: &mut Vec<Line>) -> Result<()> {
     let text = match snap.node(c)? {
         Some(n) if n.text.is_empty() => return Ok(()),
         Some(n) => n.text,
         None if c.l == 0 => PLACEHOLDER.into(),
         None => {
             for k in c.children() {
-                wake_lines(snap, k, meta, out)?;
+                view_lines(snap, k, meta, out)?;
             }
             return Ok(());
         }
@@ -496,7 +497,7 @@ fn pending(s: &Store) -> Result<bool> {
     Ok(!mem.due(|_| false, 1).is_empty())
 }
 
-fn summarise(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+fn build(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     let _log = log::init(&s.dir().join(log::SUMMARISE_LOG))?;
     let _span = info_span!(
         "summarise",

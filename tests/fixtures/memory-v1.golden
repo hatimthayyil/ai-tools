@@ -1,4 +1,4 @@
-$ wake
+$ view
 2020-01-01
 0|imported first note
 1|imported second note, with spaces
@@ -20,7 +20,7 @@ $ wake
 14|short note 10 about the widget
 15|short note 11 about the widget
 You are awake. Zoom the marked lines that touch your task before you act.
-$ wake --time -o origin,repo,head,branch,agent,model,session,kind
+$ view --time -o origin,repo,head,branch,agent,model,session,kind
 2020-01-01
 0|00:00|2RP35K|-|-|-|-|-|-|note|imported first note
 1|00:00|2RP35K|-|-|-|-|-|-|note|imported second note, with spaces
@@ -115,11 +115,11 @@ model   -
 session -
 text    imported first note imported second note, with spaces imported third note imported fourth
 $ config WAKE_LINES=3
-WAKE_LINES   3       how many lines wake prints (96 is about 8k tokens) (default 96)
+WAKE_LINES   3       how many lines view prints (96 is about 8k tokens) (default 96)
 ENTRY_CHARS  280     the longest one note may be, in bytes
 PART_CHARS   20000   output paging: largest part, in bytes
 PART_LINES   500     output paging: largest part, in lines
-$ wake -o session
+$ view -o session
 2020-01-01
 0+8|..2026-10-13|sess-0(+1)|imported first note imported second note, with spaces imported third note imported fourth summary 521aac41
 2026-10-13

@@ -206,7 +206,7 @@ impl Store {
         self.git.readable(v)?;
         if v < FORMAT {
             bail!(
-                "This memory is format {v}, older than this ai's {FORMAT}. Run {ME} wake to upgrade it."
+                "This memory is format {v}, older than this ai's {FORMAT}. Run ai view to upgrade it."
             );
         }
         Ok(Snapshot { store: self, git })

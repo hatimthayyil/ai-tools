@@ -683,11 +683,7 @@ fn a_summariser_on_a_dead_backend_gives_up_and_frees_the_lock() {
     s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
         .unwrap();
     let dead = Fake::new(|_, _| bail!("usage limit reached"));
-    let r = run_rt(
-        &d,
-        &runtime(Arc::new(Model(Arc::new(dead)))),
-        &["summarise"],
-    );
+    let r = run_rt(&d, &runtime(Arc::new(Model(Arc::new(dead)))), &["build"]);
     assert_eq!(r.code, 1, "{}", r.stderr);
     let failed = |n| {
         format!(
@@ -717,7 +713,7 @@ fn a_summariser_on_a_dead_backend_gives_up_and_frees_the_lock() {
     );
     assert!(!log.contains(" end "), "{log}");
     assert!(!Mem::load(&s.snapshot().unwrap(), VIEW).unwrap().all_built());
-    assert_eq!(run(&d, &["summarise"]).stdout, "Built 3 summaries.\n");
+    assert_eq!(run(&d, &["build"]).stdout, "Built 3 summaries.\n");
 }
 
 #[test]
@@ -729,9 +725,9 @@ fn a_life_through_the_cli() {
     let r = run(d, &["note", "two\nlines"]);
     assert!(r.code == 1 && r.stderr.contains("one line"));
     assert_eq!(run(d, &["note", "   "]).code, 1);
-    let r = run(d, &["wake"]);
+    let r = run(d, &["view"]);
     assert!(r.stdout.contains("No memories yet") && r.stdout.ends_with("You are awake.\n"));
-    assert_eq!(run(d, &["summarise"]).stdout, "Nothing to build.\n");
+    assert_eq!(run(d, &["build"]).stdout, "Nothing to build.\n");
 
     let seed = tmp.path().join("seed.txt");
     let lines: String = (0..40)
@@ -745,7 +741,7 @@ fn a_life_through_the_cli() {
     let r = run(d, &["note", &format!("big {}", "b".repeat(270))]);
     assert_eq!(r.stdout, "Saved as 41.\n");
 
-    let wake = run(d, &["wake"]).stdout;
+    let view = run(d, &["view"]).stdout;
     let ts = Store::open(d)
         .unwrap()
         .snapshot()
@@ -757,24 +753,24 @@ fn a_life_through_the_cli() {
         format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8]),
         format!("{}:{}", &ts[9..11], &ts[11..13]),
     );
-    assert!(wake.starts_with("2020-01-01\n0|message 0 nnn"), "{wake}");
+    assert!(view.starts_with("2020-01-01\n0|message 0 nnn"), "{view}");
     assert!(
-        wake.contains(&format!("\n{today}\n40|a short one\n")),
-        "{wake}"
+        view.contains(&format!("\n{today}\n40|a short one\n")),
+        "{view}"
     );
-    let wake = run(d, &["wake", "--time", "-o", "kind,repo"]).stdout;
+    let view = run(d, &["view", "--time", "-o", "kind,repo"]).stdout;
     assert!(
-        wake.starts_with("2020-01-01\n0|00:00|note|-|message 0 nnn"),
-        "{wake}"
+        view.starts_with("2020-01-01\n0|00:00|note|-|message 0 nnn"),
+        "{view}"
     );
     assert!(
-        wake.contains(&format!("\n{today}\n40|{now}|note|")),
-        "{wake}"
+        view.contains(&format!("\n{today}\n40|{now}|note|")),
+        "{view}"
     );
-    assert!(wake.ends_with(&format!("\n{AWAKE}\n")), "{wake}");
+    assert!(view.ends_with(&format!("\n{AWAKE}\n")), "{view}");
 
     let rt = runtime(Arc::new(Model(Arc::new(Fake::summaries()))));
-    let r = run_rt(d, &rt, &["summarise"]);
+    let r = run_rt(d, &rt, &["build"]);
     assert!(
         Regex::new(r"^Built \d+ summaries\.\n$")
             .unwrap()
@@ -794,20 +790,20 @@ fn a_life_through_the_cli() {
             );
         }
     }
-    assert_eq!(run(d, &["summarise"]).stdout, "Nothing to build.\n");
+    assert_eq!(run(d, &["build"]).stdout, "Nothing to build.\n");
 
     assert_eq!(run(d, &["config", "WAKE_LINES=8"]).code, 0);
-    let wake = run(d, &["wake"]).stdout;
-    let ids = line_ids(&wake);
-    assert_eq!(ids.len(), 8, "{wake}");
+    let view = run(d, &["view"]).stdout;
+    let ids = line_ids(&view);
+    assert_eq!(ids.len(), 8, "{view}");
     assert!(
         ids[0].0 == 0 && ids[0].1 > 1,
-        "the oldest are summarized: {wake}"
+        "the oldest are summarized: {view}"
     );
-    assert!(ids.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0), "{wake}");
-    assert_eq!(ids[7].0 + ids[7].1, 42, "{wake}");
+    assert!(ids.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0), "{view}");
+    assert_eq!(ids[7].0 + ids[7].1, 42, "{view}");
     let straddled = ids.iter().find(|(id, n)| *id < 5 && id + n > 5).unwrap();
-    let resumed = run(d, &["wake", "5"]).stdout;
+    let resumed = run(d, &["view", "5"]).stdout;
     let rids = line_ids(&resumed);
     assert_eq!(rids[0].0, 5, "a resumed read starts at its id: {resumed}");
     assert!(
@@ -824,10 +820,10 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["config", "WAKE_LINES="]).code, 0);
 
     assert_eq!(run(d, &["config", "PART_CHARS=600"]).code, 0);
-    let next = Regex::new(r"\nNot awake yet\. Run: ai memory wake (\d+)\n$").unwrap();
+    let next = Regex::new(r"\nNot awake yet\. Run: ai memory view (\d+)\n$").unwrap();
     let (mut from, mut all) = (0, Vec::new());
     for k in 0.. {
-        let r = run(d, &["wake", &from.to_string()]);
+        let r = run(d, &["view", &from.to_string()]);
         assert_eq!(r.code, 0, "{}", r.stderr);
         let mut lines = r.stdout.lines();
         assert!(
@@ -855,11 +851,11 @@ fn a_life_through_the_cli() {
         }
     }
     assert!(tiles(&all, 0, 43), "parts tile the log: {all:?}");
-    let whole = run(d, &["wake", "--whole"]).stdout;
+    let whole = run(d, &["view", "--whole"]).stdout;
     assert!(is_day(whole.lines().next().unwrap()), "{whole}");
     assert!(whole.ends_with(&format!("\n{AWAKE}\n")), "{whole}");
     assert!(tiles(&line_ids(&whole), 0, 43), "one part: {whole}");
-    assert!(run(d, &["wake", "43"]).stderr.contains("No message 43"));
+    assert!(run(d, &["view", "43"]).stderr.contains("No message 43"));
     assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
 
     let z = run(d, &["zoom", "0+32"]).stdout;
@@ -1020,7 +1016,7 @@ fn init_prints_the_block_and_is_idempotent() {
             .contains("ai memory note \"<1 line, max 280 bytes>\"")
     );
     assert!(r.stdout.contains("ai memory zoom <id+n>"));
-    assert!(!r.stdout.contains("summarise"));
+    assert!(!r.stdout.contains("build"));
 }
 
 #[test]
@@ -1123,7 +1119,7 @@ fn a_bad_knob_names_its_key() {
         fs::read_to_string(d.join("config")).unwrap() + "[ai \"memory\"]\n\tpartChars = lots\n",
     )
     .unwrap();
-    let r = run(&d, &["wake"]);
+    let r = run(&d, &["view"]);
     assert!(
         r.stderr
             .contains("ai.memory.partChars must be a positive whole number"),
@@ -1136,7 +1132,7 @@ fn a_bad_knob_names_its_key() {
 fn a_missing_dir_is_reported_not_created() {
     let tmp = TempDir::new().unwrap();
     let d = tmp.path().join("nope");
-    let r = run(&d, &["wake"]);
+    let r = run(&d, &["view"]);
     assert!(r.code == 1 && r.stderr.contains("No memory at"));
     assert!(!d.exists());
 }
@@ -1147,7 +1143,7 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
     let s = Store::open(&d).unwrap();
     s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
         .unwrap();
-    let r = run(&d, &["summarise"]);
+    let r = run(&d, &["build"]);
     assert_eq!(r.stdout, "Built 3 summaries.\n", "{}", r.stderr);
     let line = |level: &str, event: &str| {
         Regex::new(&format!(
@@ -1177,11 +1173,7 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
         }
         Ok("y".repeat(if attempt == 1 { 600 } else { 300 }))
     });
-    let r = run_rt(
-        &d,
-        &runtime(Arc::new(Model(Arc::new(flaky)))),
-        &["summarise"],
-    );
+    let r = run_rt(&d, &runtime(Arc::new(Model(Arc::new(flaky)))), &["build"]);
     assert!(r.stdout.ends_with("Built 1 summary.\n"), "{}", r.stdout);
     let log = fs::read_to_string(d.join("summarise.log")).unwrap();
     let warns = [
@@ -1217,9 +1209,9 @@ fn a_note_whose_summariser_finds_the_lock_taken_still_gets_built() {
             .unwrap()
             .append("note", &[msg(Kind::Note, long(1))])
             .unwrap();
-        *seen = Some(run_rt(&dir, &runtime(m2.clone()), &["summarise"]).stdout);
+        *seen = Some(run_rt(&dir, &runtime(m2.clone()), &["build"]).stdout);
     });
-    let r = run_rt(&d, &rt, &["summarise"]);
+    let r = run_rt(&d, &rt, &["build"]);
     assert_eq!(
         late.lock().unwrap().as_deref(),
         Some("A compactor is already running; it will build these too.\n"),
@@ -1228,7 +1220,7 @@ fn a_note_whose_summariser_finds_the_lock_taken_still_gets_built() {
     assert_eq!(r.stdout, "Built 3 summaries.\n", "{}", r.stderr);
     let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
     assert!(m.built(Coord::leaf(1)) && m.built(Coord::new(1, 0)));
-    assert_eq!(run(&d, &["summarise"]).stdout, "Nothing to build.\n");
+    assert_eq!(run(&d, &["build"]).stdout, "Nothing to build.\n");
 }
 
 #[test]
@@ -1275,8 +1267,8 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
     };
     let (a, b) = (("claude-code", "acme/a"), ("codex", "acme/b"));
     let log = [
-        call("20200228T090000Z", "wake", true, a.0, a.1, "s0"),
-        call("20200301T085900Z", "wake", true, a.0, a.1, "s1"),
+        call("20200228T090000Z", "view", true, a.0, a.1, "s0"),
+        call("20200301T085900Z", "view", true, a.0, a.1, "s1"),
         call("20200301T092000Z", "zoom", true, a.0, a.1, "s1"),
         call("20200301T092100Z", "zoom", true, a.0, a.1, "s1"),
         call("20200301T092200Z", "grep", false, a.0, a.1, "s1"),
@@ -1285,12 +1277,12 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
             .replace(r#""args":[]"#, r#""args":["reminded","periodic"]"#),
         call("20200301T092500Z", "prompt-hook", false, a.0, a.1, "s1"),
         "torn".into(),
-        call("20200302T095900Z", "wake", true, b.0, b.1, "s2"),
+        call("20200302T095900Z", "view", true, b.0, b.1, "s2"),
         call("20200302T100500Z", "show", true, b.0, b.1, "s2"),
-        call("20200302T120000Z", "wake", true, b.0, b.1, "s3"),
+        call("20200302T120000Z", "view", true, b.0, b.1, "s3"),
         call("20200302T120100Z", "note", false, b.0, b.1, "s3"),
         call("20200302T120200Z", "note", true, b.0, b.1, "s3"),
-        call("20200302T130000Z", "summarise", true, b.0, b.1, "s3"),
+        call("20200302T130000Z", "build", true, b.0, b.1, "s3"),
     ];
     fs::write(d.join("usage.jsonl"), log.join("\n") + "\n").unwrap();
 
@@ -1304,7 +1296,7 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
     assert_eq!(
         r.stdout,
         "Since 2020-03-01, UTC.\n\
-         day         wake  note  zoom  grep  show\n\
+         day         view  note  zoom  grep  show\n\
          2020-03-01     1     2     2     0     0\n\
          2020-03-02     2     2     0     0     1\n\
          all            3     4     2     0     1\n"
@@ -1317,7 +1309,7 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
     assert_eq!(
         r.stdout,
         "Since 2020-03-01, UTC.\n\
-         repo    wake  note  zoom  grep  show\n\
+         repo    view  note  zoom  grep  show\n\
          acme/a     1     2     2     0     0\n\
          acme/b     2     1     0     0     1\n\
          -          0     1     0     0     0\n\

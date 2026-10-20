@@ -23,7 +23,7 @@ fn tile(t: u64, alpha: f64) -> Vec<Coord> {
     out
 }
 
-/// What `wake` prints (OptMem's cover): at most `budget` blocks tiling `[0, t)`, oldest
+/// What `view` prints (OptMem's cover): at most `budget` blocks tiling `[0, t)`, oldest
 /// first, detail fading with age. Lines the budget leaves over go to the newest blocks.
 pub fn cover(t: u64, budget: u64) -> Vec<Coord> {
     if t <= budget {

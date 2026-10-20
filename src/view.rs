@@ -10,8 +10,8 @@ use clap::Args;
 
 use crate::{chat, memory};
 
-/// `ai view`: the memory's whole view, read as a wake, then the view of the thread the calling
-/// session is attached to.
+/// `ai view`: the memory's whole view, read as `ai memory view`, then the view of the thread the
+/// calling session is attached to.
 #[derive(Args, Debug)]
 pub struct Cli {
     #[command(flatten)]
@@ -30,7 +30,7 @@ impl Cli {
 
     pub fn run(self, memory: &Path, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
         writeln!(out, "# Memory\n")?;
-        let woke = memory::Cli::wake_whole().run(memory, out)?;
+        let woke = memory::Cli::view_whole().run(memory, out)?;
         if woke != ExitCode::SUCCESS {
             return Ok(woke);
         }

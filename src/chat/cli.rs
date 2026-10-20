@@ -31,7 +31,7 @@ pub const NOT_ATTACHED: u8 = 3;
 /// The largest part of a paged output, in bytes: under Claude Code's 30,000-character cap on
 /// a command's output.
 pub const PART: u64 = 20_000;
-/// How long `compact-session` waits for the lines its view needs, and `summarise --rebuild`
+/// How long `compact-session` waits for the lines its view needs, and `build --rebuild`
 /// for a running summariser.
 pub const WAIT: Duration = Duration::from_secs(60);
 
@@ -119,7 +119,7 @@ enum Command {
     #[command(
         about = "write a thread's summary lines that are ready, or one line, stopping at the first that fails."
     )]
-    Summarise(Summarise),
+    Build(Build),
     #[command(
         hide = true,
         about = "plumbing: copy this session's new entries into its thread."
@@ -138,9 +138,9 @@ enum Command {
     },
 }
 
-/// What `summarise` writes, and how.
+/// What `build` writes, and how.
 #[derive(Args, Debug)]
-struct Summarise {
+struct Build {
     #[command(flatten)]
     target: Target,
     #[arg(help = "one line: 12 (a turn), 8+4 (a node), 12.3+7 (a chunk)")]
@@ -267,7 +267,7 @@ impl Cli {
                 tool_output,
                 before,
             } => grep(cwd, out, target, &pat, tool_output, before.as_deref()),
-            Command::Summarise(a) => summarise_cmd(cwd, out, a),
+            Command::Build(a) => build_cmd(cwd, out, a),
             Command::SyncSession { session } => sync_session(cwd, session),
             Command::CompactSession { session } => compact_session(cwd, out, session),
         }
@@ -379,7 +379,7 @@ fn ready(
     for f in failures(&snap, &built.failed)? {
         msg += &format!("\n{f}");
     }
-    bail!("{msg}\nWrite them, then try again: ai chat summarise -t {name}")
+    bail!("{msg}\nWrite them, then try again: ai chat build -t {name}")
 }
 
 /// Each failed line as `Failed <id>: <error>`, by its id in `snap`.
@@ -396,7 +396,7 @@ fn failures(snap: &Snapshot, failed: &[(Key, String)]) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Starts the thread's background summariser, unless `ai.chat.summarise` is false.
+/// Starts the thread's background summariser, unless `ai.chat.background` is false.
 fn start_summariser(cwd: &Path, thread: &str) -> Result<()> {
     let chat = find(cwd)?;
     chat.spawn_summariser(&chat.thread(thread)?)?;
@@ -758,8 +758,8 @@ fn progress(show: bool) -> ProgressBar {
 /// line. With `dry_run`, prints what it would write and stores nothing. It stops at the first
 /// line that fails, unless it is the `background` summariser. On a terminal, all but a dry
 /// run and the background summariser show their progress on stderr.
-fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCode> {
-    let Summarise {
+fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
+    let Build {
         target,
         id,
         rebuild: again,
@@ -803,7 +803,7 @@ fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCo
             if r.above > 0 {
                 writeln!(
                     out,
-                    "The next ai chat summarise -t {} writes the {} above {id} again.",
+                    "The next ai chat build -t {} writes the {} above {id} again.",
                     t.name(),
                     plural(r.above as u64, "line")
                 )?;

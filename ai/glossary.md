@@ -6,14 +6,14 @@
 - `node`: one summary line of the tree, ≤ ~512 bytes (`NODE`). `(l, i)` covers messages `[i·2^l, (i+1)·2^l)`; level 0 summarizes one message, level `l` merges its two children. Stored one per line in `tree/<l>/<hi>/<lo>` segments of 256, under a column row (`ts origin agent model session text`).
 - `id+n`: how a node is named: first message `id`, `n = 2^l` messages. One message is a bare `id`; `zoom` and `show` take either.
 - `free node`: a source that fits `NODE` is its own node, no model call: a short message (`kind: text`), or two lines joined. Built in the same commit that completes its sources.
-- `view`: the nodes tiling `[0, T)`, oldest first, under `VIEW` = 128,000 bytes; grows by appending and merging the most due pair, never splits; folded again from message 0 at load. `wake` prints it.
+- `view`: the nodes tiling `[0, T)`, oldest first, under `VIEW` = 128,000 bytes; grows by appending and merging the most due pair, never splits; folded again from message 0 at load. `ai memory view` prints it.
 - `placeholder`: `(not summarized yet: zoom it)`, the view line of a message whose level-0 node is not built.
-- `compactor`: builds nodes with a model, in rule-3 order (messages one at a time, merges alongside), `JOBS` = 8 at once, size retries, fixed 10 s retry. One per memory (`compact.lock`). Runs as `ai memory summarise`.
+- `compactor`: builds nodes with a model, in rule-3 order (messages one at a time, merges alongside), `JOBS` = 8 at once, size retries, fixed 10 s retry. One per memory (`compact.lock`). Runs as `ai memory build`.
 - `rule 3`: a node is built only when every view line before its end is already a summary, so the compactor never sees a placeholder.
-- `summarise` (memory): `ai memory summarise`: run the compactor until nothing is buildable, then exit. `note` starts one in the background when a node is due.
+- `build` (memory): `ai memory build`: run the compactor until nothing is buildable, then exit. `note` starts one in the background when a node is due.
 - `backend`: the compactor's model access (`Backend`/`Conversation`); now only Claude Code (`claude -p`, Sonnet, medium effort).
-- `wake`: print the view under date headers, paged into parts; `wake <id>` reads on from message `id`, as each part's last line says.
-- `part`: one page of `wake` output, bounded by `PART_CHARS`/`PART_LINES`.
+- `ai memory view`: print the view under date headers, paged into parts; `ai memory view <id>` reads on from message `id`, as each part's last line says.
+- `part`: one page of `ai memory view` output, bounded by `PART_CHARS`/`PART_LINES`.
 - `zoom`: open `id+n` two levels down; a bare `id` gives the original message in bounded pages (`part`, from 1).
 - `origin`: a store's random id (6 Crockford base-32 characters), made at `init` and kept in its git config as `ai.memory.origin`; stamped on every message and node the store writes.
 - `show`: every field of one message or node.
@@ -57,6 +57,6 @@
 - `chunk`: consecutive steps of a turn whose rendering is over `INPUT` (48 KB), cut greedily at step boundaries (an over-budget step before its tool calls); final once another chunk follows it. Its call reads the turn's message as context.
 - `free line` (chat): a line whose input fits 512 B is that input without item ids, flattened, with no model call.
 - `grep` (chat): `ai chat grep <regex>`: matches on a thread's branch in items' words and tool calls, tool output with `--tool-output`, and built lines; newest page first, older with `--before <id>`.
-- `summarise` (chat): `ai chat summarise -t <name>`: the thread's summariser, one per thread (its lock), building every ready line until none is; `sync-session` starts it in the background unless `ai.chat.summarise` is false. `--rebuild` drops every line and writes them again; `<id>` writes one line, and with `--rebuild` rewrites it and drops the lines above it for the next run; `--dry-run` prints what it would write and stores nothing; `--model` picks the model for the run.
+- `build` (chat): `ai chat build -t <name>`: the thread's summariser, one per thread (its lock), building every ready line until none is; `sync-session` starts it in the background unless `ai.chat.background` is false. `--rebuild` drops every line and writes them again; `<id>` writes one line, and with `--rebuild` rewrites it and drops the lines above it for the next run; `--dry-run` prints what it would write and stores nothing; `--model` picks the model for the run.
 - `porcelain`: a command for users and agents (git's term): listed in help, errors worded as what to do.
 - `plumbing`: a command for harness glue, at least two words, hidden from help: `ai chat sync-session`, `ai chat compact-session`, `ai memory prompt-hook`.

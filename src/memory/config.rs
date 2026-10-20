@@ -54,7 +54,7 @@ impl Knob {
 
     pub fn what(self) -> &'static str {
         match self {
-            Knob::WakeLines => "how many lines wake prints (96 is about 8k tokens)",
+            Knob::WakeLines => "how many lines view prints (96 is about 8k tokens)",
             Knob::EntryChars => "the longest one note may be, in bytes",
             Knob::PartChars => "output paging: largest part, in bytes",
             Knob::PartLines => "output paging: largest part, in lines",

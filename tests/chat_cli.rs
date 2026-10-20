@@ -61,7 +61,7 @@ impl Sandbox {
             .unwrap();
         assert!(root.success());
         let off = Command::new("git")
-            .args(["config", "ai.chat.summarise", "false"])
+            .args(["config", "ai.chat.background", "false"])
             .current_dir(dir)
             .status()
             .unwrap();
@@ -385,12 +385,7 @@ fn porcelain_without_a_thread_says_what_to_do() {
     let s = Sandbox::new();
     let attach = "This session is not attached to a thread. Attach it with `ai chat attach <name>`, or name a thread with -t.\n";
     let name = "Name a thread with -t; this shell is outside an agent session. List the threads: ai chat list\n";
-    for cmd in [
-        &["view"][..],
-        &["zoom", "0"],
-        &["grep", "x"],
-        &["summarise"],
-    ] {
+    for cmd in [&["view"][..], &["zoom", "0"], &["grep", "x"], &["build"]] {
         fails(s.ai_in("s-1", cmd), attach);
         fails(s.ai(cmd), name);
     }
@@ -413,14 +408,7 @@ fn plumbing_is_hidden_from_help() {
     let s = Sandbox::new();
     let help = stdout(&s.ai(&["--help"]));
     for cmd in [
-        "start",
-        "resume",
-        "list",
-        "view",
-        "attach",
-        "detach",
-        "zoom",
-        "summarise",
+        "start", "resume", "list", "view", "attach", "detach", "zoom", "build",
     ] {
         assert!(help.contains(&format!("\n  {cmd} ")), "{cmd}: {help}");
     }
@@ -705,7 +693,7 @@ fn ai_view_prints_the_whole_memory_then_the_sessions_thread() {
         assert_eq!(code(&memory(&["note", &format!("note {k}")])), 0);
     }
     assert_eq!(code(&memory(&["config", "PART_CHARS=200"])), 0);
-    assert!(stdout(&memory(&["wake"])).starts_with("Your memory comes in parts"));
+    assert!(stdout(&memory(&["view"])).starts_with("Your memory comes in parts"));
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));
     ok(
         s.ai_in("s-1", &["attach", "dev"]),
@@ -734,10 +722,10 @@ fn ai_view_prints_the_whole_memory_then_the_sessions_thread() {
     assert_eq!(
         usage
             .lines()
-            .filter(|l| l.contains(r#""cmd":"wake","args":["--whole"]"#))
+            .filter(|l| l.contains(r#""cmd":"view","args":["--whole"]"#))
             .count(),
         2,
-        "each view is a wake: {usage}"
+        "each ai view reads the memory once: {usage}"
     );
 }
 
@@ -1028,7 +1016,7 @@ fn threads_resolve_in_the_current_repository_only() {
 }
 
 #[test]
-fn summarise_writes_rewrites_and_dry_runs_the_lines() {
+fn build_writes_rewrites_and_dry_runs_the_lines() {
     let s = Sandbox::new();
     s.transcript("s-1", &talk(3, |k| format!("question {k}")));
     ok(
@@ -1037,7 +1025,7 @@ fn summarise_writes_rewrites_and_dry_runs_the_lines() {
     );
     s.line("dev", 1, 1, "first, by hand");
     let fresh = "0|user: question 0 ai: reply 0\n";
-    let o = s.ai_in("s-1", &["summarise", "--dry-run", "--model", "opus"]);
+    let o = s.ai_in("s-1", &["build", "--dry-run", "--model", "opus"]);
     let dry = stdout(&o);
     assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
     assert!(
@@ -1060,11 +1048,11 @@ fn summarise_writes_rewrites_and_dry_runs_the_lines() {
     );
 
     ok(
-        s.ai_in("s-1", &["summarise"]),
+        s.ai_in("s-1", &["build"]),
         "Wrote 2 lines, 0 by the model.\n",
     );
-    ok(s.ai(&["summarise", "-t", "dev"]), "Nothing to write.\n");
-    let o = s.ai_in("s-1", &["summarise", "--rebuild", "--dry-run"]);
+    ok(s.ai(&["build", "-t", "dev"]), "Nothing to write.\n");
+    let o = s.ai_in("s-1", &["build", "--rebuild", "--dry-run"]);
     let dry = stdout(&o);
     assert!(
         dry.starts_with(&format!("{fresh}  was: first, by hand\n")),
@@ -1072,7 +1060,7 @@ fn summarise_writes_rewrites_and_dry_runs_the_lines() {
     );
     assert!(dry.ends_with("Dry run: 3 lines, 0 by the model; nothing stored.\n"));
     ok(
-        s.ai_in("s-1", &["summarise", "--rebuild"]),
+        s.ai_in("s-1", &["build", "--rebuild"]),
         "Dropped 3 lines; wrote 3, 0 by the model.\n",
     );
     let t = s.chat().thread("dev").unwrap();
@@ -1086,7 +1074,7 @@ fn summarise_writes_rewrites_and_dry_runs_the_lines() {
 }
 
 #[test]
-fn summarise_writes_or_rewrites_one_line() {
+fn build_writes_or_rewrites_one_line() {
     let s = Sandbox::new();
     s.transcript("s-1", &talk(5, |k| format!("question {k}")));
     ok(
@@ -1096,19 +1084,19 @@ fn summarise_writes_or_rewrites_one_line() {
     let ends = turn_ends(&s, "dev");
     s.line("dev", 1, ends[0], "by hand");
     ok(
-        s.ai_in("s-1", &["summarise", "0+2"]),
+        s.ai_in("s-1", &["build", "0+2"]),
         "Wrote 2 lines, 0 by the model.\n",
     );
     ok(
-        s.ai_in("s-1", &["summarise", "0"]),
+        s.ai_in("s-1", &["build", "0"]),
         "0 is written already. Rewrite it with --rebuild.\n",
     );
     ok(
-        s.ai_in("s-1", &["summarise", "0", "--rebuild", "--dry-run"]),
+        s.ai_in("s-1", &["build", "0", "--rebuild", "--dry-run"]),
         "0|user: question 0 ai: reply 0\n  was: by hand\n\
          Dry run: 1 line, 0 by the model; nothing stored.\n",
     );
-    let dry = stdout(&s.ai(&["summarise", "-t", "dev", "2+2", "--dry-run"]));
+    let dry = stdout(&s.ai(&["build", "-t", "dev", "2+2", "--dry-run"]));
     let ids: Vec<&str> = dry.lines().map(|l| l.split('|').next().unwrap()).collect();
     assert_eq!(
         ids,
@@ -1121,13 +1109,13 @@ fn summarise_writes_or_rewrites_one_line() {
         "{dry}"
     );
     ok(
-        s.ai_in("s-1", &["summarise"]),
+        s.ai_in("s-1", &["build"]),
         "Wrote 4 lines, 0 by the model.\n",
     );
     ok(
-        s.ai_in("s-1", &["summarise", "0", "--rebuild"]),
+        s.ai_in("s-1", &["build", "0", "--rebuild"]),
         "Dropped 3 lines; wrote 1, 0 by the model.\n\
-         The next ai chat summarise -t dev writes the 2 lines above 0 again.\n",
+         The next ai chat build -t dev writes the 2 lines above 0 again.\n",
     );
     let t = s.chat().thread("dev").unwrap();
     let snap = t.snapshot().unwrap();
@@ -1139,19 +1127,19 @@ fn summarise_writes_or_rewrites_one_line() {
     assert!(line(2, ends[1]).is_none() && line(3, ends[3]).is_none());
     assert!(line(2, ends[3]).is_some(), "2+2 is not above 0");
     ok(
-        s.ai_in("s-1", &["summarise"]),
+        s.ai_in("s-1", &["build"]),
         "Wrote 2 lines, 0 by the model.\n",
     );
     fails(
-        s.ai_in("s-1", &["summarise", "4"]),
+        s.ai_in("s-1", &["build", "4"]),
         "4 is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and chunks (12.3+7).\n",
     );
     fails(
-        s.ai_in("s-1", &["summarise", "1+3"]),
+        s.ai_in("s-1", &["build", "1+3"]),
         "1+3 is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and chunks (12.3+7).\n",
     );
     fails(
-        s.ai_in("s-1", &["summarise", "x"]),
+        s.ai_in("s-1", &["build", "x"]),
         "'x' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3+7 (a chunk).\n",
     );
 }
@@ -1180,10 +1168,10 @@ fn built(s: &Sandbox, ends: &[u64], n: usize) -> Vec<bool> {
 }
 
 #[test]
-fn summarise_stops_at_the_first_line_that_fails() {
+fn build_stops_at_the_first_line_that_fails() {
     let s = Sandbox::new();
     let ends = failing(&s, 10);
-    let o = s.ai_in("s-1", &["summarise"]);
+    let o = s.ai_in("s-1", &["build"]);
     assert_eq!(code(&o), 1, "{}", stderr(&o));
     assert!(
         stdout(&o).ends_with("Failed 0: claude: overloaded\n"),
@@ -1203,18 +1191,18 @@ fn summarise_stops_at_the_first_line_that_fails() {
 fn the_background_summariser_builds_past_a_failed_line() {
     let s = Sandbox::new();
     let ends = failing(&s, 10);
-    let o = s.ai(&["summarise", "-t", "dev", "--background"]);
+    let o = s.ai(&["build", "-t", "dev", "--background"]);
     assert_eq!(code(&o), 1, "{}", stderr(&o));
     assert_eq!(
         built(&s, &ends, 10),
         [false, true, true, true, true, true, true, true, true, true]
     );
-    let o = s.ai(&["summarise", "-t", "dev", "--background", "--rebuild"]);
+    let o = s.ai(&["build", "-t", "dev", "--background", "--rebuild"]);
     assert_eq!(code(&o), 2, "only for the background run");
 }
 
 #[test]
-fn summarise_off_a_terminal_shows_no_progress() {
+fn build_off_a_terminal_shows_no_progress() {
     let s = Sandbox::new();
     s.fake_compactor("0.2");
     s.transcript("s-1", &talk(3, |k| long("ok", k)));
@@ -1223,7 +1211,7 @@ fn summarise_off_a_terminal_shows_no_progress() {
         "Attached to dev, a new thread.\n",
     );
     ok(
-        s.ai_in("s-1", &["summarise"]),
+        s.ai_in("s-1", &["build"]),
         "Wrote 3 lines, 2 by the model.\n",
     );
 }
@@ -1238,7 +1226,7 @@ fn a_line_still_over_the_limit_fails_and_is_not_stored() {
         "Attached to dev, a new thread.\n",
     );
     let ends = turn_ends(&s, "dev");
-    let o = s.ai_in("s-1", &["summarise"]);
+    let o = s.ai_in("s-1", &["build"]);
     assert_eq!(code(&o), 1, "{}", stderr(&o));
     assert!(
         stdout(&o).ends_with("Failed 0: 600 bytes after 5 tries; a line holds at most 512\n"),
@@ -1254,7 +1242,7 @@ fn a_failed_line_stops_compaction_and_start() {
     failing(&s, 3);
     let failed = "Cannot build the view of thread dev: 1 line failed.\n\
                   Failed 0: claude: overloaded\n\
-                  Write them, then try again: ai chat summarise -t dev\n";
+                  Write them, then try again: ai chat build -t dev\n";
     fails(s.ai(&["compact-session", "--session", "s-1"]), failed);
     fails(s.ai(&["start", "dev"]), failed);
     assert!(

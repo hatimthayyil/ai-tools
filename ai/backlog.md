@@ -2,7 +2,7 @@
 
 ## ai
 
-- Configuration system for `ai`: user-level and repo-level settings, layered, with a library built for it (figment, config-rs, confique: research first). Covers the chat view size (64 lines), summariser model, background summariser switch, memory sizes. Today these sit in three places: git config (`ai.chat.model`, `ai.chat.nap`), `ai memory config`, `AI_MEMORY_MODEL`.
+- Configuration system for `ai`: user-level and repo-level settings, layered, with a library built for it (figment, config-rs, confique: research first). Covers the chat view size (64 lines), summariser model, background summariser switch, memory sizes. Today these sit in three places: git config (`ai.chat.model`, `ai.chat.background`), `ai memory config`, `AI_MEMORY_MODEL`.
 - `ai desk`: a TUI overview of every part of `ai` (memory, chat threads and sessions, notes, code): search and navigate, see stale lines, resummarise a line. Mostly for `ai notes`/`ai code`, where the user takes part; the user doubts session logs need curating.
 - Overlap between `ai memory` and `ai chat` (both fold a log into a summary tree with the same ids): consider consolidating.
 - One JSONL storage module for chat and memory: `src/jsonl.rs` (append, locks, format file, recovery of a half-written last line) serves chat; when memory moves to JSONL it uses the same module, and the Git plumbing in `src/git.rs` (refs, compare-and-swap, fan-out paths) and the record codec in `src/record.rs` go. gix stays for provenance, git config and `ai notes`. Undecided: the user wants it explained first.
@@ -15,9 +15,9 @@
 - Repo-level memory, alongside the user memory. Deferred. Decided (2026-10-04):
   - Purpose: portable with the repo, shared with collaborators, focus at wake. Inside a repo, repo memory has priority; user memory stays reachable.
   - Routing: every note goes to user memory. Notes that are repo-local and not personal also go to the repo memory, as the same record (same key).
-  - Wake: both covers in one `WAKE_LINES` budget, repo first.
+  - View: both covers in one `WAKE_LINES` budget, repo first.
   - Sharing: one ref per person (`refs/ai/memory/<person>`) on the project remote; teammates' refs readable.
-  - Open: who decides the repo copy (agent `note --repo` vs classifier, below); budget split; how teammates' refs appear (wake, grep/zoom, or not yet); creation and push policy; `<person>` identity; scope prefixes on ids (`u#`, `r#`).
+  - Open: who decides the repo copy (agent `note --repo` vs classifier, below); budget split; how teammates' refs appear (view, grep/zoom, or not yet); creation and push policy; `<person>` identity; scope prefixes on ids (`u#`, `r#`).
 - Classifier ("Jev type model") to pick the notes that also go to repo memory: repo-local and not personal. Deferred until repo memory exists.
 - `ai memory` summaries carry `note:`/`user:` tags copied from the leaves (code labels each leaf `note: text`); Sonnet ignores an instruction to drop them. Wasted bytes per item; decide whether leaves should be unlabelled or tags kept only for `user:` words. See ai/evals/compactor/README.md 2026-10-08c.
 - Before a public release: version the store format and give `ai memory` an upgrade path (e.g. rebuild old leaves that still carry `note:` tags). Not needed while only the user runs it.

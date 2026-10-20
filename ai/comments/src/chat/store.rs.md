@@ -39,7 +39,7 @@ Items
 
 Lines
 - `put_line`/`put_lines`: first write per key wins and the stored line comes back; a key past the last item is refused. Kind (`chunk`, `turn`, `node`) and who wrote it (`memory::Who`: agent, model, session) are stored with the text; the level numbering is the roll-up's (rollup.rs.md). The compactor writes each round of free lines in one append.
-- `drop_lines` appends `clear`, `drop_keys` a `drop` of the keys built (`summarise --rebuild`, `summarise <id>`).
+- `drop_lines` appends `clear`, `drop_keys` a `drop` of the keys built (`build --rebuild`, `build <id>`).
 
 Queries
 - `Chat::list`: per thread its newest item (harness, session, time) and tips; its turns on the newest branch, counted from the heads and kind tags alone (`count_turns`, `record::Tag`: no item content is decoded and no tree is built; a unit test checks it against `model::turns`) and its sessions, each with the time of its newest item (else of its attaching), newest first. `Chat::holds(dir)`: `dir` is in this project (its repository has the same root commit). `Snapshot::tree` and `model::Tree::path`/`branch` give the item tree and the path to a tip; `Snapshot::tip(harness, session)` the newest tip of a session; `Snapshot::line`/`lines` lines by key and by level.

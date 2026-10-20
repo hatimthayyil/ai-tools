@@ -1,6 +1,6 @@
 # usage.rs
 
-- Purpose: measure how often agents recall (wake, zoom, grep, show) and remember (note), so instruction and hook changes can be compared. Notes were already counted from the store's provenance; reads left no trace.
+- Purpose: measure how often agents recall (view, zoom, grep, show) and remember (note), so instruction and hook changes can be compared. Notes were already counted from the store's provenance; reads left no trace.
 - `usage.jsonl` in the memory dir, beside `summarise.log`. The memory is a bare repo, so the file is outside git and outside the memory itself, and it is per machine.
 - JSON Lines, one `Use` per command (serde derive, so one struct writes and reads, fields in declaration order): `ts` (store format `YYYYMMDDTHHMMSSZ`, UTC, so `--since` compares it against `midnight(day)` as grep does), `cmd`, `args` (as typed, from the parsed command), `ok`, `error` (only when not ok: the `{e:#}` message, or `exit 1` for a summariser that gave up), `lines`/`bytes` printed to stdout (`Tally`), then `agent`, `model`, `session`, `repo`, `branch` from `prov` (empty as `-`, as the store decodes them, so stats groups both sources alike). Example: `{"ts":"20261009T183111Z","cmd":"zoom","args":["0","--time"],"ok":true,"lines":1,"bytes":33,"agent":"claude-code","model":"claude-opus-5-5","session":"a87491ed-…","repo":"hatimthayyil/myai","branch":"main"}`.
 - Not tracing: this is data to count, not diagnostics. A tracing layer would tie it to `AI_MEMORY_LOG` filtering, need the `json` feature, and nest fields under `fields`.

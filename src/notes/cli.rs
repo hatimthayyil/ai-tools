@@ -63,7 +63,7 @@ enum Command {
     #[command(about = "link a note to another: a weak cross-topic reference.")]
     Link { from: String, to: String },
     #[command(about = "rebuild every summary out of date, with Claude Code.")]
-    Summarise,
+    Build,
 }
 
 #[derive(Args, Debug)]
@@ -99,7 +99,7 @@ struct Add {
 /// How commands reach the summariser's model and stdin; tests swap in their own.
 pub struct Runtime {
     pub backend: Box<MakeBackend>,
-    /// Whether changes start a background `summarise`.
+    /// Whether changes start a background `build`.
     pub summarise_on_change: bool,
     pub stdin: Box<dyn Fn() -> io::Result<String>>,
 }
@@ -137,7 +137,7 @@ impl Cli {
             Command::Add(a) => add(&s, out, rt, a),
             Command::Mv { from, to } => mv(&s, out, rt, &from, &to),
             Command::Link { from, to } => link(&s, out, &from, &to),
-            Command::Summarise => summarise_cmd(&s, out, rt),
+            Command::Build => build_cmd(&s, out, rt),
         }
     }
 }
@@ -423,7 +423,7 @@ fn link(s: &Store, out: &mut dyn Write, from: &str, to: &str) -> Result<ExitCode
 /// Another summariser holds the lock; it will see these changes too.
 const BUSY: &str = "A summariser is already running; it will build these too.";
 
-fn summarise_cmd(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+fn build_cmd(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     if !s.exists() {
         writeln!(out, "Nothing to build.")?;
         return Ok(ExitCode::SUCCESS);

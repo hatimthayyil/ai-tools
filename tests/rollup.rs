@@ -965,12 +965,12 @@ fn config_sets_the_model_and_switches_the_summariser_off() {
     let r = Repo::new();
     let chat = r.chat();
     let c = chat.config().unwrap();
-    assert_eq!((c.model, c.summarise), (claude::model(), true));
+    assert_eq!((c.model, c.background), (claude::model(), true));
     r.git(&["config", "ai.chat.model", "haiku"]);
-    r.git(&["config", "ai.chat.summarise", "false"]);
+    r.git(&["config", "ai.chat.background", "false"]);
     let chat = r.chat();
     let c = chat.config().unwrap();
-    assert_eq!((c.model.as_str(), c.summarise), ("haiku", false));
+    assert_eq!((c.model.as_str(), c.background), ("haiku", false));
     let mut s = Script::new();
     s.user("hi");
     let t = r.thread(&s);
@@ -978,10 +978,10 @@ fn config_sets_the_model_and_switches_the_summariser_off() {
         !chat.spawn_summariser(&t).unwrap(),
         "switched off: nothing starts"
     );
-    r.git(&["config", "ai.chat.summarise", "maybe"]);
+    r.git(&["config", "ai.chat.background", "maybe"]);
     let err = r.chat().config().unwrap_err();
     assert!(
-        format!("{err:#}").contains("ai.chat.summarise is true or false"),
+        format!("{err:#}").contains("ai.chat.background is true or false"),
         "{err:#}"
     );
 }
