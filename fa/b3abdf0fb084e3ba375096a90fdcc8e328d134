@@ -1,0 +1,90 @@
+ai/spec.md
+  s_77b04d9838f161::t_8ea1ac5be637b1 8
+tests/chat_cli.rs
+  s_77b04d9838f161::t_4f0cd4b33dcfe2 1061
+  s_77b04d9838f161::t_f149fd5cd63c87 966-968,970,975,977-978,980,983-986
+  s_77b04d9838f161::t_c7de58419e62f9 969,971-974,1048-1051
+  s_77b04d9838f161::t_dd6107e3843ae2 979
+  s_77b04d9838f161::t_e8292188ba24da 1022,1024,1034-1036,1038-1039,1046-1047,1052,1057,1062
+ai/comments/tests/memory.rs.md
+  s_77b04d9838f161::t_b963a6200b9b29 12-13
+src/page.rs
+  s_77b04d9838f161::t_ac69aca3025979 127
+  s_77b04d9838f161::t_fb4af30a1942c1 67-119,124-126,128-159
+  s_77b04d9838f161::t_39d66b73815353 1
+  s_77b04d9838f161::t_a54df55d3f59f0 160
+src/chat/cli.rs
+  s_77b04d9838f161::t_0d7e587114bcd5 80-81
+  s_77b04d9838f161::t_6816051a4f9d8c 101-102
+  s_77b04d9838f161::t_df69ad9b3401d1 30
+  s_77b04d9838f161::t_3b70f7a3128b78 106-108,116-117
+  s_77b04d9838f161::t_b985fca8e824e8 172-194
+  s_77b04d9838f161::t_e2b9b8a88209cc 733-734,741-742,745-746,754,760-761,767-768,778,783-789,794-795,802-803,808,810-811,825-831,833-836
+  s_77b04d9838f161::t_1c05816e110548 288,293,302-303,309,311,316-317
+src/memory/grep.rs
+  s_77b04d9838f161::t_952b6afe17a9ad 111-118
+  s_77b04d9838f161::t_b99ec25fc23fe9 333,335,341,351-356,359,373
+  s_77b04d9838f161::t_d183f6e803b517 9,15
+  s_77b04d9838f161::t_5296dcb8929923 96
+  s_77b04d9838f161::t_daa070952028e2 204
+  s_77b04d9838f161::t_7af14e723ce5c8 12
+  s_77b04d9838f161::t_7d350e52bcc5c9 236-240
+  s_77b04d9838f161::t_1b8e0a16b0aed3 284,286-288,292-298,300,302,306,310,314-316
+src/memory/cli.rs
+  s_77b04d9838f161::t_ac8f04cf7fb515 35
+  s_77b04d9838f161::t_fe454848353a53 629-630,635,642-645
+  s_77b04d9838f161::t_cf1bd6065bda4f 139,145,147-152
+  s_77b04d9838f161::t_62ccffaeb0dc28 354-360
+  s_77b04d9838f161::t_ff92dee38b2882 180-185,189,195,204,207
+ai/comments/src/memory/zoom.rs.md
+  s_77b04d9838f161::t_485569c478f5ad 3
+tests/memory.rs
+  s_77b04d9838f161::t_4469ea39c9bc96 948-949
+  s_77b04d9838f161::t_b7ee4225a3e657 1031-1083
+  s_77b04d9838f161::t_e65503141ecc52 879-883
+  s_77b04d9838f161::t_c7de58419e62f9 943-947
+ai/comments/src/chat/view.rs.md
+  s_77b04d9838f161::t_c67c604c4cb86d 36
+ai/comments/src/memory/grep.rs.md
+  s_77b04d9838f161::t_cdd9455a33fd95 4
+  s_77b04d9838f161::t_08db957d0cfce1 5-6
+ai/comments/tests/cli.rs.md
+  s_77b04d9838f161::t_b963a6200b9b29 13
+tests/cli.rs
+  s_77b04d9838f161::t_7b3bc774ffc5f2 558
+  s_77b04d9838f161::t_274b7c3e64506d 532
+ai/comments/src/chat/cli.rs.md
+  s_77b04d9838f161::t_1ac5d0b79c0b5c 26-27
+ai/comments/src/page.rs.md
+  s_77b04d9838f161::t_40f43a93e7585f 3
+  s_77b04d9838f161::t_c0dbd3a420b46b 9
+ai/comments/src/memory/cli.rs.md
+  s_77b04d9838f161::t_41f8125fe9e0ce 14
+  s_77b04d9838f161::t_1572f46838df82 8-9
+ai/glossary.md
+  s_77b04d9838f161::t_d96d95b0697f67 60
+  s_77b04d9838f161::t_865a4904efe642 21
+ai/comments/tests/chat_cli.rs.md
+  s_77b04d9838f161::t_c87e6ea16ca495 16
+src/chat/view.rs
+  s_77b04d9838f161::t_d37f43d93d63ce 312
+  s_77b04d9838f161::t_444ab30f2b8afd 1052,1061
+  s_77b04d9838f161::t_d036ab2bcb333c 272
+  s_77b04d9838f161::t_c7de58419e62f9 1049-1050
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fab3abdf0fb084e3ba375096a90fdcc8e328d134",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
