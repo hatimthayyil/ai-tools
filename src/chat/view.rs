@@ -133,6 +133,8 @@ pub struct Branch {
     lines: HashMap<Key, String>,
     /// A session with no item of its own: its last turn is the previous session's.
     seeded: bool,
+    /// Read for the session attached to it.
+    attached: bool,
 }
 
 impl Branch {
@@ -148,6 +150,7 @@ impl Branch {
             cuts,
             lines,
             seeded: false,
+            attached: false,
         }
     }
 
@@ -166,6 +169,7 @@ impl Branch {
     pub fn session(s: &Snapshot, b: &Binding) -> Result<Branch> {
         let mut branch = Branch::load(s, b.tip.or(b.graft))?;
         branch.seeded = b.tip.is_none();
+        branch.attached = true;
         Ok(branch)
     }
 
@@ -179,11 +183,39 @@ impl Branch {
         if self.xs.is_empty() {
             head += "\nThe thread holds nothing yet.\n";
         }
+        if let Some(which) = self.which() {
+            head += &format!("\n{which}\n");
+        }
         let fold = section(FOLD, &self.render());
         let rail = section(USER, &self.rail());
         let last = if self.seeded { PREVIOUS } else { CURRENT };
         let open = section(last, &self.current());
         format!("{head}{fold}{rail}{open}")
+    }
+
+    /// Which of the thread's branches this is, when it has more than one: whose, and the item it
+    /// ends at.
+    fn which(&self) -> Option<String> {
+        let tips = self.tree.tips();
+        let &tip = self.path.last()?;
+        if tips.len() < 2 {
+            return None;
+        }
+        let whose = match (self.attached, tips.last() == Some(&tip)) {
+            (true, _) => "your session's",
+            (false, true) => "the newest",
+            (false, false) => "an older one",
+        };
+        let item = &self.tree.items()[tip];
+        Some(format!(
+            "The thread has {} branches. This view follows {whose}, which ends at {}, written by {} \
+             session {} at {}.",
+            tips.len(),
+            Id::item(self.tree.place(tip)),
+            item.id.harness,
+            item.id.session,
+            item.ts.strftime("%Y-%m-%d %H:%M"),
+        ))
     }
 
     /// The keys of the lines the fold wants and lacks.
@@ -849,6 +881,28 @@ mod tests {
         let v = b.view("dev");
         assert!(section_lines(&v, CURRENT).is_empty());
         assert_eq!(section_lines(&v, PREVIOUS), ["2.0|user: m4"]);
+    }
+
+    #[test]
+    fn the_view_names_its_branch_among_several() {
+        let mut items = chain("ututu", short);
+        items[4].parent = Some(source(1));
+        let view = |tip: u64, attached: bool| {
+            let mut b = Branch::new(Tree::new(items.clone()), Some(tip), HashMap::new());
+            b.attached = attached;
+            b.view("dev")
+        };
+        let at = "written by test session s at 1970-01-01 00:00.";
+        assert!(view(4, false).contains(&format!(
+            "\nThe thread has 2 branches. This view follows the newest, which ends at 1.0, {at}\n"
+        )));
+        assert!(view(3, false).contains("follows an older one, which ends at 1.1, "));
+        assert!(view(3, true).contains("follows your session's, which ends at 1.1, "));
+        assert!(
+            !branch(chain("ututu", short), &[])
+                .view("dev")
+                .contains("branches.")
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ Design: `ai/research/20261014T002322---chat-design.md`, View and Roll-up. Fold: 
 
 Branch
 - `Branch`: the path from the root to a session's tip, its turns and their chunks as the roll-up cuts them (`rollup::branch`), and every line of the thread (`Snapshot::all_lines`), loaded once into a map. A session with no item yet uses its graft as tip.
+- A thread with more than one branch: the view says which it follows (the session's, else the newest), the item it ends at, and the session and time that wrote that item, the time as `ai chat list` prints it. Outside a session the newest is all a command reads, so the line tells the user which of the branches `list` counts they see.
 - Fold coordinates are memory's `Coord` over turn positions along the branch: `(l, i)` covers turns `[i·2^l, (i+1)·2^l)`, its line is key `(1 + l, last item of its last turn)`, the contract with the roll-up. The fold covers the closed turns: all but an open newest one. A turn closes at the next message or at its ending item (model.rs.md); with none open, the view has no open-turn section.
 
 Fold
