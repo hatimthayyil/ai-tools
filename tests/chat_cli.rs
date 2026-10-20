@@ -535,7 +535,7 @@ fn compact_session_fails_with_its_reason() {
 }
 
 #[test]
-fn list_shows_this_repositorys_threads_and_their_sessions() {
+fn list_shows_this_repositorys_threads_newest_first_and_their_sessions() {
     let s = Sandbox::new();
     ok(
         s.ai(&["list"]),
@@ -556,11 +556,11 @@ fn list_shows_this_repositorys_threads_and_their_sessions() {
     ok(s.ai_in("s-10", &["detach"]), "Detached from dev.\n");
     ok(
         s.ai_in("s-2", &["list"]),
-        "dev  3 turns  2026-10-14 10:00  2 branches\n\
+        "long-one  100 turns  2026-10-14 10:01\n\
+         \x20 claude  s-2  attached  2026-10-14 10:01  this session\n\
+         dev  3 turns  2026-10-14 10:00  2 branches\n\
          \x20 claude  s-1   attached  2026-10-14 13:02\n\
-         \x20 claude  s-10  detached  2026-10-14 10:00\n\
-         long-one  100 turns  2026-10-14 10:01\n\
-         \x20 claude  s-2  attached  2026-10-14 10:01  this session\n",
+         \x20 claude  s-10  detached  2026-10-14 10:00\n",
     );
 }
 

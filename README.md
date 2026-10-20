@@ -49,7 +49,7 @@ Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_
 ```sh
 ai chat start dev [-- claude args]   # Claude Code in a new session of thread dev; an existing thread's view is its context
 ai chat resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in
-ai chat list                         # the threads here and their sessions
+ai chat list                         # the threads here, newest first, and their sessions
 ai chat view -t dev                  # dev's view, from the summaries written so far
 ai chat zoom -t dev <id>             # open a line of it; --tool-output adds tool output
 ai chat grep -t dev <regex>          # search it

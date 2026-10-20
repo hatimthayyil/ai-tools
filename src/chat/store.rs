@@ -291,9 +291,10 @@ impl Chat {
         names.iter().map(|n| self.thread(n)).collect()
     }
 
-    /// Every thread with its newest item, tips, turns and sessions.
+    /// Every thread with its newest item, tips, turns and sessions; newest first.
     pub fn list(&self) -> Result<Vec<ThreadInfo>> {
-        self.threads()?
+        let mut list = self
+            .threads()?
             .iter()
             .map(|t| {
                 let snap = t.snapshot()?;
@@ -321,7 +322,9 @@ impl Chat {
                     sessions,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        list.sort_by_key(|t| std::cmp::Reverse(t.newest.as_ref().map(|h| h.ts)));
+        Ok(list)
     }
 
     /// Whether `dir` lies in this project: an existing directory whose repository has this
