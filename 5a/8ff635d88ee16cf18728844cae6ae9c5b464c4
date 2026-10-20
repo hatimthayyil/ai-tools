@@ -1,0 +1,61 @@
+README.md
+  s_77b04d9838f161::t_16f6f7af0a24f2 59
+  s_77b04d9838f161::t_e7c907ad4a5e07 53
+Cargo.toml
+  s_77b04d9838f161::t_141589c181a7d3 18
+src/chat/cli.rs
+  s_77b04d9838f161::t_b7b8b8df0afbe3 584
+  s_77b04d9838f161::t_daddc3c803710e 23
+  s_77b04d9838f161::t_b7a50c81bf135b 2
+  s_77b04d9838f161::t_f66c420bdd925d 753-754
+  s_77b04d9838f161::t_2164e2aaddea8d 735
+  s_77b04d9838f161::t_9a24c08cd6e08d 13,15
+  s_77b04d9838f161::t_866aefd54f4033 327-334,336,340-341,346-352,357-409,415
+  s_77b04d9838f161::t_4de59b7668db53 789-790
+  s_77b04d9838f161::t_a435151bec271a 678-702,704-705,714-715,719,722
+  s_77b04d9838f161::t_fcc33938612f00 410-414
+  s_77b04d9838f161::t_854174ed8d4745 78-79,81
+  s_77b04d9838f161::t_fa47fddccd005c 874-875
+  s_77b04d9838f161::t_4aca7a1eba605f 201-204,207
+  s_77b04d9838f161::t_5be6e78c666b07 285-290
+  s_77b04d9838f161::t_7df14814837999 416
+src/chat/mod.rs
+  s_77b04d9838f161::t_687823501ba9d3 14
+ai/comments/src/chat/cli.rs.md
+  s_77b04d9838f161::t_2be4b9fba4a0ef 24
+  s_77b04d9838f161::t_6a27df27a0c216 11-12
+ai/comments/src/view.rs.md
+  s_77b04d9838f161::t_d86e801c4cae7a 3
+src/main.rs
+  s_77b04d9838f161::t_4ca5c807e365d5 20
+tests/chat_cli.rs
+  s_77b04d9838f161::t_e6a039e7e7fd0b 283-326,331
+  s_77b04d9838f161::t_c739392446c3e4 460-518
+  s_77b04d9838f161::t_fcc33938612f00 327-330
+  s_77b04d9838f161::t_c47a1bed20557a 440-441,444
+  s_77b04d9838f161::t_6af23a82038f2c 824,844,847-851,856-876,884-885
+  s_77b04d9838f161::t_6e4c490fb90017 451,455,727,732,788
+  s_77b04d9838f161::t_3f0ae50d363f8f 2-5,8-9
+ai/spec.md
+  s_77b04d9838f161::t_9d091256590b8e 9
+src/view.rs
+  s_77b04d9838f161::t_de85e7ae4572e6 13-14,17-18,34,40
+Cargo.lock
+  s_77b04d9838f161::t_f2d278b7b02654 21,306-315,1532-1537
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5a8ff635d88ee16cf18728844cae6ae9c5b464c4",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
