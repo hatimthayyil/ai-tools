@@ -646,6 +646,19 @@ fn view_prints_a_thread_in_parts_from_one_state() {
 }
 
 #[test]
+fn chat_alone_prints_the_view() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &talk(2, |k| format!("question {k}")));
+    ok(
+        s.ai_in("s-1", &["attach", "dev"]),
+        "Attached to dev, a new thread.\n",
+    );
+    let view = stdout(&s.ai_in("s-1", &["view"]));
+    assert!(view.contains("question 1"), "{view}");
+    ok(s.ai_in("s-1", &[]), &view);
+}
+
+#[test]
 fn view_syncs_its_session_and_writes_no_line() {
     let s = Sandbox::new();
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));

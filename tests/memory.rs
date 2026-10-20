@@ -268,6 +268,16 @@ fn mergeable(m: &Mem) -> bool {
 }
 
 #[test]
+fn memory_alone_prints_the_view() {
+    let (_tmp, d) = store();
+    assert_eq!(run(&d, &["note", "the first note"]).code, 0);
+    let view = run(&d, &["view"]);
+    assert_eq!(view.code, 0, "{}", view.stderr);
+    assert!(view.stdout.contains("the first note"), "{}", view.stdout);
+    assert_eq!(run(&d, &[]).stdout, view.stdout);
+}
+
+#[test]
 fn the_view_folds_incrementally() {
     let mut m = Mem::new(6000);
     let mut seed = 12345u64;

@@ -43,7 +43,7 @@ pub const WAIT: Duration = Duration::from_secs(60);
 )]
 pub struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -70,7 +70,7 @@ enum Command {
         #[command(flatten)]
         session: Session,
     },
-    #[command(about = "print a thread's view, from the summaries written so far.")]
+    #[command(about = "print a thread's view, from the summaries written so far (the default).")]
     View {
         #[command(flatten)]
         target: Target,
@@ -194,7 +194,7 @@ pub struct Session {
 }
 
 /// The thread a command reads: `-t`, else the one this session is attached to.
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 struct Target {
     #[arg(
         short = 't',
@@ -212,6 +212,16 @@ struct Current {
     harness: String,
     session: String,
     transcript: Option<PathBuf>,
+}
+
+impl Default for Session {
+    fn default() -> Session {
+        Session {
+            harness: claude::HARNESS.into(),
+            session: None,
+            transcript: None,
+        }
+    }
 }
 
 impl Session {
@@ -259,7 +269,12 @@ impl Cli {
     }
 
     pub fn run(self, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
-        match self.command {
+        let command = self.command.unwrap_or(Command::View {
+            target: Target::default(),
+            part: None,
+            at: None,
+        });
+        match command {
             Command::Start { name, args } => launch(cwd, &name, &args),
             Command::Resume { name, args } => resume(cwd, &name, &args),
             Command::List { session } => list(cwd, out, session),

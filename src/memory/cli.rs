@@ -102,14 +102,14 @@ When you spawn one, write: `You are a subagent. Don't run {memo}.`";
 )]
 pub struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
     #[command(about = "create this memory; print the setup block.")]
     Init,
-    #[command(about = "read your memory: print the view.")]
+    #[command(about = "read your memory: print the view (the default).")]
     View {
         #[arg(help = "the message to read on from, as printed")]
         from: Option<u64>,
@@ -244,11 +244,11 @@ impl Cli {
     /// `view --whole`: the whole view at once, read and recorded as any view.
     pub fn view_whole() -> Cli {
         Cli {
-            command: Command::View {
+            command: Some(Command::View {
                 from: None,
                 whole: true,
                 meta: Meta::default(),
-            },
+            }),
         }
     }
 
@@ -265,20 +265,25 @@ impl Cli {
     }
 
     pub fn run_with(self, dir: &Path, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
-        if let Command::Init = self.command {
+        let command = self.command.unwrap_or(Command::View {
+            from: None,
+            whole: false,
+            meta: Meta::default(),
+        });
+        if let Command::Init = command {
             return init(dir, out);
         }
         let s = Store::open(dir)?;
         let cwd = std::env::current_dir().ok();
         let mut place = cwd.as_deref().map(prov::place).unwrap_or_default();
-        if let (Command::Note { .. }, Some(cwd)) = (&self.command, &cwd) {
+        if let (Command::Note { .. }, Some(cwd)) = (&command, &cwd) {
             place.root = prov::root(cwd);
         }
         let mut who = prov::env_who();
-        let (cmd, mut args) = self.command.typed();
+        let (cmd, mut args) = command.typed();
         let mut out = Tally::new(out);
-        let quiet = matches!(self.command, Command::PromptHook);
-        let r = match self.command {
+        let quiet = matches!(command, Command::PromptHook);
+        let r = match command {
             Command::PromptHook => hook(&mut out, (rt.stdin)(), dir, &mut who).map(|rule| {
                 args.extend(rule.into_iter().flat_map(|r| [REMINDED.into(), r.into()]));
                 ExitCode::SUCCESS
