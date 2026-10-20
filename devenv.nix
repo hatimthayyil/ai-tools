@@ -15,6 +15,7 @@
   packages = [
     pkgs.bacon
     pkgs.cargo-nextest
+    pkgs.git-cliff
   ];
 
   # https://devenv.sh/languages/
