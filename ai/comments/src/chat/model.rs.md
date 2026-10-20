@@ -4,7 +4,7 @@ Design: `ai/research/20261014T002322---chat-design.md`, Data model.
 
 - Harness-neutral and pure. An adapter (`claude.rs`) turns a session into items; the store, roll-up and view see items only.
 - `SourceId` names the entry an item came from. One entry can give several items (a Claude Code tool result with the user's mid-run words appended); the adapter gives each its own entry id.
-- `Item::ends_turn`: the harness marked it as the end of the assistant's turn (Claude Code: `stop_reason` `end_turn`). It closes the newest turn before the next message arrives, so the turn is summarised and the view has no turn in progress after a finished reply.
+- `Item::ends_turn`: the harness marked it as the end of the assistant's turn (Claude Code: `stop_reason` `end_turn`). It closes the newest turn before the next message arrives, so the turn has its final reply and its work lines once it is no longer the newest.
 - `Kind` holds content only. Thinking is dropped: on Opus 5.5 about 93% of thinking blocks are empty signatures. Compaction points, native summaries and interrupts are `Marker`s, never content; their text stays in the archived source files (store.rs.md).
 - Dropped entries (attachments, thinking, metadata lines) are not kept: they are most of a transcript's bytes (skill listings, prompt snapshots, re-read files) and repeat every turn.
 - `Tree` links a parent only if it comes earlier, as an append-only source and store give. An unknown or later parent makes a root, so malformed input cannot make a cycle. The last tip is the newest item, the end of the active branch. `branch` gives the positions of a path, which for a thread's main tree are sequence numbers (lines are keyed by them).

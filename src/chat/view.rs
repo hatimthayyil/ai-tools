@@ -6,10 +6,10 @@ use regex::Regex;
 use crate::{
     chat::{
         id::Id,
-        model::{Item, Kind, Tree, Turn},
+        model::{Item, Tree, Turn},
         record::{Binding, Key},
         render::{Cut, WHOLE, item_line, item_text, searched},
-        rollup::{self, chunk_last},
+        rollup::{self, chunk_last, work_limit},
         store::Snapshot,
     },
     memory::{Coord, excerpt, flat},
@@ -17,23 +17,28 @@ use crate::{
 
 /// The most lines the fold prints.
 pub const FOLD_LINES: usize = 64;
-/// The most the user rail prints, in bytes.
-pub const RAIL: usize = 8_000;
-/// The most the open turn prints, in bytes.
-pub const OPEN: usize = 16_000;
+/// The most the recent turns print, in bytes.
+pub const RECENT: usize = 16_000;
 /// The most of a message's words the fold prints for a turn not summarised yet.
 pub const LINE: usize = 512;
-/// The most of one message's words a listing prints.
-const WORDS: usize = 8_000;
-/// The most of one tool call or output the open turn prints.
-const TOOL: usize = 2_000;
 /// The most of a tool call's input a zoom lists, on one line.
 const CALL: usize = 400;
 
-const FOLD: &str = "Earlier turns, summarised";
-const USER: &str = "The user's latest messages";
-const CURRENT: &str = "The turn in progress";
-const PREVIOUS: &str = "The previous session's last turn";
+/// How the fold's fallbacks print an item.
+const SHORT: Cut = Cut {
+    words: LINE,
+    input: LINE,
+    output: Some(LINE),
+};
+/// How a zoom lists an item: its words whole, a tool call on one line, a tool output as its
+/// size.
+const LISTING: Cut = Cut {
+    words: WHOLE,
+    input: CALL,
+    output: None,
+};
+
+const TURNS: &str = "Turns";
 
 const INSTRUCTION: &str = "\
 This is the thread `{name}`: your conversation so far, oldest first, in place of the context \
@@ -57,7 +62,20 @@ Summaries keep little tool output, so state in your replies what you learned tha
 need later.
 ";
 
-/// The fold over `t` closed turns: from one line each, merges the most due aligned pair,
+/// How much of a turn the view shows, least first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+    /// A line over several turns.
+    Oldest,
+    /// Its turn line.
+    Older,
+    /// Its message and final reply word for word, its work lines between them.
+    Recent,
+    /// Its message and every item, as a zoom lists them.
+    Newest,
+}
+
+/// The fold over `t` turns: from one line each, merges the most due aligned pair,
 /// due = (t - last)/2^l, oldest first on a tie, until the lines' `cost` fits `budget`.
 pub fn fold(t: u64, budget: usize, cost: impl Fn(Coord) -> usize) -> Vec<Coord> {
     let mut view: Vec<Coord> = (0..t).map(Coord::leaf).collect();
@@ -131,8 +149,6 @@ pub struct Branch {
     /// Each turn's chunks, as the roll-up cuts it.
     cuts: Vec<Vec<Range<usize>>>,
     lines: HashMap<Key, String>,
-    /// A session with no item of its own: its last turn is the previous session's.
-    seeded: bool,
     /// Read for the session attached to it.
     attached: bool,
 }
@@ -149,7 +165,6 @@ impl Branch {
             xs,
             cuts,
             lines,
-            seeded: false,
             attached: false,
         }
     }
@@ -168,13 +183,12 @@ impl Branch {
     /// it was attached.
     pub fn session(s: &Snapshot, b: &Binding) -> Result<Branch> {
         let mut branch = Branch::load(s, b.tip.or(b.graft))?;
-        branch.seeded = b.tip.is_none();
         branch.attached = true;
         Ok(branch)
     }
 
-    /// The view: the instruction, the fold over the closed turns in at most [`FOLD_LINES`]
-    /// lines, the user rail and the open turn.
+    /// The view: the instruction, then every turn once, oldest first, each at its
+    /// [`Branch::levels`].
     pub fn view(&self, thread: &str) -> String {
         let mut head = format!(
             "# Thread `{thread}`\n\n{}",
@@ -186,11 +200,78 @@ impl Branch {
         if let Some(which) = self.which() {
             head += &format!("\n{which}\n");
         }
-        let fold = section(FOLD, &self.render());
-        let rail = section(USER, &self.rail());
-        let last = if self.seeded { PREVIOUS } else { CURRENT };
-        let open = section(last, &self.current());
-        format!("{head}{fold}{rail}{open}")
+        format!("{head}{}", section(TURNS, &self.list()))
+    }
+
+    /// Each entry of the view with its level, oldest first: the fold over the turns before the
+    /// recent ones in at most [`FOLD_LINES`] lines, the recent turns, then the newest turn.
+    fn levels(&self) -> Vec<(Coord, Level)> {
+        let n = self.xs.len();
+        let first = self.recent();
+        let fold = fold(first as u64, FOLD_LINES, |_| 1)
+            .into_iter()
+            .map(|c| match c.l {
+                0 => (c, Level::Older),
+                _ => (c, Level::Oldest),
+            });
+        let turns = (first..n).map(|e| match e + 1 == n {
+            true => (Coord::leaf(e as u64), Level::Newest),
+            false => (Coord::leaf(e as u64), Level::Recent),
+        });
+        fold.chain(turns).collect()
+    }
+
+    /// The first recent turn: back from the one before the newest, the most whole turns that
+    /// fit in [`RECENT`] bytes at their [`Branch::most`].
+    fn recent(&self) -> usize {
+        let mut first = self.xs.len().saturating_sub(1);
+        let mut size = 0;
+        while first > 0 {
+            size += self.most(first - 1);
+            if size > RECENT {
+                break;
+            }
+            first -= 1;
+        }
+        first
+    }
+
+    /// The most bytes turn `e` prints as a recent turn, whatever is built: its message and
+    /// final reply, and each work line at the most it is accepted at.
+    fn most(&self, e: usize) -> usize {
+        let x = &self.xs[e];
+        let ends: Vec<String> = (x.span.start..self.body(e))
+            .chain(x.reply)
+            .map(|p| self.item_line(p, Cut::WHOLE))
+            .collect();
+        let work: usize = self.cuts[e]
+            .iter()
+            .map(|r| {
+                let id = self.items_id(r).to_string();
+                id.len() + 2 + work_limit(r.clone().map(|p| self.item(p)))
+            })
+            .sum();
+        bytes(&ends) + work
+    }
+
+    /// The view's lines: the fold's, then each recent turn's and the newest turn's.
+    fn list(&self) -> Vec<String> {
+        let levels = self.levels();
+        let fold: Vec<Coord> = levels
+            .iter()
+            .filter(|(_, l)| *l <= Level::Older)
+            .map(|&(c, _)| c)
+            .collect();
+        let mut out = self.render(&fold);
+        for &(c, level) in &levels {
+            let e = c.i as usize;
+            match level {
+                Level::Oldest | Level::Older => {}
+                Level::Recent => out.extend(self.recent_turn(e)),
+                Level::Newest => out.extend(self.newest(e)),
+            }
+        }
+        out
     }
 
     /// Which of the thread's branches this is, when it has more than one: whose, and the item it
@@ -218,13 +299,20 @@ impl Branch {
         ))
     }
 
-    /// The keys of the lines the fold wants and lacks.
+    /// The keys of the lines the view wants and lacks: the fold's, and the recent turns' work
+    /// lines.
     pub fn needed(&self) -> Vec<Key> {
-        self.plan()
-            .into_iter()
-            .filter(|&c| self.text(c).is_none())
-            .map(|c| self.key(c))
-            .collect()
+        let mut keys = Vec::new();
+        for (c, level) in self.levels() {
+            let e = c.i as usize;
+            match level {
+                Level::Oldest | Level::Older => keys.push(self.key(c)),
+                Level::Recent => keys.extend(self.cuts[e].iter().map(|r| self.chunk_key(e, r))),
+                Level::Newest => {}
+            }
+        }
+        keys.retain(|k| !self.lines.contains_key(k));
+        keys
     }
 
     /// What `id` holds, one or two levels down: a node into the lines two levels under it
@@ -235,11 +323,7 @@ impl Branch {
     pub fn zoom(&self, id: Id, tool_output: bool) -> Option<String> {
         let listing = match tool_output {
             true => Cut::WHOLE,
-            false => Cut {
-                words: WHOLE,
-                input: CALL,
-                output: None,
-            },
+            false => LISTING,
         };
         let r = self.positions(id)?;
         let lines = match id {
@@ -322,10 +406,7 @@ impl Branch {
                 let cuts = &self.cuts[turn as usize];
                 let at = cuts.iter().position(|c| *c == r)?;
                 let open = turn == self.closed() && at + 1 == cuts.len();
-                (!open).then(|| Key {
-                    level: 0,
-                    last: self.path[chunk_last(&self.xs[turn as usize], &r)] as u64,
-                })
+                (!open).then(|| self.chunk_key(turn as usize, &r))
             }
         }
     }
@@ -392,18 +473,20 @@ impl Branch {
         s + usize::from(self.item(s).kind.opens())
     }
 
+    /// The key of the line over chunk `r` of turn `e`.
+    fn chunk_key(&self, e: usize, r: &Range<usize>) -> Key {
+        Key {
+            level: 0,
+            last: self.path[chunk_last(&self.xs[e], r)] as u64,
+        }
+    }
+
     /// The chunk lines built in turn `e`, consecutive from its first step, each with the
     /// positions it covers.
     fn chunks(&self, e: usize) -> Vec<(Range<usize>, &str)> {
         self.cuts[e]
             .iter()
-            .map_while(|r| {
-                let key = Key {
-                    level: 0,
-                    last: self.path[chunk_last(&self.xs[e], r)] as u64,
-                };
-                Some((r.clone(), self.lines.get(&key)?.as_str()))
-            })
+            .map_while(|r| Some((r.clone(), self.lines.get(&self.chunk_key(e, r))?.as_str())))
             .collect()
     }
 
@@ -427,21 +510,15 @@ impl Branch {
         let id = Id::node(c);
         let first = self.item(self.span(c).start);
         match messages && c.l == 0 && first.kind.opens() {
-            true => format!("{id}|(not summarised yet) {}", item_text(first, cut(LINE))),
+            true => format!("{id}|(not summarised yet) {}", item_text(first, SHORT)),
             false => Branch::placeholder(id),
         }
     }
 
-    /// The lines the fold wants: at most [`FOLD_LINES`].
-    fn plan(&self) -> Vec<Coord> {
-        fold(self.closed(), FOLD_LINES, |_| 1)
-    }
-
-    /// The fold's lines: each built line of the plan, else what is built under it, else its
+    /// The lines of fold `plan`: each built line, else what is built under it, else its
     /// placeholder with a turn's message; the oldest of the fallbacks become placeholders while
     /// over [`FOLD_LINES`].
-    fn render(&self) -> Vec<String> {
-        let plan = self.plan();
+    fn render(&self, plan: &[Coord]) -> Vec<String> {
         let mut parts: Vec<Vec<String>> = plan
             .iter()
             .map(|&c| {
@@ -451,7 +528,7 @@ impl Branch {
             })
             .collect();
         let mut n: usize = parts.iter().map(Vec::len).sum();
-        for (part, &c) in parts.iter_mut().zip(&plan) {
+        for (part, &c) in parts.iter_mut().zip(plan) {
             if n <= FOLD_LINES {
                 break;
             }
@@ -477,20 +554,47 @@ impl Branch {
             None => {
                 let e = c.i as usize;
                 let span = self.span(c);
-                let body = self.body(e);
-                out.extend((span.start..body).map(|p| self.item_line(p, cut(LINE))));
-                let chunks = self.chunks(e);
-                out.extend(
-                    chunks
-                        .iter()
-                        .map(|(r, t)| Branch::line(self.items_id(r), t)),
-                );
-                let rest = chunks.last().map_or(body, |c| c.0.end)..span.end;
-                if !rest.is_empty() {
-                    out.push(Branch::placeholder(self.items_id(&rest)));
-                }
+                out.extend((span.start..self.body(e)).map(|p| self.item_line(p, SHORT)));
+                self.work(e, span.end, out);
             }
         }
+    }
+
+    /// Turn `e`'s chunk lines built consecutive from its first, then a placeholder for the
+    /// rest of its items before position `end`.
+    fn work(&self, e: usize, end: usize, out: &mut Vec<String>) {
+        let chunks = self.chunks(e);
+        out.extend(
+            chunks
+                .iter()
+                .map(|(r, t)| Branch::line(self.items_id(r), t)),
+        );
+        let rest = chunks.last().map_or(self.body(e), |c| c.0.end)..end;
+        if !rest.is_empty() {
+            out.push(Branch::placeholder(self.items_id(&rest)));
+        }
+    }
+
+    /// Recent turn `e`: its message and final reply word for word, its work lines between
+    /// them.
+    fn recent_turn(&self, e: usize) -> Vec<String> {
+        let x = &self.xs[e];
+        let body = self.body(e);
+        let mut out: Vec<String> = (x.span.start..body)
+            .map(|p| self.item_line(p, Cut::WHOLE))
+            .collect();
+        self.work(e, x.work().last().map_or(body, |s| s.end), &mut out);
+        out.extend(x.reply.map(|p| self.item_line(p, Cut::WHOLE)));
+        out
+    }
+
+    /// Newest turn `e`: its message and every item, as a zoom lists them.
+    fn newest(&self, e: usize) -> Vec<String> {
+        self.xs[e]
+            .span
+            .clone()
+            .map(|p| self.item_line(p, LISTING))
+            .collect()
     }
 
     fn built_under(&self, c: Coord) -> bool {
@@ -501,83 +605,6 @@ impl Branch {
                 .iter()
                 .any(|&k| self.text(k).is_some() || self.built_under(k)),
         }
-    }
-
-    /// The newest messages of the user in closed turns, oldest first, in about [`RAIL`]
-    /// bytes; the newest always.
-    fn rail(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut size = 0;
-        for x in self.xs[..self.closed() as usize].iter().rev() {
-            let p = x.span.start;
-            if !matches!(self.item(p).kind, Kind::User(_)) {
-                continue;
-            }
-            let l = self.item_line(p, cut(RAIL));
-            if !out.is_empty() && size + l.len() + 1 > RAIL {
-                break;
-            }
-            size += l.len() + 1;
-            out.push(l);
-        }
-        out.reverse();
-        out
-    }
-
-    /// The open turn: its message, then its chunk lines and the steps after them, the
-    /// newest that fit in [`OPEN`] bytes; the newest item always. Nothing when every turn is
-    /// closed.
-    fn current(&self) -> Vec<String> {
-        let e = self.closed() as usize;
-        let Some(x) = self.xs.get(e) else {
-            return Vec::new();
-        };
-        let body = self.body(e);
-        let mut out: Vec<String> = (x.span.start..body)
-            .map(|p| self.item_line(p, cut(WORDS)))
-            .collect();
-        let chunks = self.chunks(e);
-        let rest = chunks.last().map_or(body, |c| c.0.end);
-        let mut units: Vec<(Range<usize>, Vec<String>)> = chunks
-            .iter()
-            .map(|(r, t)| (r.clone(), vec![Branch::line(self.items_id(r), t)]))
-            .collect();
-        for s in &x.steps {
-            let r = s.start.max(rest)..s.end;
-            if !r.is_empty() {
-                let lines = r.clone().map(|p| self.item_line(p, cut(WORDS))).collect();
-                units.push((r, lines));
-            }
-        }
-        let mut size = bytes(&out);
-        let mut keep = units.len();
-        while keep > 0 {
-            let (r, lines) = &units[keep - 1];
-            let b = bytes(lines);
-            if size + b > OPEN {
-                if keep < units.len() {
-                    break;
-                }
-                if lines.len() > 1 {
-                    let items: Vec<_> = r
-                        .clone()
-                        .zip(lines.clone())
-                        .map(|(p, l)| (p..p + 1, vec![l]))
-                        .collect();
-                    units.splice(keep - 1..keep, items);
-                    keep = units.len();
-                    continue;
-                }
-            }
-            size += b;
-            keep -= 1;
-        }
-        if keep > 0 {
-            let id = self.items_id(&(units[0].0.start..units[keep - 1].0.end));
-            out.push(format!("{id}|(not shown)"));
-        }
-        out.extend(units.drain(keep..).flat_map(|u| u.1));
-        out
     }
 
     /// What `r`, within one turn, holds: the chunk lines inside it other than itself, and
@@ -607,15 +634,6 @@ impl Branch {
     }
 }
 
-/// An item's words cut to `words` bytes, and its tool input and output to [`TOOL`].
-fn cut(words: usize) -> Cut {
-    Cut {
-        words,
-        input: words.min(TOOL),
-        output: Some(words.min(TOOL)),
-    }
-}
-
 /// The bytes `lines` take, one newline each.
 fn bytes(lines: &[String]) -> usize {
     lines.iter().map(|l| l.len() + 1).sum()
@@ -634,7 +652,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::chat::model::{Marker, SourceId};
+    use crate::chat::model::{Kind, Marker, SourceId};
 
     fn source(entry: usize) -> SourceId {
         SourceId {
@@ -644,8 +662,8 @@ mod tests {
         }
     }
 
-    /// Items in one chain, from kinds: `u` user, `w` work, `t` text, `c` call, `r` result,
-    /// each saying `text`.
+    /// Items in one chain, from kinds: `u` user, `w` work, `t` text, `e` text that ends the
+    /// turn, `c` call, `r` result, each saying `text`.
     fn chain(spec: &str, text: impl Fn(usize) -> String) -> Vec<Item> {
         spec.chars()
             .enumerate()
@@ -659,7 +677,7 @@ mod tests {
                         from: "researcher".into(),
                         text: text(i),
                     },
-                    't' => Kind::Text(text(i)),
+                    't' | 'e' => Kind::Text(text(i)),
                     'c' => Kind::ToolCall {
                         id: i.to_string(),
                         name: "Bash".into(),
@@ -672,7 +690,7 @@ mod tests {
                     },
                     _ => Kind::Marker(Marker::Interrupt),
                 },
-                ends_turn: false,
+                ends_turn: k == 'e',
             })
             .collect()
     }
@@ -740,11 +758,16 @@ mod tests {
         assert_eq!(names(under(Coord::new(1, 2), 1)), ["4", "5"]);
     }
 
+    /// The fold over every closed turn of `b`, rendered.
+    fn folded(b: &Branch) -> Vec<String> {
+        b.render(&fold(b.closed(), FOLD_LINES, |_| 1))
+    }
+
     #[test]
     fn built_lines_fill_the_fold_and_the_rest_fall_back() {
         let b = branch(chain("utututututututut", short), &[]);
         assert_eq!(b.closed(), 7);
-        let all = b.render();
+        let all = folded(&b);
         assert_eq!(all.len(), 7);
         assert_eq!(all[0], "0|(not summarised yet) user: m0");
         let b = branch(
@@ -752,7 +775,7 @@ mod tests {
             &[(1, 1, "first"), (1, 3, "second"), (1, 7, "fourth")],
         );
         assert_eq!(
-            b.render(),
+            folded(&b),
             [
                 "0|first",
                 "1|second",
@@ -763,12 +786,6 @@ mod tests {
                 "6|(not summarised yet) user: m12",
             ],
         );
-        let key = |last| Key { level: 1, last };
-        assert_eq!(
-            b.needed(),
-            [key(5), key(9), key(11), key(13)],
-            "every turn fits: the fold wants the unbuilt turn lines"
-        );
     }
 
     #[test]
@@ -778,7 +795,7 @@ mod tests {
             chain(&"ut".repeat(67), short),
             &[(2, 3, "first two"), (1, 5, "third"), (1, 131, "newest")],
         );
-        let fold = b.render();
+        let fold = folded(&b);
         assert_eq!(fold.len(), FOLD_LINES);
         assert_eq!(
             fold[..3],
@@ -790,9 +807,6 @@ mod tests {
             "2+2 would fall back to two lines, one too many: it stays one; a turn keeps its message"
         );
         assert_eq!(fold.last().unwrap(), "65|newest");
-        let key = |level, last| Key { level, last };
-        assert_eq!(b.needed()[..2], [key(2, 7), key(1, 9)]);
-        assert_eq!(b.needed().len(), FOLD_LINES - 2);
     }
 
     /// Item `i` says `m<i>`, padded to about `pad(i)` bytes.
@@ -805,7 +819,7 @@ mod tests {
         // Three steps of a 20 KB reply: over the roll-up's 48 KB input, cut 1-6 and 7-9.
         let text = padded(|i| if [1, 4, 7].contains(&i) { 20_000 } else { 0 });
         let render =
-            |lines: &[(u32, u64, &str)]| branch(chain("utcrtcrtcrut", &text), lines).render();
+            |lines: &[(u32, u64, &str)]| folded(&branch(chain("utcrtcrtcrut", &text), lines));
         assert_eq!(
             render(&[(0, 6, "read the config")]),
             [
@@ -840,9 +854,191 @@ mod tests {
         lines.iter().map(|(l, k, t)| (*l, *k, t.as_str())).collect()
     }
 
+    /// The spec's rule on `b`: its entries, and the ids of its lines, cover turns 0..N once
+    /// each, in order, and their detail never decreases toward the newest.
+    fn check(b: &Branch) {
+        let n = b.xs.len() as u64;
+        let levels = b.levels();
+        let mut at = 0;
+        for (c, _) in &levels {
+            assert_eq!(c.id(), at, "{levels:?}");
+            at = c.end();
+        }
+        assert_eq!(at, n, "{levels:?}");
+        assert!(levels.windows(2).all(|w| w[0].1 <= w[1].1), "{levels:?}");
+        let newest = levels.iter().filter(|(_, l)| *l == Level::Newest).count();
+        assert_eq!(newest, usize::from(n > 0));
+
+        let mut last: Option<(Range<u64>, bool)> = None;
+        for l in b.list() {
+            let (r, items) = match Id::parse(l.split('|').next().unwrap()).unwrap() {
+                Id::Turns { first, n } => (first..first + n, false),
+                Id::Items { turn, .. } => (turn..turn + 1, true),
+            };
+            match &last {
+                Some((p, true)) if items && *p == r => continue,
+                Some((p, _)) => assert_eq!(p.end, r.start, "{l}"),
+                None => assert_eq!(r.start, 0, "{l}"),
+            }
+            last = Some((r, items));
+        }
+        assert_eq!(last.map_or(0, |(r, _)| r.end), n);
+    }
+
     #[test]
-    fn the_view_keeps_its_size() {
-        let spec = "ut".repeat(3000) + "u";
+    fn every_turn_shows_once_in_order_and_detail_never_decreases() {
+        let big = padded(|i| if i % 2 == 0 { 2_000 } else { 0 });
+        let lines = turn_lines(200, "said");
+        let mut nodes = as_refs(&lines);
+        nodes.extend([(2, 3, "0 and 1"), (3, 7, "0 to 3"), (2, 11, "4 and 5")]);
+        let work = padded(|i| if i % 5 == 0 { 3_000 } else { 0 });
+        let huge = padded(|i| if i == 0 { 20_000 } else { 0 });
+        for b in [
+            branch(Vec::new(), &[]),
+            branch(chain("u", short), &[]),
+            branch(chain("uct", short), &[]),
+            branch(chain(&("ue".repeat(10) + "u"), short), &[]),
+            branch(chain(&"ue".repeat(200), &big), &[]),
+            branch(chain(&"ue".repeat(200), &big), &as_refs(&lines)),
+            branch(chain(&"ue".repeat(200), &big), &nodes),
+            branch(
+                chain(&"ucrte".repeat(40), &work),
+                &[(0, 8, "w"), (0, 193, "w")],
+            ),
+            branch(chain("ueu", &huge), &[]),
+            branch(chain(&"ut".repeat(67), short), &[(2, 3, "first two")]),
+        ] {
+            check(&b);
+        }
+    }
+
+    #[test]
+    fn recent_turns_fill_their_budget_with_whole_turns_back_from_the_newest() {
+        let text = padded(|i| if i % 2 == 0 { 5_000 } else { 0 });
+        let b = branch(chain(&"ue".repeat(10), text), &[]);
+        assert_eq!(
+            b.recent(),
+            6,
+            "three turns of about 5 KB fit in 16 KB, a fourth does not"
+        );
+        let levels: Vec<Level> = b.levels().into_iter().map(|(_, l)| l).collect();
+        assert_eq!(
+            levels[5..],
+            [
+                Level::Older,
+                Level::Recent,
+                Level::Recent,
+                Level::Recent,
+                Level::Newest
+            ]
+        );
+
+        let text = padded(|i| match i {
+            14 => 20_000,
+            _ if i % 2 == 0 => 100,
+            _ => 0,
+        });
+        let b = branch(chain(&"ue".repeat(10), text), &[]);
+        assert_eq!(
+            b.recent(),
+            8,
+            "a turn too big stops the recent turns: the ones before it stay older"
+        );
+        let huge = padded(|i| if i == 0 { 20_000 } else { 0 });
+        assert_eq!(branch(chain("ueu", huge), &[]).recent(), 1);
+    }
+
+    #[test]
+    fn a_recent_turn_shows_its_message_work_lines_and_final_reply() {
+        // Turn 0: message 0, work 1-5, final reply 6; turn 1 is recent too, turn 2 the newest.
+        let text = padded(|i| if i == 0 { 9_000 } else { 0 });
+        let spec = "ucrtcreueu";
+        let b = branch(chain(spec, &text), &[(0, 5, "ran it")]);
+        assert_eq!(b.recent(), 0);
+        let turn = b.recent_turn(0);
+        assert_eq!(ids(&turn), ["0.0", "0.1+5", "0.6"]);
+        assert_eq!(turn[0], format!("0.0|user: {}", text(0)), "word for word");
+        assert_eq!(turn[1], "0.1+5|ran it");
+        assert_eq!(turn[2], "0.6|ai: m6");
+        assert!(bytes(&turn) <= b.most(0));
+
+        let b = branch(chain(spec, &text), &[]);
+        assert_eq!(b.recent_turn(0)[1], "0.1+5|(not summarised yet)");
+        assert!(bytes(&b.recent_turn(0)) <= b.most(0));
+        let longest = "w".repeat(work_limit(&chain(spec, &text)[1..6]));
+        let b = branch(chain(spec, &text), &[(0, 5, &longest)]);
+        assert!(
+            bytes(&b.recent_turn(0)) <= b.most(0),
+            "a work line at its limit fits its turn's most"
+        );
+
+        assert_eq!(
+            branch(chain("uctuct", short), &[]).recent_turn(0),
+            ["0.0|user: m0", "0.1+2|(not summarised yet)"],
+            "a turn cut short by a message has no final reply: all of it is work"
+        );
+        assert_eq!(
+            branch(chain("ueu", short), &[]).recent_turn(0),
+            ["0.0|user: m0", "0.1|ai: m1"]
+        );
+    }
+
+    #[test]
+    fn the_newest_turn_lists_every_item_as_zoom_does() {
+        let text = |i: usize| match i {
+            3 => "o".repeat(5_000),
+            _ => format!("say {i} {}", "w".repeat(9_000)),
+        };
+        let b = branch(chain("ueucrte", text), &[]);
+        let newest = b.newest(1);
+        assert_eq!(ids(&newest), ["1.0", "1.1", "1.2", "1.3", "1.4"]);
+        assert_eq!(
+            newest.join("\n"),
+            b.zoom(Id::parse("1").unwrap(), false).unwrap()
+        );
+        assert!(newest[0].ends_with(&text(2)) && newest[4].ends_with(&text(6)));
+        assert!(newest[1].len() < 500 && newest[2].starts_with("1.2|output: (1 line, "));
+        let b = branch(chain("ueucrte", text), &[(0, 5, "did it")]);
+        assert_eq!(
+            ids(&b.newest(1)),
+            ["1.0", "1.1", "1.2", "1.3", "1.4"],
+            "a work line built changes nothing"
+        );
+    }
+
+    #[test]
+    fn the_view_needs_the_fold_and_recent_work_lines_whatever_is_built() {
+        // 30 turns of 5 items, messages of 3 KB: turns 25-28 recent, 29 the newest.
+        let text = padded(|i| if i % 5 == 0 { 3_000 } else { 0 });
+        let items = chain(&"ucrte".repeat(30), &text);
+        let b = branch(items.clone(), &[]);
+        assert_eq!(b.recent(), 25);
+        let key = |level, last| Key { level, last };
+        let want: Vec<Key> = (0..25)
+            .map(|e| key(1, 5 * e + 4))
+            .chain((25..29).map(|e| key(0, 5 * e + 3)))
+            .collect();
+        assert_eq!(b.needed(), want, "the newest turn needs no line");
+
+        let last = |k: Key| k.last as usize;
+        let built = want
+            .iter()
+            .map(|&k| (k, "w".repeat(work_limit(&items[last(k) - 2..=last(k)]))))
+            .collect();
+        let tip = Some(items.len() as u64 - 1);
+        let b = Branch::new(Tree::new(items), tip, built);
+        assert_eq!(
+            b.recent(),
+            25,
+            "what is built never moves a turn between levels"
+        );
+        assert!(b.needed().is_empty());
+        check(&b);
+    }
+
+    #[test]
+    fn the_view_is_one_list_of_bounded_size() {
+        let spec = "ue".repeat(3000) + "u";
         let lines = turn_lines(3000, &"y".repeat(500));
         let big = |i: usize| format!("{i} {}", "z".repeat(20_000));
         for b in [
@@ -851,30 +1047,22 @@ mod tests {
             branch(chain(&spec, big), &[]),
         ] {
             let v = b.view("dev");
-            let most = FOLD_LINES * 600 + RAIL + OPEN + 4_000;
+            let most = FOLD_LINES * 600 + RECENT + bytes(&b.newest(3000)) + 4_000;
             assert!(v.len() <= most, "{}", v.len());
             assert!(v.starts_with("# Thread `dev`\n\nThis is the thread `dev`"));
-            let fold = section_lines(&v, FOLD);
-            assert!(
-                fold.len() > 10 && fold.len() <= FOLD_LINES,
-                "{}",
-                fold.len()
-            );
-            assert!(!section_lines(&v, USER).is_empty());
-            assert!(section_lines(&v, CURRENT)[0].starts_with("3000.0|user: "));
+            assert_eq!(v.matches("\n## ").count(), 1, "one list");
+            let fold = b
+                .levels()
+                .iter()
+                .filter(|(_, l)| *l <= Level::Older)
+                .count();
+            assert!(fold > 10 && fold <= FOLD_LINES, "{fold}");
+            let list = section_lines(&v, TURNS);
+            assert!(list.last().unwrap().starts_with("3000.0|user: "));
+            check(&b);
         }
         let empty = branch(Vec::new(), &[]).view("dev");
         assert!(empty.ends_with("The thread holds nothing yet.\n"));
-    }
-
-    #[test]
-    fn a_seeded_session_heads_its_last_turn_as_the_previous_session_s() {
-        let mut b = branch(chain("ututu", short), &[]);
-        assert_eq!(section_lines(&b.view("dev"), CURRENT), ["2.0|user: m4"]);
-        b.seeded = true;
-        let v = b.view("dev");
-        assert!(section_lines(&v, CURRENT).is_empty());
-        assert_eq!(section_lines(&v, PREVIOUS), ["2.0|user: m4"]);
     }
 
     #[test]
@@ -897,55 +1085,6 @@ mod tests {
                 .view("dev")
                 .contains("branches.")
         );
-    }
-
-    #[test]
-    fn the_open_turn_keeps_its_message_and_newest_steps() {
-        let text = |i: usize| match i {
-            2 => "run the benchmarks".to_string(),
-            _ => format!("{i}:{}", "o".repeat(9_000)),
-        };
-        let open = branch(chain("utuctcrcrcrtcrt", text), &[]).current();
-        assert_eq!(open[0], "1.0|user: run the benchmarks");
-        assert_eq!(open[1], "1.1+11|(not shown)");
-        assert_eq!(ids(&open[2..]), ["1.12"], "whole steps");
-        assert!(open[2].starts_with("1.12|ai: 14:") && open[2].contains("bytes cut]"));
-        assert!(bytes(&open) <= OPEN);
-
-        let flood = "u".to_string() + &"c".repeat(40) + &"r".repeat(40);
-        let open = branch(chain(&flood, text), &[]).current();
-        assert!(bytes(&open) <= OPEN, "{}", bytes(&open));
-        assert!(open[1].starts_with("0.1+") && open[1].ends_with("|(not shown)"));
-        assert!(
-            open.last().unwrap().starts_with("0.80|output: "),
-            "a step too big for the budget keeps its newest items"
-        );
-
-        // Steps of 20 KB, 20 KB, 20 KB and a short one: chunks 1-6 and 7-12, the second open.
-        let text = padded(|i| if [1, 4, 7].contains(&i) { 20_000 } else { 0 });
-        let lines = [(0, 6, "read it")];
-        let open = branch(chain("utcrtcrtcrtcr", text), &lines).current();
-        assert_eq!(
-            ids(&open),
-            ["0.0", "0.1+6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12"]
-        );
-        assert_eq!(open[1], "0.1+6|read it");
-    }
-
-    #[test]
-    fn the_rail_holds_the_newest_user_messages() {
-        let text = |i: usize| match i % 4 {
-            0 => format!("ask {i} {}", "q".repeat(1_500)),
-            _ => format!("say {i}"),
-        };
-        let rail = branch(chain(&"utwt".repeat(20), text), &[]).rail();
-        assert_eq!(rail.len(), 5);
-        assert!(rail[0].starts_with("30.0|user: ask 60"));
-        assert!(rail[4].starts_with("38.0|user: ask 76"));
-        let huge = |i: usize| format!("{i}{}", "q".repeat(20_000));
-        let rail = branch(chain("utu", huge), &[]).rail();
-        assert_eq!(rail.len(), 1, "the newest always, cut");
-        assert!(rail[0].len() < RAIL + 100 && rail[0].contains("bytes cut]"));
     }
 
     #[test]

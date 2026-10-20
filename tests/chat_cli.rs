@@ -10,7 +10,7 @@ use std::{
 };
 
 use ai_tools::{
-    chat::{Chat, FOLD_LINES, Key, LineKind, NOT_ATTACHED, Tree, claude, turns},
+    chat::{Chat, Key, LineKind, NOT_ATTACHED, Tree, claude, turns},
     memory::Who,
 };
 use regex::Regex;
@@ -622,24 +622,27 @@ fn compact_session_syncs_and_prints_the_view() {
         4,
         "compact-session synced the rest of the transcript"
     );
-    let fold = section(&view, "Earlier turns, summarised");
-    assert_eq!(fold.len(), 4, "the newest turn ended, so it is folded too");
-    assert_eq!(fold[0], "0|user asked to run the tests; two failed");
+    let list = section(&view, "Turns");
+    assert_eq!(list[0], "0.0|user: Run the tests and fix what fails.");
     assert!(
-        fold[1].starts_with(
-            "1|user: Skip the network tests. ai: Skipping the network tests. tool Bash: "
-        ),
-        "compact-session built the short turn as its own line, without ids: {fold:#?}"
+        list[1].starts_with("0.1+3|ai: Running the tests. tool Bash: "),
+        "compact-session built the recent turns' work lines, free, without ids: {list:#?}"
     );
-    assert!(fold[2].starts_with("2|user: Don't commit yet. tool Bash: "));
-    let rail = section(&view, "The user's latest messages");
+    assert_eq!(list[2], "1.0|user: Skip the network tests.");
+    assert!(list[3].starts_with("1.1+6|ai: Skipping the network tests. tool Bash: "));
     assert!(
-        rail.iter()
-            .any(|l| l == &"1.0|user: Skip the network tests.")
+        !view.contains("user asked to run the tests"),
+        "a recent turn shows its work lines, not its turn line"
     );
-    assert!(fold[3].starts_with("3|user: "), "{fold:#?}");
-    assert!(section(&view, "The turn in progress").is_empty(), "{view}");
-    assert!(section(&view, "Earlier turns, summarised").len() <= FOLD_LINES);
+    assert_eq!(
+        list[list.len() - 2..],
+        [
+            "3.0|user: Show me the diff instead.",
+            "3.1|ai: The diff changes the test filter only."
+        ],
+        "the newest turn, ended, shows every item"
+    );
+    assert_eq!(view.matches("\n## ").count(), 1, "one list: {view}");
 }
 
 #[test]
@@ -788,27 +791,27 @@ fn view_syncs_its_session_and_writes_no_line() {
     s.transcript("s-1", &talk(4, |k| format!("question {k}")));
 
     let outside = stdout(&s.ai(&["view", "dev"]));
-    assert!(
-        section(&outside, "The turn in progress")[0].ends_with("|user: question 1"),
-        "outside the session, nothing is synced: {outside}"
-    );
     assert_eq!(
-        section(&outside, "Earlier turns, summarised"),
-        ["0|(not summarised yet) user: question 0"]
+        section(&outside, "Turns"),
+        [
+            "0.0|user: question 0",
+            "0.1|(not summarised yet)",
+            "1.0|user: question 1",
+            "1.1|ai: reply 1",
+        ],
+        "outside the session, nothing is synced: {outside}"
     );
 
     let inside = stdout(&s.ai_in("s-1", &["view"]));
-    assert!(
-        section(&inside, "The turn in progress")[0].ends_with("|user: question 3"),
-        "the session's view syncs it first: {inside}"
-    );
     assert_eq!(
-        section(&inside, "Earlier turns, summarised"),
+        section(&inside, "Turns")[4..],
         [
-            "0|(not summarised yet) user: question 0",
-            "1|(not summarised yet) user: question 1",
-            "2|(not summarised yet) user: question 2",
-        ]
+            "2.0|user: question 2",
+            "2.1|(not summarised yet)",
+            "3.0|user: question 3",
+            "3.1|ai: reply 3",
+        ],
+        "the session's view syncs it first: {inside}"
     );
     assert_eq!(lines(&s), 0, "view writes no line");
 
@@ -816,8 +819,8 @@ fn view_syncs_its_session_and_writes_no_line() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(
         lines(&s),
-        6,
-        "compact-session writes the lines its view needs, each turn's with its work"
+        3,
+        "compact-session writes the lines its view needs: the recent turns' work lines"
     );
     assert!(!stdout(&o).contains("not summarised yet"), "{}", stdout(&o));
 }
@@ -1111,13 +1114,11 @@ fn start_binds_a_new_session_and_starts_claude() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(seed.starts_with("# Thread `dev`"), "{seed}");
     assert!(
-        section(&seed, "Earlier turns, summarised")
+        section(&seed, "Turns")
             .last()
-            .is_some_and(|l| l.starts_with("1|")),
+            .is_some_and(|l| l.starts_with("1.1|")),
         "a new session's view ends at its graft, the previous session's ended turn: {seed}"
     );
-    assert!(section(&seed, "The previous session's last turn").is_empty());
-    assert!(section(&seed, "The turn in progress").is_empty());
 
     let o = s.ai(&["start", "a b"]);
     assert_eq!(code(&o), 1);
@@ -1460,7 +1461,7 @@ fn a_line_still_over_the_limit_fails_and_is_not_stored() {
 #[test]
 fn a_failed_line_stops_compaction_and_start() {
     let s = Sandbox::new();
-    failing(&s, 3);
+    failing(&s, 20);
     let failed = "Cannot build the view of thread dev: 1 line failed.\n\
                   Failed 0: claude: overloaded\n\
                   Write them, then try again: ai chat build -t dev\n";

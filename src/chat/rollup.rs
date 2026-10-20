@@ -45,6 +45,17 @@ fn weight(item: &Item) -> usize {
     }
 }
 
+/// The words a line is asked for over what weighs `size` by [`weight`]: one per [`RATIO`], at
+/// least [`WORDS`] and at most [`MAX_WORDS`].
+fn target(size: usize) -> usize {
+    (size / RATIO).clamp(WORDS, MAX_WORDS)
+}
+
+/// The most bytes a work line over `items` is accepted at.
+pub fn work_limit<'a>(items: impl IntoIterator<Item = &'a Item>) -> usize {
+    limit(target(items.into_iter().map(weight).sum()))
+}
+
 /// An item as a call reads it, without its id or the indent of its continued lines.
 fn bare(rendered: &str) -> String {
     let text = rendered.split_once('|').map_or(rendered, |(_, t)| t);
@@ -399,10 +410,9 @@ impl Rollup {
         format!("{id}|{text}\n")
     }
 
-    /// The words line `key` is asked for: one per [`RATIO`] of what it covers, at least
-    /// [`WORDS`] and at most [`MAX_WORDS`].
+    /// The words line `key` is asked for: the [`target`] of what it covers.
     pub fn words(&self, key: Key) -> usize {
-        (self.size(key) / RATIO).clamp(WORDS, MAX_WORDS)
+        target(self.size(key))
     }
 
     /// What line `key` is made from, as a call reads it; `None` until every line it is made

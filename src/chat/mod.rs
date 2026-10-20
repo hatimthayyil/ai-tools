@@ -23,4 +23,3 @@ pub use summarise::{
     Built, Config, Dry, DryLine, OnFail, Rewrote, build, dry_run, rebuild, rewrite, summarise,
 };
 pub use sync::{Attached, Synced, read, sync, sync_in};
-pub use view::{FOLD_LINES, OPEN, RAIL};
