@@ -20,20 +20,18 @@ use crate::{
         id::Id,
         record::{Binding, Key},
         rollup::Rollup,
-        store::{Chat, Snapshot, Thread, ThreadInfo, check_name},
+        store::{Chat, Mark, Snapshot, Thread, ThreadInfo, check_name},
         summarise::{OnFail, build, dry_run, first, rebuild, rewrite, summarise},
         sync::Synced,
         view::Branch,
     },
     file,
-    memory::{Pattern, broken_pipe, claude::uuid, page, plural, quote, word},
+    memory::{Pattern, broken_pipe, claude::uuid, plural, quote, word},
+    page::{self, PART, page},
 };
 
 /// The exit code of plumbing for a session attached to no thread; it prints nothing.
 pub const NOT_ATTACHED: u8 = 3;
-/// The largest part of a paged output, in bytes: under Claude Code's 30,000-character cap on
-/// a command's output.
-pub const PART: u64 = 20_000;
 /// How long `compact-session` waits for the lines its view needs, and `build --rebuild`
 /// for a running summariser.
 pub const WAIT: Duration = Duration::from_secs(60);
@@ -265,13 +263,15 @@ impl Cli {
     /// Runs in the current directory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        match self.run(&cwd, &mut io::stdout().lock()) {
+        let terminal = io::stdout().is_terminal();
+        match self.run(&cwd, &mut io::stdout().lock(), terminal) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
             r => r,
         }
     }
 
-    pub fn run(self, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+    /// Runs in `cwd`, printing to `out`; views print whole on a `terminal`.
+    pub fn run(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             thread: None,
             session: Session::default(),
@@ -287,7 +287,14 @@ impl Cli {
                 session,
                 part,
                 at,
-            } => view(cwd, out, thread, session, part.unwrap_or(1), at.as_deref()),
+            } => view(
+                cwd,
+                out,
+                thread,
+                session,
+                page::pick(part, terminal),
+                at.as_deref(),
+            ),
             Command::Attach { name, session } => attach(cwd, out, &name, session),
             Command::Detach { session } => detach(cwd, out, session),
             Command::Zoom {
@@ -683,11 +690,17 @@ fn latest(chat: &Chat, t: &Thread, c: Option<&Current>) -> Result<Snapshot> {
     t.snapshot()
 }
 
-/// The thread view `ai view` prints after the memory: [`pick`]'s thread, of the session's
-/// branch (synced first) when it is attached there, else of the newest. Unnamed, an agent
-/// session reads only the thread it is attached to, and outside a repository with threads
-/// there is none. `None` too while the branch holds no item. It writes no line.
-pub fn thread_view(cwd: &Path, name: Option<String>, s: Session) -> Result<Option<String>> {
+/// The thread view `ai view` prints after the memory, with the thread's name and state:
+/// [`pick`]'s thread, of the session's branch (synced first) when it is attached there, else of
+/// the newest; with `at` (a state it gave), of that state, unsynced. Unnamed, an agent session
+/// reads only the thread it is attached to, and outside a repository with threads there is
+/// none. `None` too while the branch holds no item. It writes no line.
+pub fn thread_view(
+    cwd: &Path,
+    name: Option<String>,
+    s: Session,
+    at: Option<Mark>,
+) -> Result<Option<(String, String, Mark)>> {
     let c = s.current();
     if name.is_none() {
         let Some(chat) = Chat::find(cwd)? else {
@@ -702,18 +715,24 @@ pub fn thread_view(cwd: &Path, name: Option<String>, s: Session) -> Result<Optio
         }
     }
     let (chat, t, c) = pick(cwd, name, c, "ai view <name>")?;
-    view_in(&t, &latest(&chat, &t, c.as_ref())?, c.as_ref())
+    let snap = match at {
+        Some(at) => t.snapshot_at(at)?,
+        None => latest(&chat, &t, c.as_ref())?,
+    };
+    let view = view_in(&t, &snap, c.as_ref())?;
+    Ok(view.map(|v| (v, t.name().to_string(), snap.mark())))
 }
 
-/// The thread's view, in parts from one state of it: of the session's branch when the
-/// session is attached to it (synced first), else of its newest branch. It writes no line: a
-/// turn not summarised yet shows its message; `--at` reads the state it names.
+/// The thread's view, from one state of it: of the session's branch when the session is
+/// attached to it (synced first), else of its newest branch; whole for `part` `None`, else that
+/// part. It writes no line: a turn not summarised yet shows its message; `--at` reads the state
+/// it names.
 fn view(
     cwd: &Path,
     out: &mut dyn Write,
     name: Option<String>,
     s: Session,
-    part: u64,
+    part: Option<u64>,
     at: Option<&str>,
 ) -> Result<ExitCode> {
     let (chat, t, session) = pick(cwd, name, s.current(), "ai chat view <name>")?;
@@ -726,18 +745,9 @@ fn view(
         writeln!(out, "Thread {} holds nothing yet.", t.name())?;
         return Ok(ExitCode::SUCCESS);
     };
-    let (text, n) = page(&text, PART, part)?;
-    writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(text))?;
-    if part < n {
-        let next = part + 1;
-        writeln!(
-            out,
-            "Part {part} of {n}. Next: ai chat view {} --part {next} --at {mark}",
-            t.name()
-        )?;
-    } else if n > 1 {
-        writeln!(out, "Part {part} of {n}.")?;
-    }
+    page::print(out, &text, part, |k| {
+        format!("ai chat view {} --part {k} --at {mark}", t.name())
+    })?;
     Ok(ExitCode::SUCCESS)
 }
 

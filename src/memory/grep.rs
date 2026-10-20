@@ -4,13 +4,15 @@ use anyhow::{Result, anyhow};
 use clap::Args;
 use regex::{Regex, RegexBuilder};
 
-use crate::memory::{
-    cli::{line_id, plural},
-    config::Knob,
-    meta::{Line, Meta},
-    record::{Kind, Message, Who, flat, midnight},
-    store::{ME, Snapshot},
-    tree::Coord,
+use crate::{
+    memory::{
+        cli::{line_id, plural},
+        meta::{Line, Meta},
+        record::{Kind, Message, Who, flat, midnight},
+        store::{ME, Snapshot},
+        tree::Coord,
+    },
+    page::PART,
 };
 
 const EXCERPT: usize = 400;
@@ -338,8 +340,7 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
     let below = |k: Key| before.is_none_or(|b| k < b);
     let end = before.map_or(t, |b| b.0 + 1);
     let since = g.since.map(midnight).unwrap_or_default();
-    let chars = s.cfg().get(Knob::PartChars);
-    let (mut pages, mut hits) = (vec![Page::new(chars, g.max)], 0);
+    let (mut pages, mut hits) = (vec![Page::new(PART, g.max)], 0);
 
     let log = &mut pages[0];
     let (mut ring, mut after) = (VecDeque::new(), 0);
@@ -365,7 +366,7 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
 
     let mut l = 1;
     while g.tree && !g.message_only() && 1u64 << l <= end {
-        let mut page = Page::new(chars, g.max);
+        let mut page = Page::new(PART, g.max);
         for (i, n) in s.level(l)?.into_iter().enumerate() {
             let c = Coord::new(l, i as u64);
             let Some(n) = n.filter(|_| c.end() <= end) else {
@@ -392,7 +393,7 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
     }
     let mut units: Vec<_> = pages.iter_mut().flat_map(|p| p.units.drain(..)).collect();
     units.sort_unstable_by_key(Unit::key);
-    let mut page = Page::new(chars, g.max);
+    let mut page = Page::new(PART, g.max);
     page.floor = pages.iter().filter_map(|p| p.floor).max();
     for u in units {
         page.push(u);

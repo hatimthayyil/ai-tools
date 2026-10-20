@@ -86,7 +86,7 @@ test('/ai builds the view once the transcript is flushed, then compacts into mem
   expect((await ran).text).toBe('Compacting.')
   expect(world.calls).toEqual([
     ['ai', 'chat', 'compact-session', ...ALL_ARGS],
-    ['ai', 'view', ...ALL_ARGS],
+    ['ai', 'view', '--whole', ...ALL_ARGS],
   ])
   expect(world.compacts).toEqual(['/compact'])
   expect(await compact($)).toEqual([{ role: 'user', text: WOKE, toolUses: [] }])
@@ -196,7 +196,7 @@ test('the agent tool compacts as /ai does at the end of the turn, only when atta
     ['ai', 'chat', 'sync-session', ...SESSION_ARGS],
     ['ai', 'chat', 'sync-session', ...SESSION_ARGS],
     ['ai', 'chat', 'compact-session', ...SESSION_ARGS],
-    ['ai', 'view', ...SESSION_ARGS],
+    ['ai', 'view', '--whole', ...SESSION_ARGS],
     ['ai', 'chat', 'sync-session', ...ALL_ARGS],
   ])
   expect(world.logs).toEqual([])

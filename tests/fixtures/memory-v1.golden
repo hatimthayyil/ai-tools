@@ -117,8 +117,6 @@ text    imported first note imported second note, with spaces imported third not
 $ config WAKE_LINES=3
 WAKE_LINES   3       how many lines view prints (96 is about 8k tokens) (default 96)
 ENTRY_CHARS  280     the longest one note may be, in bytes
-PART_CHARS   20000   output paging: largest part, in bytes
-PART_LINES   500     output paging: largest part, in lines
 $ view -o session
 2020-01-01
 0+8|..2026-10-13|sess-0(+1)|imported first note imported second note, with spaces imported third note imported fourth summary 521aac41

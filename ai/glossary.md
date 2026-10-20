@@ -12,14 +12,15 @@
 - `rule 3`: a node is built only when every view line before its end is already a summary, so the compactor never sees a placeholder.
 - `build` (memory): `ai memory build`: run the compactor until nothing is buildable, then exit. `note` starts one in the background when a node is due.
 - `backend`: the compactor's model access (`Backend`/`Conversation`); now only Claude Code (`claude -p`, Sonnet, medium effort).
-- `ai memory view`: print the view under date headers, paged into parts; `ai memory view <id>` reads on from message `id`, as each part's last line says.
-- `part`: one page of `ai memory view` output, bounded by `PART_CHARS`/`PART_LINES`.
+- `ai memory view`: print the view under date headers: whole on a terminal, else in parts.
+- `part`: one page of a view's output when it is not on a terminal: at most `PART` (20,000) bytes, ending with `--part N --at <state>` for the next.
+- `state` (`--at`): what a view's parts are read from, so they join up: the memory's commit (`0` while empty), a thread's file lengths (`items.lines.sessions`), or for `ai view` both, `<commit>:<thread>:<items.lines.sessions>`.
 - `zoom`: open `id+n` two levels down; a bare `id` gives the original message in bounded pages (`part`, from 1).
 - `origin`: a store's random id (6 Crockford base-32 characters), made at `init` and kept in its git config as `ai.memory.origin`; stamped on every message and node the store writes.
 - `show`: every field of one message or node.
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes), newest page first; `--before <id>` pages back.
 - `snapshot`: the memory as of one commit; every command reads one.
-- `knob`: a per-machine size in the memory repo's git config, set with `ai memory config NAME=VALUE`: `ENTRY_CHARS`, `PART_CHARS`, `PART_LINES`.
+- `knob`: a per-machine size in the memory repo's git config, set with `ai memory config NAME=VALUE`: `WAKE_LINES`, `ENTRY_CHARS`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.
 - `format`: the store's format number, the `format` blob at the tree root (absent: 1). This ai reads and writes only its own (`FORMAT`); it refuses a newer store and upgrades an older one.

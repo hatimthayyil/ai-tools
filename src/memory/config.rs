@@ -13,24 +13,15 @@ pub const NOTE_MAX: u64 = NODE as u64;
 pub enum Knob {
     WakeLines,
     EntryChars,
-    PartChars,
-    PartLines,
 }
 
 impl Knob {
-    pub const ALL: [Knob; 4] = [
-        Knob::WakeLines,
-        Knob::EntryChars,
-        Knob::PartChars,
-        Knob::PartLines,
-    ];
+    pub const ALL: [Knob; 2] = [Knob::WakeLines, Knob::EntryChars];
 
     pub fn name(self) -> &'static str {
         match self {
             Knob::WakeLines => "WAKE_LINES",
             Knob::EntryChars => "ENTRY_CHARS",
-            Knob::PartChars => "PART_CHARS",
-            Knob::PartLines => "PART_LINES",
         }
     }
 
@@ -38,8 +29,6 @@ impl Knob {
         match self {
             Knob::WakeLines => "wakeLines",
             Knob::EntryChars => "entryChars",
-            Knob::PartChars => "partChars",
-            Knob::PartLines => "partLines",
         }
     }
 
@@ -47,8 +36,6 @@ impl Knob {
         match self {
             Knob::WakeLines => 96,
             Knob::EntryChars => 280,
-            Knob::PartChars => 20000,
-            Knob::PartLines => 500,
         }
     }
 
@@ -56,8 +43,6 @@ impl Knob {
         match self {
             Knob::WakeLines => "how many lines view prints (96 is about 8k tokens)",
             Knob::EntryChars => "the longest one note may be, in bytes",
-            Knob::PartChars => "output paging: largest part, in bytes",
-            Knob::PartLines => "output paging: largest part, in lines",
         }
     }
 
@@ -83,7 +68,7 @@ impl Knob {
 
 /// The sizes one memory overrides; every other knob follows the tool's default.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Config([Option<u64>; 4]);
+pub struct Config([Option<u64>; 2]);
 
 impl Config {
     pub fn get(&self, k: Knob) -> u64 {

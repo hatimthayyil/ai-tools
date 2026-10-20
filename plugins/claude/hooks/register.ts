@@ -58,7 +58,7 @@ async function compress($: EngineInterface): Promise<string | undefined> {
   if (ready.exitCode === NOT_ATTACHED) return reply(ready)
   if (ready.exitCode !== 0) return `Not compacted: ${reply(ready)}`
   if (ready.stdout === '') return 'Not compacted: the thread holds nothing yet.'
-  const shown = await ai($, ['view', ...args])
+  const shown = await ai($, ['view', '--whole', ...args])
   if (shown.exitCode !== 0) return `Not compacted: ${reply(shown)}`
   await $.state.set(prepared, shown.stdout)
   $.clock.after(0, () => $.command.run({ command: 'compact' }))

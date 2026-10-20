@@ -23,11 +23,13 @@ nix profile add github:hatimthayyil/ai-tools
 ```sh
 ai memory init                  # create the memory; prints the block for your agent instructions
 ai memory view                  # read the memory
-ai view                         # the whole memory at once, then this session's thread
+ai view                         # the whole memory, then this session's thread
 ai memory note "what happened"  # record one line
 ai memory zoom <id>             # open a line of the view
 ai memory grep <regex>          # search every message
 ```
+
+Views print whole on a terminal. Piped, as an agent reads them, they come in parts of at most 20,000 bytes, each ending with the command for the next.
 
 `ai` stores memories in `~/.ai/memory`, or in `$AI_MEMORY_DIR` if you set it. A newer `ai` upgrades the memory on first use and prints the commit holding its previous state; older releases then fail on it without writing.
 

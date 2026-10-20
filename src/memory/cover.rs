@@ -48,35 +48,12 @@ pub fn cover(t: u64, budget: u64) -> Vec<Coord> {
     out
 }
 
-/// The blocks of `cs` from message `id` on, the one straddling `id` split into its children
-/// down to blocks that start at or after it.
-pub fn from(cs: &[Coord], id: u64) -> Vec<Coord> {
-    let mut out = Vec::new();
-    let mut stack: Vec<Coord> = cs.iter().rev().copied().collect();
-    while let Some(c) = stack.pop() {
-        if c.end() <= id {
-            continue;
-        }
-        if c.id() >= id {
-            out.push(c);
-        } else {
-            let [a, b] = c.children();
-            stack.extend([b, a]);
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tiles(cs: &[Coord], t: u64) -> bool {
-        tiles_from(cs, 0, t)
-    }
-
-    fn tiles_from(cs: &[Coord], id: u64, t: u64) -> bool {
-        cs.first().is_none_or(|c| c.id() == id)
+        cs.first().is_none_or(|c| c.id() == 0)
             && cs.windows(2).all(|w| w[0].end() == w[1].id())
             && cs.last().is_none_or(|c| c.end() == t)
     }
@@ -100,25 +77,5 @@ mod tests {
                 assert!(c[0].l >= c[c.len() - 1].l, "older lines cover more");
             }
         }
-    }
-
-    #[test]
-    fn resumed_covers_start_at_the_id_and_split_the_block_over_it() {
-        let c = cover(1000, 8);
-        let straddled = *c.iter().find(|b| b.id() < 300 && b.end() > 300).unwrap();
-        let r = from(&c, 300);
-        assert_eq!(r[0].id(), 300);
-        let mut split = r.iter().filter(|b| b.end() <= straddled.end());
-        assert!(split.clone().count() > 1 && split.all(|b| b.l < straddled.l));
-        let kept: Vec<_> = c.iter().filter(|b| b.id() >= 300).copied().collect();
-        assert!(r.ends_with(&kept), "blocks after it are unchanged");
-        for t in [1, 97, 1000, 4097] {
-            let c = cover(t, 96);
-            for id in [0, 1, t / 3, t / 2 + 1, t - 1] {
-                assert!(tiles_from(&from(&c, id), id, t), "t={t} id={id}");
-            }
-        }
-        assert_eq!(from(&[Coord::new(2, 0)], 3), [Coord::leaf(3)]);
-        assert!(from(&c, 4097).is_empty());
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{self, ExitCode},
     sync::Arc,
@@ -18,20 +18,21 @@ use crate::{
         claude::{self, CALLS, ClaudeCode},
         compact::{Compactor, GaveUp, Options, Spend},
         config::Knob,
-        cover::{self, cover},
+        cover::cover,
         grep::{Grep, grep},
         hook::{REMINDED, hook},
         log,
-        meta::{Line, Meta, dash, dated, parts},
+        meta::{Line, Meta, dash, dated},
         prov,
         record::{Kind, Message, Place, Who, midnight},
         stats::{Stats, stats},
-        store::{ME, Snapshot, Store},
+        store::{ME, Mark, Snapshot, Store},
         tree::Coord,
         usage::{self, Tally, Use},
         view::{Mem, PLACEHOLDER, VIEW},
-        zoom::{page, zoom},
+        zoom::zoom,
     },
+    page::{self, PART, page},
 };
 
 const TEMPLATE: &str = "\
@@ -73,9 +74,9 @@ on; one that runs past its header's day shows its last day,
 `256+8|..10-12|text`. A short message is its own line, word for word;
 the older the messages, the more a line covers. Notes (what sessions
 like this one noted) are bare text; a chat with the user is tagged by
-speaker, `user:` and `ai:`. `{memo} view` prints it alone, in parts
-when long: run the `{memo} view <id>` each part ends with until it says
-you are awake.
+speaker, `user:` and `ai:`. `{memo} view` prints it alone. A long view
+comes in parts: run the command each part ends with until it says you
+are awake.
 
 `{memo} zoom <id+n>` opens a line two levels down: the four lines of n/4
 it was made from, or its messages when n is 2 or 4; `{memo} zoom <id>`
@@ -111,8 +112,14 @@ enum Command {
     Init,
     #[command(about = "read your memory: print the view (the default).")]
     View {
-        #[arg(help = "the message to read on from, as printed")]
-        from: Option<u64>,
+        #[arg(long, hide = true, help = "the part of the view to print, as printed")]
+        part: Option<u64>,
+        #[arg(
+            long,
+            hide = true,
+            help = "the memory state the parts come from, as printed"
+        )]
+        at: Option<String>,
         #[arg(
             long,
             hide = true,
@@ -167,10 +174,17 @@ impl Command {
         let part = |p: &Option<u64>| p.map(|p| p.to_string());
         match self {
             Command::Init => ("init", Vec::new()),
-            Command::View { from, whole, meta } => (
+            Command::View {
+                part: p,
+                at,
+                whole,
+                meta,
+            } => (
                 "view",
-                part(from)
+                part(p)
                     .into_iter()
+                    .flat_map(|p| ["--part".into(), p])
+                    .chain(at.iter().flat_map(|a| ["--at".into(), a.clone()]))
                     .chain(whole.then(|| "--whole".into()))
                     .chain(meta.args())
                     .collect(),
@@ -194,9 +208,11 @@ impl Command {
     }
 }
 
-/// How commands reach the compactor's model and stdin; tests swap in their own.
+/// How commands reach the compactor's model, stdin and stdout; tests swap in their own.
 pub struct Runtime {
     pub backend: Box<MakeBackend>,
+    /// Whether stdout is a terminal, where views print whole.
+    pub terminal: bool,
     pub opts: Options,
     /// Whether `note` starts a background `build`.
     pub summarise_on_note: bool,
@@ -209,6 +225,7 @@ impl Default for Runtime {
     fn default() -> Runtime {
         Runtime {
             backend: Box::new(|calls| Ok(Arc::new(ClaudeCode::compactor(calls)?))),
+            terminal: false,
             opts: Options::default(),
             summarise_on_note: std::env::var_os("AI_MEMORY_SUMMARISE").is_none_or(|v| v != "0"),
             before_release: Box::new(|| {}),
@@ -241,11 +258,12 @@ pub fn default_dir() -> Result<PathBuf> {
 }
 
 impl Cli {
-    /// `view --whole`: the whole view at once, read and recorded as any view.
-    pub fn view_whole() -> Cli {
+    /// `view --at <at> --whole`: the whole view of state `at`, read and recorded as any view.
+    pub fn view_whole(at: Mark) -> Cli {
         Cli {
             command: Some(Command::View {
-                from: None,
+                part: None,
+                at: Some(at.to_string()),
                 whole: true,
                 meta: Meta::default(),
             }),
@@ -254,7 +272,11 @@ impl Cli {
 
     /// Runs against the default memory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
-        match self.run(&default_dir()?, &mut io::stdout().lock()) {
+        let rt = Runtime {
+            terminal: io::stdout().is_terminal(),
+            ..Runtime::default()
+        };
+        match self.run_with(&default_dir()?, &mut io::stdout().lock(), &rt) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
             r => r,
         }
@@ -266,7 +288,8 @@ impl Cli {
 
     pub fn run_with(self, dir: &Path, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
-            from: None,
+            part: None,
+            at: None,
             whole: false,
             meta: Meta::default(),
         });
@@ -311,7 +334,12 @@ impl Command {
     ) -> Result<ExitCode> {
         match self {
             Command::Init | Command::PromptHook => unreachable!(),
-            Command::View { from, whole, meta } => view(s, out, from.unwrap_or(0), whole, &meta),
+            Command::View {
+                part,
+                at,
+                whole,
+                meta,
+            } => view(s, out, part, at.as_deref(), whole || rt.terminal, &meta),
             Command::Note { text } => note(s, out, &text, rt, place, who),
             Command::Build => build(s, out, rt),
             Command::Grep(g) => grep(&s.snapshot()?, out, &g),
@@ -397,61 +425,45 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Printed at the top of every part of a read that takes more than one.
-const IN_PARTS: &str = "Your memory comes in parts, oldest first. Run the command at the end of each part until you see \"You are awake.\"";
+/// The view of the memory's state `at`, else of its latest: whole when `whole`, else `part`
+/// (the first by default) of its parts, each naming the command for the next.
+fn view(
+    s: &Store,
+    out: &mut dyn Write,
+    part: Option<u64>,
+    at: Option<&str>,
+    whole: bool,
+    meta: &Meta,
+) -> Result<ExitCode> {
+    let snap = match at {
+        Some(at) => s.snapshot_at(at.parse()?)?,
+        None => s.snapshot()?,
+    };
+    let mark = snap.mark();
+    page::print(
+        out,
+        &view_text(&snap, meta)?,
+        page::pick(part, whole),
+        |k| format!("{ME} view --part {k} --at {mark}{}", meta.flags()),
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
 
-/// The view from message `from`: in parts, else `whole`.
-fn view(s: &Store, out: &mut dyn Write, from: u64, whole: bool, meta: &Meta) -> Result<ExitCode> {
-    let snap = s.snapshot()?;
+/// Every line of the view under its date headers, then the line that says you are awake.
+fn view_text(snap: &Snapshot, meta: &Meta) -> Result<String> {
     let t = snap.log_len()?;
     if t == 0 {
-        writeln!(
-            out,
-            "No memories yet. Record the first with: {ME} note \"<one line>\""
-        )?;
-        writeln!(out, "You are awake.")?;
-        return Ok(ExitCode::SUCCESS);
-    }
-    if from >= t {
-        bail!(
-            "No message {from}: the memory has {}. Run: {ME} view",
-            plural(t, "message")
-        );
+        return Ok(format!(
+            "No memories yet. Record the first with: {ME} note \"<one line>\"\nYou are awake.\n"
+        ));
     }
     let mut lines = Vec::new();
-    for c in cover::from(&cover(t, s.cfg.get(Knob::WakeLines)), from) {
-        view_lines(&snap, c, meta, &mut lines)?;
+    for c in cover(t, snap.cfg().get(Knob::WakeLines)) {
+        view_lines(snap, c, meta, &mut lines)?;
     }
-    let mut parts = match whole {
-        true => vec![lines],
-        false => parts(
-            lines,
-            s.cfg.get(Knob::PartLines),
-            s.cfg.get(Knob::PartChars),
-        ),
-    }
-    .into_iter();
-    let part = parts.next().unwrap_or_default();
-    let more = parts.next().is_some();
-    if from > 0 || more {
-        writeln!(out, "{IN_PARTS}")?;
-    }
-    for l in dated(&part) {
-        writeln!(out, "{l}")?;
-    }
-    match part.last().filter(|_| more) {
-        Some(l) => writeln!(
-            out,
-            "Not awake yet. Run: {ME} view {}{}",
-            l.c.end(),
-            meta.flags()
-        )?,
-        None => writeln!(
-            out,
-            "You are awake. Zoom the marked lines that touch your task before you act."
-        )?,
-    }
-    Ok(ExitCode::SUCCESS)
+    let mut text: String = dated(&lines).into_iter().map(|l| l + "\n").collect();
+    text += "You are awake. Zoom the marked lines that touch your task before you act.\n";
+    Ok(text)
 }
 
 /// Line `c`, or its halves' lines while its summary is not built; tool calls have none.
@@ -612,7 +624,7 @@ fn zoom_cmd(
     let Some(text) = zoom(s, c.id(), c.n(), Some(meta))? else {
         bail!("No line {c}.");
     };
-    let (text, n) = page(&text, s.cfg().get(Knob::PartChars), part)?;
+    let (text, n) = page(&text, PART, part)?;
     writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(text))?;
     if part < n {
         writeln!(

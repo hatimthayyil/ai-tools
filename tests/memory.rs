@@ -50,6 +50,7 @@ struct Out {
 fn runtime(backend: Arc<dyn Backend>) -> Runtime {
     Runtime {
         backend: Box::new(move |_| Ok(backend.clone())),
+        terminal: false,
         opts: opts(VIEW, 8),
         summarise_on_note: false,
         before_release: Box::new(|| {}),
@@ -812,61 +813,40 @@ fn a_life_through_the_cli() {
     );
     assert!(ids.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0), "{view}");
     assert_eq!(ids[7].0 + ids[7].1, 42, "{view}");
-    let straddled = ids.iter().find(|(id, n)| *id < 5 && id + n > 5).unwrap();
-    let resumed = run(d, &["view", "5"]).stdout;
-    let rids = line_ids(&resumed);
-    assert_eq!(rids[0].0, 5, "a resumed read starts at its id: {resumed}");
-    assert!(
-        rids.iter()
-            .take_while(|(id, _)| *id < straddled.0 + straddled.1)
-            .all(|(_, n)| *n < straddled.1),
-        "the block over it is split: {resumed}"
-    );
-    assert!(tiles(&rids, 5, 42), "{resumed}");
-    assert!(
-        resumed.starts_with("Your memory comes in parts"),
-        "{resumed}"
-    );
     assert_eq!(run(d, &["config", "WAKE_LINES="]).code, 0);
 
-    assert_eq!(run(d, &["config", "PART_CHARS=600"]).code, 0);
-    let next = Regex::new(r"\nNot awake yet\. Run: ai memory view (\d+)\n$").unwrap();
-    let (mut from, mut all) = (0, Vec::new());
-    for k in 0.. {
-        let r = run(d, &["view", &from.to_string()]);
-        assert_eq!(r.code, 0, "{}", r.stderr);
-        let mut lines = r.stdout.lines();
-        assert!(
-            lines
-                .next()
-                .unwrap()
-                .starts_with("Your memory comes in parts")
-        );
-        assert!(
-            is_day(lines.next().unwrap()),
-            "every part opens with a date header: {}",
-            r.stdout
-        );
-        all.extend(line_ids(&r.stdout));
-        if k == 0 {
-            run(d, &["note", "lands between two parts"]);
-        }
-        match next.captures(&r.stdout) {
-            Some(c) => from = c[1].parse().unwrap(),
-            None => {
-                assert!(r.stdout.ends_with(&format!("\n{AWAKE}\n")));
-                assert!(r.stdout.contains("\n42|lands between two parts\n"));
-                break;
-            }
-        }
-    }
-    assert!(tiles(&all, 0, 43), "parts tile the log: {all:?}");
+    let one = run(d, &["view"]).stdout;
+    assert!(is_day(one.lines().next().unwrap()), "{one}");
+    assert!(
+        one.ends_with(&format!("\n{AWAKE}\n")),
+        "a short view is one part, with no footer: {one}"
+    );
+    let mark = Store::open(d)
+        .unwrap()
+        .snapshot()
+        .unwrap()
+        .mark()
+        .to_string();
+    run(d, &["note", "lands after the read"]);
+    assert_eq!(run(d, &["view", "--at", &mark]).stdout, one);
     let whole = run(d, &["view", "--whole"]).stdout;
-    assert!(is_day(whole.lines().next().unwrap()), "{whole}");
-    assert!(whole.ends_with(&format!("\n{AWAKE}\n")), "{whole}");
-    assert!(tiles(&line_ids(&whole), 0, 43), "one part: {whole}");
-    assert!(run(d, &["view", "43"]).stderr.contains("No message 43"));
-    assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
+    assert!(whole.contains("\n42|lands after the read\n"), "{whole}");
+    assert!(tiles(&line_ids(&whole), 0, 43), "{whole}");
+    assert_eq!(
+        run(d, &["view", "--part", "2"]).stderr,
+        "No part 2: it has 1."
+    );
+    assert!(
+        run(d, &["view", "--at", "xyz"])
+            .stderr
+            .contains("'xyz' is not a memory state")
+    );
+    let unknown = "0".repeat(40);
+    assert!(
+        run(d, &["view", "--at", &unknown])
+            .stderr
+            .contains("is not a state of this memory")
+    );
 
     let z = run(d, &["zoom", "0+32"]).stdout;
     assert_eq!(z.lines().filter(|l| l.contains('|')).count(), 4, "{z}");
@@ -896,28 +876,7 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["zoom", "0+64"]).stderr, "No line 0+64.");
     assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
     assert!(run(d, &["zoom", "x"]).stderr.contains("not a line id"));
-    let whole = run(d, &["zoom", "3"]).stdout;
-    assert!(whole.len() > 40, "{whole}");
-    assert_eq!(run(d, &["config", "PART_CHARS=10"]).code, 0);
-    let mut parts = String::new();
-    for k in 1.. {
-        let p = run(d, &["zoom", "3", &k.to_string()]).stdout;
-        let next = Regex::new(&format!(
-            r"\nPart {k} of \d+\. Next: ai memory zoom 3 {}\n$",
-            k + 1
-        ))
-        .unwrap();
-        match next.find(&p) {
-            Some(m) => parts += &p[..m.start()],
-            None => {
-                parts += &p;
-                break;
-            }
-        }
-    }
-    assert_eq!(parts, whole);
     assert!(run(d, &["zoom", "3", "99"]).stderr.contains("No part 99"));
-    assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
 
     let origin = Store::open(d).unwrap().origin().to_string();
     let show = run(d, &["show", "40"]).stdout;
@@ -1014,6 +973,81 @@ fn a_life_through_the_cli() {
             .stderr
             .contains("not a real date")
     );
+}
+
+#[test]
+fn long_output_comes_in_parts_of_one_state_and_whole_on_a_terminal() {
+    let (tmp, d) = store();
+    let d = &d;
+    let seed = tmp.path().join("seed.txt");
+    let big = format!("big {}", "y ".repeat(15_000))
+        .trim_end()
+        .to_string();
+    let notes: String = (0..80)
+        .map(|k| format!("2020-01-01 note {k} {}\n", "x".repeat(260)))
+        .chain([format!("2020-01-02 {big}\n")])
+        .collect();
+    fs::write(&seed, notes).unwrap();
+    assert_eq!(run(d, &["import", seed.to_str().unwrap()]).code, 0);
+
+    let first = run(d, &["view", "--time"]).stdout;
+    let (body, footer) = first.trim_end().rsplit_once('\n').unwrap();
+    let next = footer
+        .strip_prefix("Part 1 of 2. Next: ai memory ")
+        .unwrap();
+    assert!(
+        Regex::new(r"^view --part 2 --at [0-9a-f]{40} --time$")
+            .unwrap()
+            .is_match(next),
+        "{next}"
+    );
+    run(d, &["note", "lands between two parts"]);
+    let args: Vec<&str> = next.split(' ').collect();
+    let second = run(d, &args).stdout;
+    let (rest, footer) = second.trim_end().rsplit_once('\n').unwrap();
+    assert_eq!(footer, "Part 2 of 2.");
+    let whole = run(d, &["view", "--whole", "--at", args[4], "--time"]).stdout;
+    assert_eq!(
+        format!("{body}\n{rest}\n"),
+        whole,
+        "the parts come from one state"
+    );
+    assert!(!whole.contains("lands between"), "{whole}");
+    assert!(whole.ends_with(&format!("\n{AWAKE}\n")), "{whole}");
+
+    let terminal = Runtime {
+        terminal: true,
+        ..runtime(Arc::new(Model(Arc::new(Fake::summaries()))))
+    };
+    let shown = run_rt(d, &terminal, &["view"]).stdout;
+    assert!(
+        shown.contains("\n81|lands between two parts\n")
+            && shown.ends_with(&format!("\n{AWAKE}\n")),
+        "a terminal reads the latest whole: {shown}"
+    );
+    assert!(
+        run_rt(d, &terminal, &["view", "--part", "1"])
+            .stdout
+            .contains("\nPart 1 of 2. Next: ai memory view --part 2 --at ")
+    );
+
+    let mut parts = String::new();
+    for k in 1.. {
+        let p = run(d, &["zoom", "80", &k.to_string()]).stdout;
+        let next = Regex::new(&format!(
+            r"\nPart {k} of 2\. Next: ai memory zoom 80 {}\n$",
+            k + 1
+        ))
+        .unwrap();
+        match next.find(&p) {
+            Some(m) => parts += &p[..m.start()],
+            None => {
+                parts += &p;
+                break;
+            }
+        }
+    }
+    assert_eq!(parts, format!("2020-01-02\n80|{big}\n"));
 }
 
 #[test]
@@ -1126,13 +1160,13 @@ fn a_bad_knob_names_its_key() {
     let (_tmp, d) = store();
     fs::write(
         d.join("config"),
-        fs::read_to_string(d.join("config")).unwrap() + "[ai \"memory\"]\n\tpartChars = lots\n",
+        fs::read_to_string(d.join("config")).unwrap() + "[ai \"memory\"]\n\tentryChars = lots\n",
     )
     .unwrap();
     let r = run(&d, &["view"]);
     assert!(
         r.stderr
-            .contains("ai.memory.partChars must be a positive whole number"),
+            .contains("ai.memory.entryChars must be a positive whole number"),
         "{}",
         r.stderr
     );

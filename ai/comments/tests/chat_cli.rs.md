@@ -12,6 +12,7 @@ Lines are written through the library (`Thread::put_line`), keyed by `turn_ends`
 - `list`: threads with turns, newest time and branches; their sessions newest first, attached or detached, the calling one marked.
 - `view` syncs its session and writes no line, its unsummarised turns shown by their messages; outside the session it reads without a sync; `compact-session` then writes the lines.
 - `view` in three parts whose footers chain (`-t <name> --part --at`), joined equal to `compact-session`'s output, although the session syncs a new turn between parts; in and out of the session alike.
+- `ai view`: `--whole` is the memory alone outside a session and memory then thread inside one; piped, it comes in parts whose `--at <commit>[:<thread>:<state>]` footers chain and join to `--whole`; each read logs one memory `view --at`.
 - `zoom` of a node, a node with an unbuilt half, a turn, an item, a long item in two parts, by session and by `-t`; bad ids.
 - `start`: argv and directory, binding with the future transcript path, graft of a second session; `view` of a thread with nothing yet. The seed: `compact-session` of a launched session prints nothing on a new thread, and the view ending at its graft on an existing one.
 - `resume`: unknown thread; the newest session resumed and re-attached in the directory it ran in, with the launcher's args, also from a subdirectory; a session that ran outside the repository and one whose transcript is gone start a new session, with the reason on stderr and the same args.

@@ -4,5 +4,6 @@ pub mod git;
 pub mod jsonl;
 pub mod memory;
 pub mod notes;
+pub mod page;
 pub mod record;
 pub mod view;

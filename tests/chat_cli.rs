@@ -13,6 +13,7 @@ use ai_tools::{
     chat::{Chat, FOLD_LINES, Key, LineKind, NOT_ATTACHED, Tree, claude, turns},
     memory::Who,
 };
+use regex::Regex;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -825,23 +826,27 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     let s = Sandbox::new();
     let memory = |args: &[&str]| s.top(None, &[&["memory"][..], args].concat());
     assert_eq!(code(&memory(&["init"])), 0);
-    for k in 0..30 {
-        assert_eq!(code(&memory(&["note", &format!("note {k}")])), 0);
+    for k in 0..80 {
+        let note = format!("note {k} {}", "n".repeat(260));
+        assert_eq!(code(&memory(&["note", &note])), 0);
     }
-    assert_eq!(code(&memory(&["config", "PART_CHARS=200"])), 0);
-    assert!(stdout(&memory(&["view"])).starts_with("Your memory comes in parts"));
 
-    let alone = s.top(None, &["view"]);
+    let alone = s.top(None, &["view", "--whole"]);
     assert_eq!((code(&alone), stderr(&alone).as_str()), (0, ""));
     let alone = stdout(&alone);
     assert!(alone.starts_with("# Memory\n\n"), "{alone}");
-    assert!(alone.contains("\n0|note 0\n") && alone.contains("\n29|note 29\n"));
-    assert!(!alone.contains("comes in parts"), "{alone}");
+    assert!(alone.contains("\n0|note 0 n") && alone.contains("\n79|note 79 n"));
+    assert!(!alone.contains("\nPart "), "{alone}");
     assert!(
         alone.ends_with(
             "\nYou are awake. Zoom the marked lines that touch your task before you act.\n"
         ),
         "with no thread, only the memory: {alone}"
+    );
+    assert_eq!(
+        paged(&s, None, &["view"], "ai "),
+        alone,
+        "an agent reads it in parts"
     );
 
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));
@@ -849,21 +854,34 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
         s.ai_in("s-1", &["attach", "dev"]),
         "Attached to dev, a new thread.\n",
     );
-    let both = stdout(&s.top(Some("s-1"), &["view"]));
+    let both = stdout(&s.top(Some("s-1"), &["view", "--whole"]));
     let (mem, thread) = both.split_once("\n# Thread `dev`\n").expect(&both);
     assert_eq!(mem, alone);
     assert!(thread.contains("|user: question 1"), "{thread}");
+    let first = stdout(&s.top(Some("s-1"), &["view"]));
+    assert!(
+        Regex::new(
+            r"\nPart 1 of 2\. Next: ai view --part 2 --at [0-9a-f]{40}:dev:\d+\.\d+\.\d+\n$"
+        )
+        .unwrap()
+        .is_match(&first),
+        "{first}"
+    );
+    assert_eq!(paged(&s, Some("s-1"), &["view"], "ai "), both);
     assert_eq!(
-        stdout(&s.top(None, &["view"])),
+        stdout(&s.top(None, &["view", "--whole"])),
         both,
         "outside a session, the repository's only thread"
     );
     assert_eq!(
-        stdout(&s.top(Some("s-2"), &["view"])),
+        stdout(&s.top(Some("s-2"), &["view", "--whole"])),
         alone,
         "a session attached to none reads no thread unless named"
     );
-    assert_eq!(stdout(&s.top(Some("s-2"), &["view", "dev"])), both);
+    assert_eq!(
+        stdout(&s.top(Some("s-2"), &["view", "dev", "--whole"])),
+        both
+    );
 
     s.transcript("s-3", &talk(3, |k| format!("other {k}")));
     ok(
@@ -879,11 +897,33 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     assert_eq!(
         usage
             .lines()
-            .filter(|l| l.contains(r#""cmd":"view","args":["--whole"]"#))
+            .filter(|l| l.contains(r#""cmd":"view","args":["--at""#))
             .count(),
-        5,
+        10,
         "each ai view reads the memory once, after its thread is known: {usage}"
     );
+}
+
+/// The output of `args` run as `ai` in `session`, and then each part's next command: the parts
+/// joined, without their footers.
+fn paged(s: &Sandbox, session: Option<&str>, args: &[&str], prefix: &str) -> String {
+    let mut out = String::new();
+    let mut args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    loop {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let o = s.top(session, &argv);
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        let o = stdout(&o);
+        let Some((body, footer)) = o.trim_end().rsplit_once("\nPart ") else {
+            return out + &o;
+        };
+        out += body;
+        out.push('\n');
+        match footer.split_once(&format!("Next: {prefix}")) {
+            Some((_, next)) => args = next.split(' ').map(str::to_string).collect(),
+            None => return out,
+        }
+    }
 }
 
 #[test]

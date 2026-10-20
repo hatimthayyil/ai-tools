@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::memory::{
     meta::{Meta, dated},
@@ -52,51 +52,4 @@ pub fn zoom(s: &Snapshot, id: u64, n: u64, meta: Option<&Meta>) -> Result<Option
             .collect(),
     };
     Ok(Some(lines.join("\n")))
-}
-
-/// `text` in parts of at most `max` bytes, each cut after its last line end when that keeps
-/// at least half of it, else at a character boundary.
-pub fn pages(text: &str, max: u64) -> Vec<&str> {
-    let max = max.max(1) as usize;
-    let (mut out, mut rest) = (Vec::new(), text);
-    while rest.len() > max {
-        let cut = rest.floor_char_boundary(max);
-        let at = match rest[..cut].rfind('\n') {
-            Some(k) if k + 1 >= cut / 2 => k + 1,
-            _ if cut == 0 => rest.ceil_char_boundary(1),
-            _ => cut,
-        };
-        out.push(&rest[..at]);
-        rest = &rest[at..];
-    }
-    if !rest.is_empty() || out.is_empty() {
-        out.push(rest);
-    }
-    out
-}
-
-/// Part `part` (from 1) of `text` paged by [`pages`], and how many parts there are.
-pub fn page(text: &str, max: u64, part: u64) -> Result<(&str, u64)> {
-    let all = pages(text, max);
-    let n = all.len() as u64;
-    match part.checked_sub(1).and_then(|k| all.get(k as usize)) {
-        Some(p) => Ok((p, n)),
-        None => bail!("No part {part}: it has {n}."),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pages_cut_at_line_ends_and_characters() {
-        assert_eq!(pages("abc", 10), ["abc"]);
-        assert_eq!(pages("ab\ncdef\ngh", 8), ["ab\ncdef\n", "gh"]);
-        assert_eq!(pages("a\nbcdefgh", 6), ["a\nbcde", "fgh"]);
-        assert_eq!(pages("ééé", 3), ["é", "é", "é"]);
-        assert_eq!(pages("ééé", 1), ["é", "é", "é"]);
-        assert_eq!(page("ab\ncd", 3, 2).unwrap(), ("cd", 2));
-        assert!(page("ab", 3, 2).is_err() && page("ab", 3, 0).is_err());
-    }
 }

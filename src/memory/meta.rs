@@ -149,28 +149,6 @@ pub fn dated(lines: &[Line]) -> Vec<String> {
     out
 }
 
-/// `lines` in parts of at most `max_lines` lines and `max_chars` bytes as [`dated`] prints
-/// them, each part starting with its header; a part holds at least one line.
-pub fn parts(lines: Vec<Line>, max_lines: u64, max_chars: u64) -> Vec<Vec<Line>> {
-    let (mut parts, mut cur): (Vec<Vec<Line>>, Vec<Line>) = (Vec::new(), Vec::new());
-    let (mut count, mut size) = (0, 0);
-    for l in lines {
-        let header = cur.last().is_none_or(|p: &Line| p.day != l.day);
-        let (n, b) = (1 + u64::from(header), l.size(header));
-        if !cur.is_empty() && (count + n > max_lines || size + b > max_chars) {
-            parts.push(std::mem::take(&mut cur));
-            (count, size) = (2, l.size(true));
-        } else {
-            (count, size) = (count + n, size + b);
-        }
-        cur.push(l);
-    }
-    if !cur.is_empty() {
-        parts.push(cur);
-    }
-    parts
-}
-
 impl Meta {
     /// Line `c` showing `text`, over `ms`, the messages it covers in order. Only the first
     /// and last are read for the dates: the log is in time order.
@@ -260,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn headers_mark_each_new_day_and_open_every_part() {
+    fn headers_mark_each_new_day() {
         let (a, b) = ("2026-10-04", "2026-10-05");
         let ls = vec![
             line(Coord::new(3, 0), a),
@@ -269,21 +247,6 @@ mod tests {
             line(Coord::leaf(10), b),
         ];
         assert_eq!(dated(&ls), [a, "0+8|x", "8|x", b, "9|x", "10|x"]);
-        let ps = parts(ls.clone(), 4, 1000);
-        assert_eq!(ps, [ls[..2].to_vec(), ls[2..].to_vec()]);
-        let ps = parts(ls.clone(), 2, 1000);
-        assert_eq!(ps.len(), 4);
-        assert_eq!(
-            dated(&ps[1]),
-            [a, "8|x"],
-            "a continuation repeats its header"
-        );
-        let bytes = |p: &[Line]| dated(p).iter().map(|l| l.len() as u64 + 1).sum::<u64>();
-        for max in [17, 23, 40] {
-            for p in parts(ls.clone(), 100, max) {
-                assert!(p.len() == 1 || bytes(&p) <= max, "{max}: {p:?}");
-            }
-        }
     }
 
     #[test]
