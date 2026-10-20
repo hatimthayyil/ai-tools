@@ -67,7 +67,7 @@ fn step_text(step: &Step) -> String {
 
 /// The user message of a call: the step alone, with no ids (the model would copy them).
 pub fn message(job: &Job) -> Vec<Block> {
-    vec![Block::new(step_text(&job.step), false)]
+    vec![Block::new(step_text(&job.step))]
 }
 
 /// Asks for [`WORDS`] words, or fewer for a line whose words are long enough to overrun
@@ -164,12 +164,7 @@ pub fn write_line(
             tries.push(line);
             break;
         }
-        reply = ask(
-            &mut *conv,
-            &[Block::new(retry_text(&line), false)],
-            true,
-            spent,
-        )?;
+        reply = ask(&mut *conv, &[Block::new(retry_text(&line))], true, spent)?;
         tries.push(line);
     }
     let who = Who {
@@ -473,7 +468,6 @@ mod tests {
         };
         let m = message(&job);
         assert_eq!(m.len(), 1, "the step alone: no context");
-        assert!(!m[0].cache);
         assert!(m[0].text.starts_with(&format!(
             "For scale only, this meaningless filler is exactly 50 words:\n{SCALE}\n\n"
         )));

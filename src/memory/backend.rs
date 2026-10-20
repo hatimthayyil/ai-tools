@@ -5,19 +5,15 @@ use anyhow::Result;
 /// Makes the backend of a command, keeping its calls in the directory it is given.
 pub type MakeBackend = dyn Fn(&Path) -> Result<Arc<dyn Backend>>;
 
-/// One text block of a user message; `cache` asks for a cache breakpoint after it.
+/// One text block of a user message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub text: String,
-    pub cache: bool,
 }
 
 impl Block {
-    pub fn new(text: impl Into<String>, cache: bool) -> Block {
-        Block {
-            text: text.into(),
-            cache,
-        }
+    pub fn new(text: impl Into<String>) -> Block {
+        Block { text: text.into() }
     }
 }
 

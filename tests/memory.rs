@@ -202,7 +202,7 @@ impl Conversation for FakeConv {
             };
             let ids = Regex::new(r"(?m)^\d+\+\d+\|").unwrap();
             assert!(
-                !step.cache && !ids.is_match(&step.text) && !step.text.contains(PLACEHOLDER),
+                !ids.is_match(&step.text) && !step.text.contains(PLACEHOLDER),
                 "{}",
                 step.text
             );

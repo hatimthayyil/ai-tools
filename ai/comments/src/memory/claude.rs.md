@@ -1,6 +1,8 @@
 # claude.rs
 
-Claude Code as the compactor's backend, flags from `ai/research/20261004T172045---shitty-optchat.md` §1/§4: `claude -p --model sonnet --effort medium`, stream-json in/out with `--verbose --include-partial-messages`, `--no-session-persistence --setting-sources "" --strict-mcp-config` (no hooks, plugins, CLAUDE.md, memory or user MCP leak into the request), `--system-prompt-file`, `--tools "" --safe-mode`; env `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` (a 5 m mark after a 1 h one is a 400) and `DISABLE_PROMPT_CACHING=1` (our marks only).
+Claude Code as the compactor's backend, flags from `ai/research/20261004T172045---shitty-optchat.md` §1/§4: `claude -p --model sonnet --effort medium`, stream-json in/out with `--verbose --include-partial-messages`, `--no-session-persistence --setting-sources "" --strict-mcp-config` (no hooks, plugins, CLAUDE.md, memory or user MCP leak into the request), `--system-prompt-file`, `--tools "" --safe-mode`; env `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`: 5 m cache writes cost 1.25× input against 2× for 1 h, and a run's calls fall well within 5 m.
+
+- Claude Code places its own cache marks; callers mark nothing. A retry reads its conversation from the cache (61–75% less input cost) and a run's calls share the cached system prompt; a long turn line's first try pays the write premium (+13–25% input). Measured net, at 1 retry in 12: chat even, memory cheaper.
 
 - `compactor` resolves `claude` on `PATH` up front, so a machine without Claude Code fails at once instead of retrying forever. `compactor_at` takes the program (tests).
 - System prompts are written once per text into a temp dir owned by the backend.

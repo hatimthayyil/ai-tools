@@ -612,7 +612,7 @@ impl<'t> Run<'t> {
                 let at = Instant::now();
                 let mut spent = Spend::default();
                 let r = catch_unwind(AssertUnwindSafe(|| {
-                    let message = [Block::new(task, false)];
+                    let message = [Block::new(task)];
                     let (who, line) = write_line(&*backend, PROMPT, &message, &k, &mut spent)?;
                     if line.len() > NODE {
                         bail!(

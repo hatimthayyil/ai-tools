@@ -156,7 +156,7 @@ fn split(reply: &str) -> ((String, String), Option<String>) {
 /// do not fit, up to [`TRIES`]; past that, the shortest well-formed try.
 pub fn summarise(backend: &dyn Backend, input: &str) -> Result<(String, String)> {
     let mut conv = backend.open(PROMPT)?;
-    let mut reply = conv.say(&[Block::new(ask(input), false)])?;
+    let mut reply = conv.say(&[Block::new(ask(input))])?;
     let mut tries = Vec::new();
     for k in 1..=TRIES {
         let (sg, problem) = split(&reply);
@@ -167,7 +167,7 @@ pub fn summarise(backend: &dyn Backend, input: &str) -> Result<(String, String)>
             tries.push(sg);
         }
         if k < TRIES {
-            reply = conv.say(&[Block::new(problem, false)])?;
+            reply = conv.say(&[Block::new(problem)])?;
         }
     }
     match tries.into_iter().min_by_key(|(s, g)| s.len() + g.len()) {

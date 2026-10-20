@@ -410,8 +410,7 @@ impl ClaudeCode {
 
     pub fn command(&self, system_file: &Path, session: &str) -> Command {
         let mut c = command(&self.program, &self.model, &self.effort, system_file, "");
-        c.args(["--safe-mode", "--session-id", session])
-            .env("DISABLE_PROMPT_CACHING", "1");
+        c.args(["--safe-mode", "--session-id", session]);
         c
     }
 }
@@ -479,10 +478,7 @@ pub fn usage(ev: &Value, before: f64) -> Usage {
 pub fn user_message(message: &[Block]) -> String {
     let content: Vec<Value> = message
         .iter()
-        .map(|b| match b.cache {
-            true => json!({"type": "text", "text": b.text, "cache_control": {"type": "ephemeral"}}),
-            false => json!({"type": "text", "text": b.text}),
-        })
+        .map(|b| json!({"type": "text", "text": b.text}))
         .collect();
     json!({"type": "user", "message": {"role": "user", "content": content}}).to_string()
 }
@@ -591,7 +587,7 @@ done
         let calls = tmp.path().join(CALLS);
         let c = ClaudeCode::compactor_at(program.into(), "sonnet", &calls).unwrap();
         let mut conv = c.open("Write a line.").unwrap();
-        assert_eq!(conv.say(&[Block::new("a", false)]).unwrap(), "r1");
+        assert_eq!(conv.say(&[Block::new("a")]).unwrap(), "r1");
         let first = conv.used();
         assert_eq!(
             (
@@ -603,7 +599,7 @@ done
             (10, 1, 2, 3)
         );
         assert!((first.cost - 0.15).abs() < 1e-9, "{first:?}");
-        assert_eq!(conv.say(&[Block::new("b", false)]).unwrap(), "r2");
+        assert_eq!(conv.say(&[Block::new("b")]).unwrap(), "r2");
         assert!((conv.used().cost - 0.1).abs() < 1e-9, "{:?}", conv.used());
         let id = conv.session();
         drop(conv);
@@ -612,7 +608,7 @@ done
         let call: Value = serde_json::from_slice(lines.next().unwrap()).unwrap();
         assert_eq!(call["type"], "ai.call");
         assert_eq!(call["system"], "Write a line.");
-        assert_eq!(call["env"]["DISABLE_PROMPT_CACHING"], "1");
+        assert_eq!(call["env"]["CLAUDE_CODE_PROMPT_CACHE_TTL"], "5m");
         assert!(call["args"].as_array().unwrap().contains(&json!(id)));
         let rest: Vec<&[u8]> = lines.collect();
         let result = |n: u32| {
@@ -623,7 +619,7 @@ done
         let sent = |t: &str| {
             format!(
                 "{{\"type\":\"ai.sent\",\"line\":{}}}\n",
-                user_message(&[Block::new(t, false)])
+                user_message(&[Block::new(t)])
             )
         };
         let system = format!("{{\"type\":\"system\",\"session_id\":\"{id}\"}}\n");
@@ -684,26 +680,19 @@ done
             .map(|(k, v)| (k.to_str().unwrap(), v.and_then(|v| v.to_str())))
             .collect();
         env.sort();
-        assert_eq!(
-            env,
-            [
-                ("CLAUDE_CODE_PROMPT_CACHE_TTL", Some("5m")),
-                ("DISABLE_PROMPT_CACHING", Some("1"))
-            ]
-        );
+        assert_eq!(env, [("CLAUDE_CODE_PROMPT_CACHE_TTL", Some("5m"))]);
         assert_eq!(c.model(), "sonnet");
     }
 
     #[test]
     fn stream_json_in_and_out() {
-        let m = user_message(&[Block::new("a", true), Block::new("b", false)]);
+        let m = user_message(&[Block::new("a"), Block::new("b")]);
         let v: Value = serde_json::from_str(&m).unwrap();
         assert_eq!(v["type"], "user");
         assert_eq!(
-            v["message"]["content"][0]["cache_control"]["type"],
-            "ephemeral"
+            v["message"]["content"],
+            json!([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}])
         );
-        assert!(v["message"]["content"][1].get("cache_control").is_none());
         let result = |line: &str| reply(&serde_json::from_str(line).unwrap());
         let ok = result(
             r#"{"type":"result","is_error":false,"result":" a line ","stop_reason":"end_turn"}"#,
