@@ -1,0 +1,110 @@
+tests/rollup.rs
+  s_77b04d9838f161::t_ac3f73cab7a104 968,970,973,981,984
+tests/fixtures/memory-v1.golden
+  s_77b04d9838f161::t_3feefa06c1aed7 1,23,118,122
+ai/comments/src/notes/cli.rs.md
+  s_77b04d9838f161::t_b3bb2842422f20 5-6
+tests/memory.rs
+  s_77b04d9838f161::t_8dd385d202ec0f 716,728,730,773,793,806,823,826,854,858,1019,1122,1135,1146,1212,1214,1223,1270-1271,1280,1282,1285,1299,1312
+  s_77b04d9838f161::t_302087de46c161 744,756,758-759,761,763-764,767-768,770,796-798,801,803-804
+  s_77b04d9838f161::t_9d58bb3105b8a4 686,1176
+ai/comments/src/memory/cli.rs.md
+  s_77b04d9838f161::t_822054325be4b5 4-5,14-15
+  s_77b04d9838f161::t_b3bb2842422f20 6-7,13,21
+  s_77b04d9838f161::t_a1206c44069c35 17
+src/memory/cli.rs
+  s_77b04d9838f161::t_28de8d1a10e13f 76-78
+  s_77b04d9838f161::t_1c4faf6857810e 49,69,112-113,131,155,170-171,179,201,203,220,224,244-245,247,309,311,399,412,418,440,453,460,500
+  s_77b04d9838f161::t_3feefa06c1aed7 85
+ai/comments/src/chat/cli.rs.md
+  s_77b04d9838f161::t_b3bb2842422f20 6,11,22,29,36
+ai/backlog.md
+  s_77b04d9838f161::t_035b5d36803d25 5
+  s_77b04d9838f161::t_890198e813399c 18,20
+src/memory/store.rs
+  s_77b04d9838f161::t_3feefa06c1aed7 209
+src/view.rs
+  s_77b04d9838f161::t_e147580ece3d25 33
+  s_77b04d9838f161::t_beb3b3dc74a074 13-14
+tests/chat_cli.rs
+  s_77b04d9838f161::t_9d58bb3105b8a4 388,411
+  s_77b04d9838f161::t_2b2da04db77993 696,725,728,1028,1051,1054-1055,1063,1087,1091,1095,1099,1112,1116,1118,1130,1134,1138,1142,1174,1194,1200,1214,1229,1245
+  s_77b04d9838f161::t_c280e23aadc9dc 1019,1077,1171,1205
+  s_77b04d9838f161::t_ac3f73cab7a104 64
+ai/comments/src/chat/view.rs.md
+  s_77b04d9838f161::t_822054325be4b5 11
+src/memory/config.rs
+  s_77b04d9838f161::t_3feefa06c1aed7 57
+ai/comments/src/memory/cover.rs.md
+  s_77b04d9838f161::t_822054325be4b5 3,5
+ai/comments/src/memory/grep.rs.md
+  s_77b04d9838f161::t_822054325be4b5 4
+ai/comments/tests/memory.rs.md
+  s_77b04d9838f161::t_822054325be4b5 12-13
+  s_77b04d9838f161::t_b3bb2842422f20 7,11
+ai/comments/src/chat/store.rs.md
+  s_77b04d9838f161::t_b3bb2842422f20 42
+ai/comments/src/chat/summarise.rs.md
+  s_77b04d9838f161::t_b3bb2842422f20 6-7,16,22,27,30,37
+ai/comments/tests/cli.rs.md
+  s_77b04d9838f161::t_822054325be4b5 13,16-17
+  s_77b04d9838f161::t_b3bb2842422f20 15,18
+ai/comments/tests/chat_cli.rs.md
+  s_77b04d9838f161::t_b3bb2842422f20 8,19-20
+src/chat/cli.rs
+  s_77b04d9838f161::t_0c52062747bca8 34,122,141,143,270,382,399,761-762,806
+ai/comments/src/view.rs.md
+  s_77b04d9838f161::t_822054325be4b5 3,5
+ai/comments/src/memory/stats.rs.md
+  s_77b04d9838f161::t_822054325be4b5 4,6,9
+ai/comments/src/memory/meta.rs.md
+  s_77b04d9838f161::t_822054325be4b5 3,7,10
+ai/glossary.md
+  s_77b04d9838f161::t_beca8244b260a8 9,11,13,15-16,60
+ai/comments/src/memory/store.rs.md
+  s_77b04d9838f161::t_822054325be4b5 17
+ai/evals/compactor/README.md
+  s_77b04d9838f161::t_beca8244b260a8 8
+ai/spec.md
+  s_77b04d9838f161::t_beca8244b260a8 6,8,10
+ai/comments/src/memory/hook.rs.md
+  s_77b04d9838f161::t_822054325be4b5 11
+ai/comments/tests/rollup.rs.md
+  s_77b04d9838f161::t_b3bb2842422f20 8
+ai/comments/plugins/claude/hooks/register.ts.md
+  s_77b04d9838f161::t_b3bb2842422f20 20
+src/memory/cover.rs
+  s_77b04d9838f161::t_3feefa06c1aed7 26
+src/chat/summarise.rs
+  s_77b04d9838f161::t_5ad736dc395422 28,35-36,47-49,51,68,71,77
+README.md
+  s_77b04d9838f161::t_beca8244b260a8 5,25,56
+src/memory/stats.rs
+  s_77b04d9838f161::t_3feefa06c1aed7 16
+ai/comments/src/memory/usage.rs.md
+  s_77b04d9838f161::t_822054325be4b5 3
+tests/notes.rs
+  s_77b04d9838f161::t_922e285b73e0f1 398,416,420,431,454,460,494,528,555,632,637,644,662,672,695
+src/notes/cli.rs
+  s_77b04d9838f161::t_41f821d3543a2a 66,102,140,426
+ai/comments/src/memory/compact.rs.md
+  s_77b04d9838f161::t_b3bb2842422f20 3
+tests/cli.rs
+  s_77b04d9838f161::t_536fd0932f69dc 168,176,182,401-402,451,527,548,589,638,718,852,896-897
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c51984109bf555991db42aeae8a3f8ef6baf6f4a",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
