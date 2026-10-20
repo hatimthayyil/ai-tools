@@ -52,7 +52,7 @@ ai chat list                         # the threads here and their sessions
 ai chat view -t dev                  # dev's view, from the summaries written so far
 ai chat zoom -t dev <id>             # open a line of it; --tool-output adds tool output
 ai chat grep -t dev <regex>          # search it
-ai chat summarise -t dev             # write its summaries now; --rebuild, --model, --dry-run
+ai chat summarise -t dev             # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
 Inside a session, `/ai attach <name>` and `/ai detach`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with the thread's view; if it cannot build the view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.

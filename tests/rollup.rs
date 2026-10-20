@@ -19,6 +19,7 @@ use ai_tools::{
     memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, claude},
 };
 use anyhow::{Result, bail};
+use indicatif::ProgressBar;
 use regex::Regex;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -273,7 +274,7 @@ fn key(level: u32, last: u64) -> Key {
 }
 
 fn summarised(t: &Thread, fake: &Arc<Fake>) -> Built {
-    summarise(t, fake.backend(), OnFail::Continue)
+    summarise(t, fake.backend(), OnFail::Continue, &ProgressBar::hidden())
         .unwrap()
         .expect("the lock is free")
 }
@@ -439,6 +440,7 @@ fn a_second_summariser_finds_nothing_to_build() {
         again.backend(),
         &keys,
         Instant::now() + Duration::from_secs(5),
+        &ProgressBar::hidden(),
     )
     .unwrap();
     assert_eq!((b, again.calls()), (Built::default(), 0));
@@ -521,14 +523,28 @@ fn build_makes_the_lines_asked_and_what_they_need() {
     let t = r.thread(&s);
     let fake = Fake::new();
     let deadline = Instant::now() + Duration::from_secs(10);
-    let b = build(&t, fake.backend(), &[key(2, e1), key(1, e2)], deadline).unwrap();
+    let b = build(
+        &t,
+        fake.backend(),
+        &[key(2, e1), key(1, e2)],
+        deadline,
+        &ProgressBar::hidden(),
+    )
+    .unwrap();
     assert_eq!((b.lines, b.calls), (6, 6));
     let got: Vec<String> = texts(&t).into_keys().collect();
     assert_eq!(got.len(), 6, "{got:?}");
     for k in [key(1, e0), key(1, e1), key(2, e1), key(1, e2)] {
         assert!(got.contains(&k.to_string()), "{k}");
     }
-    let err = build(&t, fake.backend(), &[key(1, e0 + 1)], deadline).unwrap_err();
+    let err = build(
+        &t,
+        fake.backend(),
+        &[key(1, e0 + 1)],
+        deadline,
+        &ProgressBar::hidden(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         format!("1@{} is not a line of thread t.", e0 + 1)
@@ -551,6 +567,7 @@ fn build_returns_at_its_deadline() {
         slow.backend(),
         &[key(1, e0), key(1, e1)],
         at + Duration::from_millis(200),
+        &ProgressBar::hidden(),
     )
     .unwrap();
     assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
@@ -573,7 +590,7 @@ fn a_held_lock_makes_a_second_summariser_exit_at_once() {
     let fake = Fake::new();
     let lock = t.try_lock().unwrap().expect("free");
     assert_eq!(
-        summarise(&t, fake.backend(), OnFail::Continue).unwrap(),
+        summarise(&t, fake.backend(), OnFail::Continue, &ProgressBar::hidden()).unwrap(),
         None
     );
     assert_eq!(fake.calls(), 0);
@@ -610,7 +627,7 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
                 .unwrap()
                 .thread("t")
                 .unwrap();
-            summarise(&t, slow.backend(), OnFail::Continue).unwrap()
+            summarise(&t, slow.backend(), OnFail::Continue, &ProgressBar::hidden()).unwrap()
         })
     };
     while slow.calls() == 0 {
@@ -618,7 +635,14 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
     }
     let fast = Fake::new();
     let at = Instant::now();
-    let b = build(&t, fast.backend(), &keys, at + Duration::from_secs(10)).unwrap();
+    let b = build(
+        &t,
+        fast.backend(),
+        &keys,
+        at + Duration::from_secs(10),
+        &ProgressBar::hidden(),
+    )
+    .unwrap();
     assert!(
         at.elapsed() >= Duration::from_millis(200),
         "{:?}",
@@ -655,6 +679,7 @@ fn build_gives_up_on_a_lock_held_past_its_deadline() {
         fake.backend(),
         &[key(1, e0)],
         at + Duration::from_millis(200),
+        &ProgressBar::hidden(),
     )
     .unwrap();
     let took = at.elapsed();
@@ -749,6 +774,7 @@ fn rewrite_drops_the_line_and_those_above_it() {
         fake.backend(),
         key(1, e0),
         Instant::now() + Duration::from_secs(5),
+        &ProgressBar::hidden(),
     )
     .unwrap()
     .expect("the lock is free");
@@ -762,7 +788,14 @@ fn rewrite_drops_the_line_and_those_above_it() {
     assert_eq!(summarised(&t, &fake).calls, 2, "the lines above, again");
     assert_eq!(lines(&t).len(), 7);
 
-    let err = rewrite(&t, fake.backend(), key(1, e0 + 1), Instant::now()).unwrap_err();
+    let err = rewrite(
+        &t,
+        fake.backend(),
+        key(1, e0 + 1),
+        Instant::now(),
+        &ProgressBar::hidden(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         format!("1@{} is not a line of thread t.", e0 + 1)
@@ -817,7 +850,7 @@ fn rebuild_drops_every_line_and_writes_them_again() {
     let before = texts(&t);
     let again = Fake::new();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let (dropped, b) = rebuild(&t, again.backend(), deadline)
+    let (dropped, b) = rebuild(&t, again.backend(), deadline, &ProgressBar::hidden())
         .unwrap()
         .expect("the lock is free");
     assert_eq!(dropped, before.len());
@@ -830,7 +863,13 @@ fn rebuild_drops_every_line_and_writes_them_again() {
     let held = t.try_lock().unwrap().expect("free");
     let at = Instant::now();
     assert_eq!(
-        rebuild(&t, again.backend(), at + Duration::from_millis(200)).unwrap(),
+        rebuild(
+            &t,
+            again.backend(),
+            at + Duration::from_millis(200),
+            &ProgressBar::hidden()
+        )
+        .unwrap(),
         None
     );
     assert!(at.elapsed() >= Duration::from_millis(200));
@@ -860,7 +899,7 @@ fn a_run_that_stops_at_a_failure_starts_no_call_after_it() {
         }
         poison
     });
-    let b = summarise(&t, fake.backend(), OnFail::Stop)
+    let b = summarise(&t, fake.backend(), OnFail::Stop, &ProgressBar::hidden())
         .unwrap()
         .expect("the lock is free");
     assert_eq!(b.failed.len(), 1);

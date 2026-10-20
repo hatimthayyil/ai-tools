@@ -37,3 +37,5 @@ Runs (`Run`)
 - Unless `ai.chat.summarise` is false: this executable as `chat summarise -t <name>` from the repository's work tree (else its git dir), detached by `memory::log::spawn` (stdin/stdout null, stderr to the thread's log, own process group). No readiness check: a summariser with nothing to do exits after one pass, and sync stays fast.
 
 Smoke (2026-10-15, haiku, throwaway repo, synthetic 4-turn thread): 3 calls, 1 free turn line, 1 node; the spawning process's piped stdout closed at once (spawn 0.3 ms); a second summariser exited `busy`.
+
+The run owns the progress bar and clears it when dropped, so the report the CLI prints next never sits under a stale bar. Callers that show nothing pass `ProgressBar::hidden()`; the total is the lines written plus those still planned, so it grows when `summarise` reads a newer snapshot.

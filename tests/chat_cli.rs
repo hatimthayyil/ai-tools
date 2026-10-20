@@ -1152,6 +1152,21 @@ fn the_background_summariser_builds_past_a_failed_line() {
 }
 
 #[test]
+fn summarise_off_a_terminal_shows_no_progress() {
+    let s = Sandbox::new();
+    s.fake_compactor("0.2");
+    s.transcript("s-1", &talk(3, |k| long("ok", k)));
+    ok(
+        s.ai_in("s-1", &["attach", "dev"]),
+        "Attached to dev, a new thread.\n",
+    );
+    ok(
+        s.ai_in("s-1", &["summarise"]),
+        "Wrote 3 lines, 2 by the model.\n",
+    );
+}
+
+#[test]
 fn a_line_still_over_the_limit_fails_and_is_not_stored() {
     let s = Sandbox::new();
     s.fake_compactor("0");

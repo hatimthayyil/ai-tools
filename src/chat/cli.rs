@@ -1,6 +1,6 @@
 use std::{
     env,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{self, ExitCode},
@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     chat::{
@@ -351,7 +352,13 @@ fn ready(
     if keys.is_empty() {
         return Ok(snap);
     }
-    let built = build(t, chat.backend(None)?, &keys, Instant::now() + WAIT)?;
+    let built = build(
+        t,
+        chat.backend(None)?,
+        &keys,
+        Instant::now() + WAIT,
+        &ProgressBar::hidden(),
+    )?;
     let snap = t.snapshot()?;
     let missing = branch(&snap)?.map_or(0, |b| b.needed().len());
     if missing == 0 {
@@ -731,9 +738,26 @@ fn grep(
     Ok(ExitCode::SUCCESS)
 }
 
+/// A bar on stderr for a summariser run when `show` and stderr is a terminal: lines written of
+/// those planned, calls running, failures and time so far. Else hidden.
+fn progress(show: bool) -> ProgressBar {
+    if !show || !io::stderr().is_terminal() {
+        return ProgressBar::hidden();
+    }
+    let style =
+        ProgressStyle::with_template("{spinner} {bar:30} {pos}/{len} lines · {msg} · {elapsed}")
+            .expect("a valid template");
+    let bar = ProgressBar::no_length()
+        .with_style(style)
+        .with_message("reading the thread");
+    bar.enable_steady_tick(Duration::from_millis(100));
+    bar
+}
+
 /// Writes the thread's ready lines, or with `rebuild` rewrites them all; with `id`, that one
 /// line. With `dry_run`, prints what it would write and stores nothing. It stops at the first
-/// line that fails, unless it is the `background` summariser.
+/// line that fails, unless it is the `background` summariser. On a terminal, all but a dry
+/// run and the background summariser show their progress on stderr.
 fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCode> {
     let Summarise {
         target,
@@ -760,9 +784,10 @@ fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCo
         None => None,
     };
     let backend = chat.backend(model)?;
+    let bar = progress(!dry && !background);
     let built = match (dry, again, line) {
         (false, true, Some((id, key))) => {
-            let Some(r) = rewrite(&t, backend, key, Instant::now() + WAIT)? else {
+            let Some(r) = rewrite(&t, backend, key, Instant::now() + WAIT, &bar)? else {
                 bail!(
                     "A summariser is still running on {}. Try again when it ends.",
                     t.name()
@@ -786,7 +811,7 @@ fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCo
             r.built
         }
         (false, false, Some((id, key))) => {
-            let b = build(&t, backend, &[key], Instant::now() + WAIT)?;
+            let b = build(&t, backend, &[key], Instant::now() + WAIT, &bar)?;
             match b.lines {
                 0 if b.failed.is_empty() => {
                     writeln!(out, "{id} is written already. Rewrite it with --rebuild.")?
@@ -820,7 +845,7 @@ fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCo
             d.built
         }
         (false, true, None) => {
-            let Some((dropped, b)) = rebuild(&t, backend, Instant::now() + WAIT)? else {
+            let Some((dropped, b)) = rebuild(&t, backend, Instant::now() + WAIT, &bar)? else {
                 bail!(
                     "A summariser is still running on {}. Try again when it ends.",
                     t.name()
@@ -840,7 +865,7 @@ fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCo
                 true => OnFail::Continue,
                 false => OnFail::Stop,
             };
-            let Some(b) = summarise(&t, backend, on_fail)? else {
+            let Some(b) = summarise(&t, backend, on_fail, &bar)? else {
                 writeln!(
                     out,
                     "A summariser is already running on {}; it writes these lines too.",

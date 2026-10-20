@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use indicatif::ProgressBar;
 use jiff::Timestamp;
 use tracing::{Span, dispatcher, info, info_span, warn};
 
@@ -116,12 +117,14 @@ pub struct DryLine {
 /// Under the thread's lock, waiting for it until `deadline`, builds `keys` and the unbuilt
 /// lines they are made from, up to [`JOBS`] calls at once, until they are built, `deadline`
 /// passes, or a line fails; logs to [`Thread::log_path`]. Calls still running at the deadline
-/// are stopped through `backend`. A key that is no line of the thread is an error.
+/// are stopped through `backend`. A key that is no line of the thread is an error. Shows its
+/// progress on `bar`.
 pub fn build(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     keys: &[Key],
     deadline: Instant,
+    bar: &ProgressBar,
 ) -> Result<Built> {
     let _log = log::init(&thread.log_path()?)?;
     let _build = info_span!("build", pid = process::id(), thread = thread.name()).entered();
@@ -136,7 +139,7 @@ pub fn build(
             lock
         }
     };
-    let mut run = Run::new(thread, backend, OnFail::Stop);
+    let mut run = Run::new(thread, backend, OnFail::Stop, bar);
     run.pass(Some(keys), Some(deadline))?;
     let built = run.built.clone();
     drop(run);
@@ -146,11 +149,13 @@ pub fn build(
 
 /// Under the thread's lock, builds every line that is ready on any branch, over each newer
 /// snapshot, until none is or failures stop it as `on_fail` says; logs to
-/// [`Thread::log_path`]. `None` if another compactor holds the lock.
+/// [`Thread::log_path`]. `None` if another compactor holds the lock. Shows its progress on
+/// `bar`.
 pub fn summarise(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     on_fail: OnFail,
+    bar: &ProgressBar,
 ) -> Result<Option<Built>> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
@@ -161,7 +166,7 @@ pub fn summarise(
     )
     .entered();
     let start = Instant::now();
-    let mut run = Run::new(thread, backend, on_fail);
+    let mut run = Run::new(thread, backend, on_fail, bar);
     let mut started = false;
     loop {
         let Some(lock) = thread.try_lock()? else {
@@ -198,11 +203,12 @@ pub fn summarise(
 /// Rewrites every line of the thread: under its lock, waiting for it until `deadline`, drops
 /// them all, then builds every line again as [`summarise`] does; logs to [`Thread::log_path`].
 /// How many lines it dropped and what it built; `None` if another summariser still holds the
-/// lock at the deadline.
+/// lock at the deadline. Shows its progress on `bar`.
 pub fn rebuild(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     deadline: Instant,
+    bar: &ProgressBar,
 ) -> Result<Option<(usize, Built)>> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
@@ -220,7 +226,7 @@ pub fn rebuild(
     info!("start");
     let dropped = thread.drop_lines()?;
     info!(dropped, "dropped");
-    let mut run = Run::new(thread, backend, OnFail::Stop);
+    let mut run = Run::new(thread, backend, OnFail::Stop, bar);
     loop {
         let tried = run.tried();
         run.pass(None, None)?;
@@ -255,12 +261,14 @@ pub struct Rewrote {
 /// Rewrites line `key`: under the thread's lock, waiting for it until `deadline`, drops it and
 /// the lines made from it up to the top, in one commit, then writes it again from the lines
 /// under it; logs to [`Thread::log_path`]. `None` if another summariser still holds the lock
-/// at the deadline. A key that is no line of the thread is an error.
+/// at the deadline. A key that is no line of the thread is an error. Shows its progress on
+/// `bar`.
 pub fn rewrite(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     key: Key,
     deadline: Instant,
+    bar: &ProgressBar,
 ) -> Result<Option<Rewrote>> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
@@ -287,7 +295,7 @@ pub fn rewrite(
         .collect::<Result<Vec<bool>>>()?;
     let dropped = thread.drop_keys(&[&[key][..], &above].concat())?;
     info!(dropped, "dropped");
-    let mut run = Run::new(thread, backend, OnFail::Stop);
+    let mut run = Run::new(thread, backend, OnFail::Stop, bar);
     loop {
         let tried = run.tried();
         run.pass(Some(&[key]), None)?;
@@ -324,7 +332,7 @@ pub fn dry_run(
     )
     .entered();
     info!(rebuild, "start");
-    let mut run = Run::new(thread, backend, OnFail::Stop);
+    let mut run = Run::new(thread, backend, OnFail::Stop, &ProgressBar::hidden());
     run.dry = Some(Vec::new());
     run.anew = match (rebuild, line) {
         (false, _) => Anew::None,
@@ -385,6 +393,9 @@ struct Run<'t> {
     dry: Option<Vec<(Key, String)>>,
     /// The stored lines read as unbuilt, to build them anew.
     anew: Anew,
+    /// Shows the lines written of those planned, the calls running and the failures; cleared
+    /// when the run ends.
+    bar: ProgressBar,
 }
 
 /// Which stored lines a run reads as unbuilt.
@@ -405,7 +416,12 @@ fn key((last, level): (u64, u32)) -> Key {
 }
 
 impl<'t> Run<'t> {
-    fn new(thread: &'t Thread, backend: Arc<dyn Backend>, on_fail: OnFail) -> Run<'t> {
+    fn new(
+        thread: &'t Thread,
+        backend: Arc<dyn Backend>,
+        on_fail: OnFail,
+        bar: &ProgressBar,
+    ) -> Run<'t> {
         let (tx, rx) = channel();
         Run {
             thread,
@@ -419,6 +435,7 @@ impl<'t> Run<'t> {
             built: Built::default(),
             dry: None,
             anew: Anew::None,
+            bar: bar.clone(),
         }
     }
 
@@ -463,6 +480,7 @@ impl<'t> Run<'t> {
         loop {
             self.free(&roll, &mut lines, &mut todo)?;
             self.start(&roll, &lines, &todo);
+            self.show(&todo);
             if self.busy.is_empty() {
                 return Ok(snap.mark());
             }
@@ -482,6 +500,19 @@ impl<'t> Run<'t> {
                 self.finish(&roll, done, &mut lines, &mut todo)?;
             }
         }
+    }
+
+    /// Puts on the bar the lines written of those planned, `todo` being those left, and the
+    /// calls running and failed.
+    fn show(&self, todo: &BTreeSet<(u64, u32)>) {
+        let done = self.built.lines;
+        self.bar.set_length(done + todo.len() as u64);
+        self.bar.set_position(done);
+        self.bar.set_message(format!(
+            "{} running, {} failed",
+            self.busy.len(),
+            self.built.failed.len()
+        ));
     }
 
     /// The unbuilt lines among `keys` and those they are made from.
@@ -645,5 +676,6 @@ impl Drop for Run<'_> {
         if !self.busy.is_empty() {
             self.backend.stop();
         }
+        self.bar.finish_and_clear();
     }
 }

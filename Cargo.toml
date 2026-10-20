@@ -17,6 +17,7 @@ backon = { version = "1.6.0", default-features = false, features = ["std"] }
 clap = { version = "4.6.7", features = ["derive"] }
 getrandom = "0.4.3"
 gix = { version = "0.88.0", default-features = false, features = ["anyhow", "index", "sha1"] }
+indicatif = "0.18.6"
 jiff = { version = "0.2.37", features = ["serde"] }
 libc = "0.2.190"
 memchr = "2.8.3"
