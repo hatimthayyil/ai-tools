@@ -14,7 +14,7 @@ use std::{
 use ai_tools::memory::{
     Backend, Block, Cli, Compactor, Conversation, Coord, Field, GaveUp, HIDDEN, Kind, LONG_PROMPT,
     Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY, REMINDER, Runtime, Store,
-    VIEW, Who, zoom,
+    Usage, VIEW, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -49,7 +49,7 @@ struct Out {
 
 fn runtime(backend: Arc<dyn Backend>) -> Runtime {
     Runtime {
-        backend: Box::new(move || Ok(backend.clone())),
+        backend: Box::new(move |_| Ok(backend.clone())),
         opts: opts(VIEW, 8),
         summarise_on_note: false,
         before_release: Box::new(|| {}),
@@ -222,6 +222,16 @@ impl Conversation for FakeConv {
 
     fn session(&self) -> String {
         "fake-session".into()
+    }
+
+    /// Every request: 100 tokens in, 10 out, a cent.
+    fn used(&self) -> Usage {
+        Usage {
+            input: 100,
+            output: 10,
+            cost: 0.01,
+            ..Usage::default()
+        }
     }
 }
 
@@ -700,7 +710,7 @@ fn a_summariser_on_a_dead_backend_gives_up_and_frees_the_lock() {
     let errors: Vec<&str> = log.lines().filter(|l| l.contains(" ERROR ")).collect();
     assert_eq!(errors.len(), 1, "{log}");
     assert!(
-        Regex::new(r#": gave up node=[01] tries=4 error="usage limit reached"$"#)
+        Regex::new(r#": gave up node=[01] tries=4 error="usage limit reached" requests=\d+ retries=0 tokens=\d+ cost=[\d.]+ retry_tokens=0 retry_cost=0.0$"#)
             .unwrap()
             .is_match(errors[0]),
         "{log}"
@@ -1143,14 +1153,15 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
         .unwrap()
     };
     let log = fs::read_to_string(d.join("summarise.log")).unwrap();
+    let one = "requests=1 retries=0 tokens=110 cost=0.01 retry_tokens=0 retry_cost=0.0";
     for event in [
-        "start",
-        r"built node=0 bytes=300 secs=[\d.]+",
-        r"built node=1 bytes=300 secs=[\d.]+",
-        r"built node=0\+2 bytes=300 secs=[\d.]+",
-        r"end built=3 secs=[\d.]+",
+        "start".to_string(),
+        format!(r"built node=0 bytes=300 secs=[\d.]+ {one}"),
+        format!(r"built node=1 bytes=300 secs=[\d.]+ {one}"),
+        format!(r"built node=0\+2 bytes=300 secs=[\d.]+ {one}"),
+        r"end built=3 secs=[\d.]+ requests=3 retries=0 tokens=330 cost=0.03 retry_tokens=0 retry_cost=0.0".to_string(),
     ] {
-        assert!(line("INFO", event).is_match(&log), "{event}:\n{log}");
+        assert!(line("INFO", &event).is_match(&log), "{event}:\n{log}");
     }
     assert_eq!(log.lines().count(), 5, "{log}");
 
@@ -1170,16 +1181,18 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
     assert!(r.stdout.ends_with("Built 1 summary.\n"), "{}", r.stdout);
     let log = fs::read_to_string(d.join("summarise.log")).unwrap();
     let warns = [
-        r#"failed node=2 error="overloaded" secs=[\d.]+ wait=[\d.]+"#,
-        r"over limit node=2 bytes=600 attempt=1",
+        format!(r#"failed node=2 error="overloaded" secs=[\d.]+ wait=[\d.]+ {one}"#),
+        r"over limit node=2 bytes=600 attempt=1 input=100 cache_write=0 cache_read=0 output=10 cost=0.01".to_string(),
     ];
     for event in warns {
-        assert!(line("WARN", event).is_match(&log), "{event}:\n{log}");
+        assert!(line("WARN", &event).is_match(&log), "{event}:\n{log}");
     }
-    assert!(
-        line("INFO", r"end built=1 secs=[\d.]+").is_match(&log),
-        "{log}"
-    );
+    for event in [
+        r"built node=2 bytes=300 secs=[\d.]+ requests=2 retries=1 tokens=220 cost=0.02 retry_tokens=110 retry_cost=0.01",
+        r"end built=1 secs=[\d.]+ requests=3 retries=1 tokens=330 cost=0.03 retry_tokens=110 retry_cost=0.01",
+    ] {
+        assert!(line("INFO", event).is_match(&log), "{event}:\n{log}");
+    }
 }
 
 #[test]

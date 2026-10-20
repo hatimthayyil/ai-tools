@@ -16,7 +16,7 @@ use ai_tools::{
         Built, Chat, Id, Key, Line, LineKind, OnFail, Rollup, Source, Thread, build, dry_run,
         rebuild, rewrite, rollup, summarise,
     },
-    memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, claude},
+    memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage, claude},
 };
 use anyhow::{Result, bail};
 use indicatif::ProgressBar;
@@ -256,6 +256,16 @@ impl Conversation for Conv {
     fn session(&self) -> String {
         "fake-session".into()
     }
+
+    /// Every request: 100 tokens in, 10 out, a cent.
+    fn used(&self) -> Usage {
+        Usage {
+            input: 100,
+            output: 10,
+            cost: 0.01,
+            ..Usage::default()
+        }
+    }
 }
 
 fn lines(t: &Thread) -> BTreeMap<Key, Line> {
@@ -379,6 +389,10 @@ fn every_level_is_built_and_only_once() {
     }
     assert_eq!((built.lines, built.calls), (10, 10));
     assert_eq!(fake.calls(), 10, "each line once");
+    let s = built.spent;
+    assert_eq!((s.requests, s.retries, s.all.tokens()), (10, 0, 1100));
+    assert!((s.all.cost - 0.1).abs() < 1e-9, "{s:?}");
+    assert_eq!(s.retried, Usage::default());
     let l = lines(&t);
     assert_eq!(l[&chunks[0]].kind, LineKind::Chunk);
     assert_eq!(l[&key(1, e2)].kind, LineKind::Turn);

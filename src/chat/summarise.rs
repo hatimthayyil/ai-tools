@@ -21,7 +21,7 @@ use crate::{
         rollup::{PROMPT, Rollup, Source},
         store::{Chat, Mark, Thread},
     },
-    memory::{Backend, Block, ClaudeCode, JOBS, NODE, TRIES, Who, claude, log, write_line},
+    memory::{Backend, Block, ClaudeCode, JOBS, NODE, Spend, TRIES, Who, claude, log, write_line},
 };
 
 const MODEL: &str = "ai.chat.model";
@@ -51,13 +51,18 @@ impl Chat {
         Ok(Config { model, summarise })
     }
 
-    /// `model`, else the configured one, through the `claude` on `PATH`.
-    pub fn backend(&self, model: Option<&str>) -> Result<Arc<dyn Backend>> {
+    /// `model`, else the configured one, through the `claude` on `PATH`, keeping its calls in
+    /// `thread`'s [`Thread::calls_dir`].
+    pub fn backend(&self, thread: &Thread, model: Option<&str>) -> Result<Arc<dyn Backend>> {
         let model = match model {
             Some(m) => m.to_string(),
             None => self.config()?.model,
         };
-        Ok(Arc::new(ClaudeCode::compactor_at(claude::find()?, &model)?))
+        Ok(Arc::new(ClaudeCode::compactor_at(
+            claude::find()?,
+            &model,
+            &thread.calls_dir(),
+        )?))
     }
 
     /// Starts `ai chat summarise -t <name> --background`, unless `ai.chat.summarise` is false;
@@ -87,7 +92,7 @@ pub enum OnFail {
 }
 
 /// What a compactor run did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Built {
     /// Lines written, free ones included.
     pub lines: u64,
@@ -95,10 +100,12 @@ pub struct Built {
     pub calls: u64,
     /// Lines whose call failed, and why.
     pub failed: Vec<(Key, String)>,
+    /// What the requests to the model took.
+    pub spent: Spend,
 }
 
 /// A dry run: what [`summarise`] or [`rebuild`] would write.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Dry {
     pub built: Built,
     /// Each line it would write, in build order: its first item, its key, its text and the
@@ -188,13 +195,12 @@ pub fn summarise(
         if run.halted() || thread.snapshot()?.mark() == seen {
             let b = &run.built;
             let secs = log::secs(start.elapsed());
-            info!(
+            log::spend!(info, b.spent, {
                 lines = b.lines,
                 calls = b.calls,
                 failed = b.failed.len(),
-                secs,
-                "end"
-            );
+                secs
+            }, "end");
             return Ok(Some(run.built.clone()));
         }
     }
@@ -238,18 +244,17 @@ pub fn rebuild(
     drop(run);
     drop(lock);
     let secs = log::secs(start.elapsed());
-    info!(
+    log::spend!(info, built.spent, {
         lines = built.lines,
         calls = built.calls,
         failed = built.failed.len(),
-        secs,
-        "end"
-    );
+        secs
+    }, "end");
     Ok(Some((dropped, built)))
 }
 
 /// What [`rewrite`] did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rewrote {
     /// Lines dropped: the line, if it was written, and those above it.
     pub dropped: usize,
@@ -306,7 +311,7 @@ pub fn rewrite(
     let built = run.built.clone();
     drop(run);
     drop(lock);
-    info!(lines = built.lines, calls = built.calls, "end");
+    log::spend!(info, built.spent, { lines = built.lines, calls = built.calls }, "end");
     Ok(Some(Rewrote {
         dropped,
         above: built_above.into_iter().filter(|&b| b).count(),
@@ -375,7 +380,7 @@ pub fn first(roll: &Rollup, key: Key) -> u64 {
     }
 }
 
-type Done = (Key, Duration, Result<(Who, String)>);
+type Done = (Key, Duration, Spend, Result<(Who, String)>);
 
 /// Builds lines of one thread, each call on its own thread.
 struct Run<'t> {
@@ -605,9 +610,10 @@ impl<'t> Run<'t> {
                 let _d = dispatcher::set_default(&dispatch);
                 let _s = span.enter();
                 let at = Instant::now();
+                let mut spent = Spend::default();
                 let r = catch_unwind(AssertUnwindSafe(|| {
-                    let (who, line) =
-                        write_line(&*backend, PROMPT, &[Block::new(task, false)], &k)?;
+                    let message = [Block::new(task, false)];
+                    let (who, line) = write_line(&*backend, PROMPT, &message, &k, &mut spent)?;
                     if line.len() > NODE {
                         bail!(
                             "{} bytes after {TRIES} tries; a line holds at most {NODE}",
@@ -617,7 +623,7 @@ impl<'t> Run<'t> {
                     Ok((who, line))
                 }))
                 .unwrap_or_else(|_| Err(anyhow!("the call panicked")));
-                let _ = tx.send((k, at.elapsed(), r));
+                let _ = tx.send((k, at.elapsed(), spent, r));
             });
         }
     }
@@ -625,15 +631,16 @@ impl<'t> Run<'t> {
     fn finish(
         &mut self,
         roll: &Rollup,
-        (k, took, r): Done,
+        (k, took, spent, r): Done,
         lines: &mut HashMap<Key, String>,
         todo: &mut BTreeSet<(u64, u32)>,
     ) -> Result<()> {
         self.busy.remove(&k);
+        self.built.spent += spent;
         let secs = log::secs(took);
         match r {
             Ok((who, text)) => {
-                info!(line = %k, bytes = text.len(), secs, "built");
+                log::spend!(info, spent, { line = %k, bytes = text.len(), secs }, "built");
                 let text = match &mut self.dry {
                     None => {
                         let kind = roll.source(k).expect("a planned line").kind();
@@ -652,7 +659,7 @@ impl<'t> Run<'t> {
             }
             Err(e) => {
                 let error = format!("{e:#}");
-                warn!(line = %k, error, secs, "failed");
+                log::spend!(warn, spent, { line = %k, error, secs }, "failed");
                 self.failed.insert(k);
                 self.built.failed.push((k, error));
                 self.streak += 1;

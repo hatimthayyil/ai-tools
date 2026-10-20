@@ -14,8 +14,8 @@ use tracing::{error, info, info_span, warn};
 use crate::{
     file::pretty,
     memory::{
-        Backend, ClaudeCode, JOBS, PLACEHOLDER, Pattern, broken_pipe, claude, excerpt, log, plural,
-        spawn_summariser, store_dir,
+        Backend, CALLS, ClaudeCode, JOBS, MakeBackend, PLACEHOLDER, Pattern, broken_pipe, claude,
+        excerpt, log, plural, spawn_summariser, store_dir,
     },
     notes::{
         leaf::{Confidence, Front, Leaf, check_body, check_title, is_id, new_id},
@@ -98,7 +98,7 @@ struct Add {
 
 /// How commands reach the summariser's model and stdin; tests swap in their own.
 pub struct Runtime {
-    pub backend: Box<dyn Fn() -> Result<Arc<dyn Backend>>>,
+    pub backend: Box<MakeBackend>,
     /// Whether changes start a background `summarise`.
     pub summarise_on_change: bool,
     pub stdin: Box<dyn Fn() -> io::Result<String>>,
@@ -107,7 +107,7 @@ pub struct Runtime {
 impl Default for Runtime {
     fn default() -> Runtime {
         Runtime {
-            backend: Box::new(|| Ok(Arc::new(ClaudeCode::compactor()?))),
+            backend: Box::new(|calls| Ok(Arc::new(ClaudeCode::compactor(calls)?))),
             summarise_on_change: std::env::var_os("AI_NOTES_SUMMARISE").is_none_or(|v| v != "0"),
             stdin: Box::new(|| io::read_to_string(io::stdin())),
         }
@@ -461,7 +461,7 @@ fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<u64> {
             info!("busy: another summariser holds the lock; exiting");
             return Ok(built);
         };
-        let backend = (rt.backend)()?;
+        let backend = (rt.backend)(&s.git_dir().join(CALLS))?;
         loop {
             let jobs = due(&s.load()?)?;
             if jobs.is_empty() {

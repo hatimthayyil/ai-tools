@@ -57,3 +57,27 @@ pub fn spawn(log: &Path, args: impl FnOnce(&mut Command) -> &mut Command) -> Res
 pub fn secs(d: Duration) -> f64 {
     (d.as_secs_f64() * 1e3).round() / 1e3
 }
+
+/// `usd` US dollars, to the millionth.
+pub fn usd(usd: f64) -> f64 {
+    (usd * 1e6).round() / 1e6
+}
+
+/// Logs event `$msg` at `$level` with `$fields`, then what the requests of `$spend`, a
+/// [`Spend`](crate::memory::Spend), took: all of them, and the retries among them.
+macro_rules! spend {
+    ($level:ident, $spend:expr, { $($fields:tt)+ }, $msg:literal) => {{
+        let s: $crate::memory::Spend = $spend;
+        ::tracing::$level!(
+            $($fields)+,
+            requests = s.requests,
+            retries = s.retries,
+            tokens = s.all.tokens(),
+            cost = $crate::memory::log::usd(s.all.cost),
+            retry_tokens = s.retried.tokens(),
+            retry_cost = $crate::memory::log::usd(s.retried.cost),
+            $msg
+        )
+    }};
+}
+pub(crate) use spend;

@@ -1,7 +1,7 @@
 use std::{
     collections::{HashSet, hash_map::DefaultHasher},
     ffi::{OsStr, OsString},
-    fs,
+    fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -20,11 +20,30 @@ use tempfile::TempDir;
 
 use crate::{
     file::AtPath,
-    memory::backend::{Backend, Block, Conversation},
+    memory::backend::{Backend, Block, Conversation, Usage},
 };
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 const KILL_GRACE: Duration = Duration::from_millis(200);
+/// The directory of a store that keeps its compactor's calls, one [`Record`] each.
+pub const CALLS: &str = "calls";
+
+/// A random (version 4) UUID, as Claude Code's session ids.
+pub fn uuid() -> Result<String> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b)?;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    ))
+}
 
 /// The `claude` on `PATH`.
 pub fn find() -> Result<OsString> {
@@ -130,19 +149,91 @@ impl Live {
     }
 }
 
+/// One call's file `<session>.jsonl`, in order: an `ai.call` line with how `claude` was
+/// started and its system prompt, an `ai.sent` line around each line written to its stdin,
+/// and every line it printed, byte for byte.
+#[derive(Clone)]
+pub struct Record(Arc<Mutex<RecordFile>>);
+
+struct RecordFile {
+    path: PathBuf,
+    file: File,
+    error: Option<io::Error>,
+}
+
+impl Record {
+    /// Creates the record of call `session` in `dir`, run as `cmd` under `system`.
+    pub fn create(dir: &Path, session: &str, cmd: &Command, system: &str) -> Result<Record> {
+        fs::create_dir_all(dir).at(dir)?;
+        let path = dir.join(format!("{session}.jsonl"));
+        let file = OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .open(&path)
+            .at(&path)?;
+        let os = |s: &OsStr| s.to_string_lossy().into_owned();
+        let env: serde_json::Map<String, Value> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((os(k), Value::String(os(v?)))))
+            .collect();
+        let call = json!({
+            "type": "ai.call",
+            "program": os(cmd.get_program()),
+            "args": cmd.get_args().map(os).collect::<Vec<_>>(),
+            "env": env,
+            "system": system,
+        });
+        let r = Record(Arc::new(Mutex::new(RecordFile {
+            path,
+            file,
+            error: None,
+        })));
+        r.write(format!("{call}\n").as_bytes());
+        r.check()?;
+        Ok(r)
+    }
+
+    /// Appends `bytes` as they are, unless a write already failed.
+    fn write(&self, bytes: &[u8]) {
+        let mut f = self.0.lock().expect("record lock");
+        if f.error.is_none()
+            && let Err(e) = f.file.write_all(bytes)
+        {
+            f.error = Some(e);
+        }
+    }
+
+    /// Appends `line`, written to the call's stdin, as `{"type":"ai.sent","line":<line>}`.
+    fn sent(&self, line: &str) {
+        self.write(format!("{{\"type\":\"ai.sent\",\"line\":{line}}}\n").as_bytes());
+    }
+
+    /// An error once a write failed: the record is no longer whole.
+    fn check(&self) -> Result<()> {
+        let f = self.0.lock().expect("record lock");
+        match &f.error {
+            Some(e) => bail!("Cannot write {}: {e}", f.path.display()),
+            None => Ok(()),
+        }
+    }
+}
+
 /// A running `claude`: stream-json messages in, stdout lines out through a sink.
 pub struct Proc {
     child: Option<Child>,
     stdin: Option<Sender<String>>,
     stderr: Arc<Mutex<String>>,
     live: Option<Live>,
+    record: Option<Record>,
 }
 
 impl Proc {
     /// Starts `cmd`; a reader thread hands `sink` each stdout line, then `None` at its end.
+    /// With `record`, what goes in and every byte that comes out is kept there.
     pub fn spawn(
         mut cmd: Command,
         live: Option<&Live>,
+        record: Option<Record>,
         mut sink: impl FnMut(Option<String>) + Send + 'static,
     ) -> Result<Proc> {
         let mut registry = live.map(|l| l.0.lock().expect("live lock"));
@@ -161,6 +252,7 @@ impl Proc {
             stdin: None,
             stderr: Arc::new(Mutex::new(String::new())),
             live: live.cloned(),
+            record: record.clone(),
         };
         let child = proc.child.as_mut().expect("spawned child");
         let stdout = child.stdout.take().context("No stdout.")?;
@@ -180,8 +272,16 @@ impl Proc {
             tx
         });
         thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                sink(Some(line));
+            let mut out = BufReader::new(stdout);
+            let mut raw = Vec::new();
+            while out.read_until(b'\n', &mut raw).is_ok_and(|n| n > 0) {
+                if let Some(r) = &record {
+                    r.write(&raw);
+                }
+                let line = raw.strip_suffix(b"\n").unwrap_or(&raw);
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                sink(Some(String::from_utf8_lossy(line).into_owned()));
+                raw.clear();
             }
             sink(None);
         });
@@ -204,8 +304,12 @@ impl Proc {
     /// Queues one stream-json user message without blocking on the child reading stdin.
     pub fn send(&mut self, blocks: &[Block]) -> io::Result<()> {
         let stdin = self.stdin.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        let line = user_message(blocks);
+        if let Some(r) = &self.record {
+            r.sent(&line);
+        }
         stdin
-            .send(user_message(blocks))
+            .send(line)
             .map_err(|_| io::ErrorKind::BrokenPipe.into())
     }
 
@@ -276,34 +380,38 @@ impl Prompts {
 }
 
 /// Claude Code in print mode (`claude -p`), isolated from the user's settings, without tools.
+/// Each call keeps its [`Record`] in `calls`.
 pub struct ClaudeCode {
     program: OsString,
     model: String,
     effort: String,
     prompts: Prompts,
     live: Live,
+    calls: PathBuf,
 }
 
 impl ClaudeCode {
     /// The compactor: `$AI_MEMORY_MODEL` (default Sonnet) at medium effort, through the
-    /// `claude` on `PATH`.
-    pub fn compactor() -> Result<ClaudeCode> {
-        ClaudeCode::compactor_at(find()?, &model())
+    /// `claude` on `PATH`, keeping its calls in `calls`.
+    pub fn compactor(calls: &Path) -> Result<ClaudeCode> {
+        ClaudeCode::compactor_at(find()?, &model(), calls)
     }
 
-    pub fn compactor_at(program: OsString, model: &str) -> Result<ClaudeCode> {
+    pub fn compactor_at(program: OsString, model: &str, calls: &Path) -> Result<ClaudeCode> {
         Ok(ClaudeCode {
             program,
             model: model.into(),
             effort: "medium".into(),
             prompts: Prompts::new()?,
             live: Live::default(),
+            calls: calls.into(),
         })
     }
 
-    pub fn command(&self, system_file: &Path) -> Command {
+    pub fn command(&self, system_file: &Path, session: &str) -> Command {
         let mut c = command(&self.program, &self.model, &self.effort, system_file, "");
-        c.arg("--safe-mode").env("DISABLE_PROMPT_CACHING", "1");
+        c.args(["--safe-mode", "--session-id", session])
+            .env("DISABLE_PROMPT_CACHING", "1");
         c
     }
 }
@@ -318,20 +426,22 @@ impl Backend for ClaudeCode {
     }
 
     fn open(&self, system: &str) -> Result<Box<dyn Conversation>> {
+        let id = uuid()?;
+        let cmd = self.command(&self.prompts.file(system)?, &id);
+        let record = Record::create(&self.calls, &id, &cmd, system)?;
         let (tx, lines) = channel();
-        let proc = Proc::spawn(
-            self.command(&self.prompts.file(system)?),
-            Some(&self.live),
-            move |l| {
-                if let Some(l) = l {
-                    let _ = tx.send(l);
-                }
-            },
-        )?;
+        let proc = Proc::spawn(cmd, Some(&self.live), Some(record.clone()), move |l| {
+            if let Some(l) = l {
+                let _ = tx.send(l);
+            }
+        })?;
         Ok(Box::new(Session {
             proc,
             lines,
-            id: String::new(),
+            id,
+            record,
+            used: Usage::default(),
+            cost: 0.0,
         }))
     }
 
@@ -344,6 +454,25 @@ struct Session {
     proc: Proc,
     lines: std::sync::mpsc::Receiver<String>,
     id: String,
+    record: Record,
+    /// What the last reply took.
+    used: Usage,
+    /// The process's `total_cost_usd` so far.
+    cost: f64,
+}
+
+/// What the request a `result` event ends took, `before` being the `total_cost_usd` of the
+/// process's earlier results: its `usage`, and the growth of `total_cost_usd`, which counts
+/// the whole process.
+pub fn usage(ev: &Value, before: f64) -> Usage {
+    let n = |k: &str| ev["usage"][k].as_u64().unwrap_or(0);
+    Usage {
+        input: n("input_tokens"),
+        cache_write: n("cache_creation_input_tokens"),
+        cache_read: n("cache_read_input_tokens"),
+        output: n("output_tokens"),
+        cost: ev["total_cost_usd"].as_f64().map_or(0.0, |t| t - before),
+    }
 }
 
 /// A stream-json user message.
@@ -381,6 +510,7 @@ pub fn tail(s: &str, n: usize) -> &str {
 
 impl Conversation for Session {
     fn say(&mut self, message: &[Block]) -> Result<String> {
+        self.used = Usage::default();
         let _ = self.proc.send(message);
         let deadline = Instant::now() + CALL_TIMEOUT;
         loop {
@@ -394,6 +524,9 @@ impl Conversation for Session {
                         self.id = id.into();
                     }
                     if ev["type"] == "result" {
+                        self.used = usage(&ev, self.cost);
+                        self.cost += self.used.cost;
+                        self.record.check()?;
                         return reply(&ev);
                     }
                 }
@@ -408,6 +541,10 @@ impl Conversation for Session {
     fn session(&self) -> String {
         self.id.clone()
     }
+
+    fn used(&self) -> Usage {
+        self.used
+    }
 }
 
 #[cfg(test)]
@@ -415,12 +552,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uuids_are_version_4() {
+        let u = uuid().unwrap();
+        assert_eq!(u.len(), 36);
+        let parts: Vec<&str> = u.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            [8, 4, 4, 4, 12]
+        );
+        assert!(parts[2].starts_with('4'));
+        assert!("89ab".contains(&parts[3][..1]));
+        assert_ne!(uuid().unwrap(), u);
+    }
+
+    #[test]
+    fn a_call_keeps_what_went_in_and_every_byte_out() {
+        let tmp = TempDir::new().unwrap();
+        let program = tmp.path().join("claude");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+while [ "$1" != --session-id ]; do shift; done
+n=0
+while read -r line; do
+  n=$((n+1))
+  printf '{"type":"system","session_id":"%s"}\n' "$2"
+  printf 'not json \377\r\n'
+  printf '{"type":"result","is_error":false,"result":"r%s","usage":{"input_tokens":10,"cache_creation_input_tokens":1,"cache_read_input_tokens":2,"output_tokens":3},"total_cost_usd":0.%s5,"session_id":"%s"}\n' $n $n "$2"
+done
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(
+            &program,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let calls = tmp.path().join(CALLS);
+        let c = ClaudeCode::compactor_at(program.into(), "sonnet", &calls).unwrap();
+        let mut conv = c.open("Write a line.").unwrap();
+        assert_eq!(conv.say(&[Block::new("a", false)]).unwrap(), "r1");
+        let first = conv.used();
+        assert_eq!(
+            (
+                first.input,
+                first.cache_write,
+                first.cache_read,
+                first.output
+            ),
+            (10, 1, 2, 3)
+        );
+        assert!((first.cost - 0.15).abs() < 1e-9, "{first:?}");
+        assert_eq!(conv.say(&[Block::new("b", false)]).unwrap(), "r2");
+        assert!((conv.used().cost - 0.1).abs() < 1e-9, "{:?}", conv.used());
+        let id = conv.session();
+        drop(conv);
+        let got = fs::read(calls.join(format!("{id}.jsonl"))).unwrap();
+        let mut lines = got.split_inclusive(|&b| b == b'\n');
+        let call: Value = serde_json::from_slice(lines.next().unwrap()).unwrap();
+        assert_eq!(call["type"], "ai.call");
+        assert_eq!(call["system"], "Write a line.");
+        assert_eq!(call["env"]["DISABLE_PROMPT_CACHING"], "1");
+        assert!(call["args"].as_array().unwrap().contains(&json!(id)));
+        let rest: Vec<&[u8]> = lines.collect();
+        let result = |n: u32| {
+            format!(
+                r#"{{"type":"result","is_error":false,"result":"r{n}","usage":{{"input_tokens":10,"cache_creation_input_tokens":1,"cache_read_input_tokens":2,"output_tokens":3}},"total_cost_usd":0.{n}5,"session_id":"{id}"}}"#
+            )
+        };
+        let sent = |t: &str| {
+            format!(
+                "{{\"type\":\"ai.sent\",\"line\":{}}}\n",
+                user_message(&[Block::new(t, false)])
+            )
+        };
+        let system = format!("{{\"type\":\"system\",\"session_id\":\"{id}\"}}\n");
+        let junk: &[u8] = b"not json \xff\r\n";
+        let want: Vec<Vec<u8>> = vec![
+            sent("a").into(),
+            system.clone().into(),
+            junk.into(),
+            format!("{}\n", result(1)).into(),
+            sent("b").into(),
+            system.into(),
+            junk.into(),
+            format!("{}\n", result(2)).into(),
+        ];
+        assert_eq!(rest, want, "{}", String::from_utf8_lossy(&got));
+    }
+
+    #[test]
     fn the_compactor_runs_isolated_without_tools() {
-        let c = ClaudeCode::compactor_at("claude".into(), "sonnet").unwrap();
+        let tmp = TempDir::new().unwrap();
+        let c = ClaudeCode::compactor_at("claude".into(), "sonnet", tmp.path()).unwrap();
         let file = c.prompts.file("You write the memory.").unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "You write the memory.");
         assert_eq!(c.prompts.file("You write the memory.").unwrap(), file);
-        let cmd = c.command(&file);
+        let cmd = c.command(&file, "s1");
         assert_eq!(cmd.get_program(), "claude");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         let f = file.to_str().unwrap();
@@ -447,6 +675,8 @@ mod tests {
                 "--tools",
                 "",
                 "--safe-mode",
+                "--session-id",
+                "s1",
             ]
         );
         let mut env: Vec<_> = cmd
@@ -494,7 +724,7 @@ mod tests {
         c.stderr(Stdio::piped());
         die_with_parent(&mut c);
         let (tx, rx) = channel();
-        let p = Proc::spawn(c, Some(&live), move |l| {
+        let p = Proc::spawn(c, Some(&live), None, move |l| {
             let _ = tx.send(l);
         })
         .unwrap();
@@ -524,9 +754,14 @@ mod cleanup_tests {
     #[test]
     fn eof_from_a_live_ignoring_term_child_is_bounded_and_reaped() {
         let (tx, rx) = channel();
-        let mut proc = Proc::spawn(shell("trap '' TERM; exec 1>&-; sleep 60"), None, move |l| {
-            let _ = tx.send(l);
-        })
+        let mut proc = Proc::spawn(
+            shell("trap '' TERM; exec 1>&-; sleep 60"),
+            None,
+            None,
+            move |l| {
+                let _ = tx.send(l);
+            },
+        )
         .unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), None);
         let pid = proc.pid();
@@ -544,6 +779,7 @@ mod cleanup_tests {
         let proc = Proc::spawn(
             shell("trap '' TERM; sleep 60 & echo $!; wait"),
             Some(&live),
+            None,
             move |l| {
                 let _ = tx.send(l);
             },
@@ -565,7 +801,7 @@ mod cleanup_tests {
         }
         assert!(!running(child));
         live.kill_all();
-        assert!(Proc::spawn(shell("sleep 60"), Some(&live), |_| {}).is_err());
+        assert!(Proc::spawn(shell("sleep 60"), Some(&live), None, |_| {}).is_err());
     }
     #[test]
     fn parent_death_kills_an_ignoring_term_claude() {
@@ -592,7 +828,13 @@ mod cleanup_tests {
     #[test]
     #[ignore]
     fn parent_death_helper() {
-        let p = Proc::spawn(shell("trap '' TERM; while :; do :; done"), None, |_| {}).unwrap();
+        let p = Proc::spawn(
+            shell("trap '' TERM; while :; do :; done"),
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
         fs::write(
             std::env::var_os("AI_CHILD_PIDFILE").unwrap(),
             p.pid().to_string(),

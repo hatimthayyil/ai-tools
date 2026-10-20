@@ -24,7 +24,7 @@ use crate::{
     },
     file::{self, AtPath},
     jsonl,
-    memory::{Who, prov::repo_root, store_dir},
+    memory::{CALLS, Who, prov::repo_root, store_dir},
 };
 
 /// The chat store format this ai reads and writes.
@@ -423,6 +423,11 @@ impl Thread {
     pub fn log_path(&self) -> Result<PathBuf> {
         Chat::ensure(&self.root)?;
         Ok(self.root.join(format!("{}.log", self.name)))
+    }
+
+    /// Where the compactor keeps its calls to the model: `threads/<name>/calls`.
+    pub fn calls_dir(&self) -> PathBuf {
+        self.dir.join(CALLS)
     }
 
     /// Drops every line; how many it dropped.

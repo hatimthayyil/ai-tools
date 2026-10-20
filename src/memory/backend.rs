@@ -1,4 +1,9 @@
+use std::{ops::AddAssign, path::Path, sync::Arc};
+
 use anyhow::Result;
+
+/// Makes the backend of a command, keeping its calls in the directory it is given.
+pub type MakeBackend = dyn Fn(&Path) -> Result<Arc<dyn Backend>>;
 
 /// One text block of a user message; `cache` asks for a cache breakpoint after it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,6 +18,33 @@ impl Block {
             text: text.into(),
             cache,
         }
+    }
+}
+
+/// What requests to a model took: tokens read, written to the cache, read from it and written
+/// out, and what they cost in US dollars.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Usage {
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
+    pub cost: f64,
+}
+
+impl Usage {
+    pub fn tokens(&self) -> u64 {
+        self.input + self.cache_write + self.cache_read + self.output
+    }
+}
+
+impl AddAssign for Usage {
+    fn add_assign(&mut self, u: Usage) {
+        self.input += u.input;
+        self.cache_write += u.cache_write;
+        self.cache_read += u.cache_read;
+        self.output += u.output;
+        self.cost += u.cost;
     }
 }
 
@@ -37,4 +69,9 @@ pub trait Conversation: Send {
 
     /// The id the harness gave this conversation, once known; empty if none.
     fn session(&self) -> String;
+
+    /// What the last reply took; zero if the backend reports nothing.
+    fn used(&self) -> Usage {
+        Usage::default()
+    }
 }

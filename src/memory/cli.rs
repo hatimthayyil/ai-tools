@@ -9,14 +9,14 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tracing::{error, info, info_span};
+use tracing::{info, info_span};
 
 use crate::{
     file::{AtPath, pretty},
     memory::{
-        backend::Backend,
-        claude::{self, ClaudeCode},
-        compact::{Compactor, GaveUp, Options},
+        backend::MakeBackend,
+        claude::{self, CALLS, ClaudeCode},
+        compact::{Compactor, GaveUp, Options, Spend},
         config::Knob,
         cover::{self, cover},
         grep::{Grep, grep},
@@ -184,7 +184,7 @@ impl Command {
 
 /// How commands reach the compactor's model and stdin; tests swap in their own.
 pub struct Runtime {
-    pub backend: Box<dyn Fn() -> Result<Arc<dyn Backend>>>,
+    pub backend: Box<MakeBackend>,
     pub opts: Options,
     /// Whether `note` starts a background `summarise`.
     pub summarise_on_note: bool,
@@ -196,7 +196,7 @@ pub struct Runtime {
 impl Default for Runtime {
     fn default() -> Runtime {
         Runtime {
-            backend: Box::new(|| Ok(Arc::new(ClaudeCode::compactor()?))),
+            backend: Box::new(|calls| Ok(Arc::new(ClaudeCode::compactor(calls)?))),
             opts: Options::default(),
             summarise_on_note: std::env::var_os("AI_MEMORY_SUMMARISE").is_none_or(|v| v != "0"),
             before_release: Box::new(|| {}),
@@ -481,18 +481,19 @@ fn summarise(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     .entered();
     let start = Instant::now();
     info!("start");
-    let e = match rounds(s, out, rt) {
+    let mut spent = Spend::default();
+    let e = match rounds(s, out, rt, &mut spent) {
         Ok(built) => {
-            info!(built, secs = log::secs(start.elapsed()), "end");
+            log::spend!(info, spent, { built, secs = log::secs(start.elapsed()) }, "end");
             return Ok(ExitCode::SUCCESS);
         }
         Err(e) => e,
     };
     let Some(g) = e.downcast_ref::<GaveUp>() else {
-        error!(error = format!("{e:#}"), "failed");
+        log::spend!(error, spent, { error = format!("{e:#}") }, "failed");
         return Err(e);
     };
-    error!(node = %g.node, tries = g.tries, error = g.error, "gave up");
+    log::spend!(error, spent, { node = %g.node, tries = g.tries, error = g.error }, "gave up");
     writeln!(
         out,
         "{g}. It stays pending; the summariser after the next note tries again."
@@ -501,16 +502,18 @@ fn summarise(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
 }
 
 /// Compactor rounds until nothing is due or another compactor holds the lock; the nodes built.
-fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<u64> {
+/// What their requests took goes into `spent`, failed or not.
+fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime, spent: &mut Spend) -> Result<u64> {
     let mut built = 0;
     while pending(s)? {
-        let Some(mut c) = Compactor::new(s, (rt.backend)()?, rt.opts)? else {
+        let backend = (rt.backend)(&s.dir().join(CALLS))?;
+        let Some(mut c) = Compactor::new(s, backend, rt.opts)? else {
             writeln!(out, "{BUSY}")?;
             info!("busy: another compactor holds the lock; exiting");
             return Ok(built);
         };
         let retries = rt.opts.retries;
-        c.run(|c| {
+        let ran = c.run(|c| {
             for r in c.take_reports() {
                 writeln!(
                     out,
@@ -518,7 +521,9 @@ fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<u64> {
                 )?;
             }
             Ok(())
-        })?;
+        });
+        *spent += c.spent();
+        ran?;
         built += c.built();
         (rt.before_release)();
         drop(c);

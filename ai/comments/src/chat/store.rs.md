@@ -16,6 +16,7 @@ Layout (format 3)
   - `agents.jsonl`: subagent records (`Agent`), appended when they change; the last per harness and agent holds. `agents/<harness>/<agent>.jsonl`: the subagent's own rows, numbered from 0; its roots have no parent and `call` links it to the main tree.
   - `lines.jsonl`: summary line operations (`LineOp`), folded in order.
   - `sources/<harness>/<session>/<relative path>`: the session's original files, byte for byte.
+  - `calls/<session>.jsonl`: the compactor's calls to the model, byte for byte (`Thread::calls_dir`, `memory/claude.rs`'s `Record`).
 - Locks, beside the threads: `sessions/<harness>/<session>.lock` (one session's attach, sync and detach), `sessions.lock` (appends to `sessions.jsonl`), `<name>.write.lock` (a thread's writers), `<name>.lock` (its compactor) and its log `<name>.log`.
 
 Writing

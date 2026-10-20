@@ -104,7 +104,7 @@ fn runtime(fake: &Arc<Fake>, stdin: &str) -> Runtime {
     let backend: Arc<dyn Backend> = Arc::new(Model(fake.clone()));
     let stdin = stdin.to_string();
     Runtime {
-        backend: Box::new(move || Ok(backend.clone())),
+        backend: Box::new(move |_| Ok(backend.clone())),
         summarise_on_change: false,
         stdin: Box::new(move || Ok(stdin.clone())),
     }

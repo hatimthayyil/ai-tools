@@ -23,7 +23,7 @@ use crate::{
         view::Branch,
     },
     file,
-    memory::{Pattern, broken_pipe, page, plural, quote, word},
+    memory::{Pattern, broken_pipe, claude::uuid, page, plural, quote, word},
 };
 
 /// The exit code of plumbing for a session attached to no thread; it prints nothing.
@@ -354,7 +354,7 @@ fn ready(
     }
     let built = build(
         t,
-        chat.backend(None)?,
+        chat.backend(t, None)?,
         &keys,
         Instant::now() + WAIT,
         &ProgressBar::hidden(),
@@ -401,23 +401,6 @@ fn start_summariser(cwd: &Path, thread: &str) -> Result<()> {
     let chat = find(cwd)?;
     chat.spawn_summariser(&chat.thread(thread)?)?;
     Ok(())
-}
-
-/// A random (version 4) UUID, as Claude Code's session ids.
-fn uuid() -> Result<String> {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b)?;
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        &h[..8],
-        &h[8..12],
-        &h[12..16],
-        &h[16..20],
-        &h[20..]
-    ))
 }
 
 /// Runs `claude args` in `dir`, in place of this process.
@@ -783,7 +766,7 @@ fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCo
         }
         None => None,
     };
-    let backend = chat.backend(model)?;
+    let backend = chat.backend(&t, model)?;
     let bar = progress(!dry && !background);
     let built = match (dry, again, line) {
         (false, true, Some((id, key))) => {
@@ -894,23 +877,4 @@ fn summarise_cmd(cwd: &Path, out: &mut dyn Write, a: Summarise) -> Result<ExitCo
         true => ExitCode::SUCCESS,
         false => ExitCode::FAILURE,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uuids_are_version_4() {
-        let u = uuid().unwrap();
-        assert_eq!(u.len(), 36);
-        let parts: Vec<&str> = u.split('-').collect();
-        assert_eq!(
-            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
-            [8, 4, 4, 4, 12]
-        );
-        assert!(parts[2].starts_with('4'));
-        assert!("89ab".contains(&parts[3][..1]));
-        assert_ne!(uuid().unwrap(), u);
-    }
 }

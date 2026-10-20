@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    ops::AddAssign,
     sync::{
         Arc,
         mpsc::{Receiver, RecvTimeoutError, Sender, channel},
@@ -11,10 +12,10 @@ use std::{
 
 use anyhow::{Result, bail};
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
-use tracing::{Span, debug, dispatcher, info, warn};
+use tracing::{Span, dispatcher, warn};
 
 use crate::memory::{
-    backend::{Backend, Block},
+    backend::{Backend, Block, Conversation, Usage},
     log,
     record::{Message, Who, flat},
     store::Store,
@@ -79,27 +80,82 @@ pub fn retry_text(line: &str) -> String {
     )
 }
 
-/// Builds one node with [`write_line`]. Returns who wrote it, and the line.
-pub fn summarize(backend: &dyn Backend, job: &Job) -> Result<(Who, String)> {
-    write_line(backend, COMPACT, &message(job), &job.node)
+/// What the requests for lines took: all of them, and the retries among them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Spend {
+    pub requests: u64,
+    pub retries: u64,
+    pub all: Usage,
+    pub retried: Usage,
+}
+
+impl Spend {
+    fn add(&mut self, u: Usage, retry: bool) {
+        self.requests += 1;
+        self.all += u;
+        if retry {
+            self.retries += 1;
+            self.retried += u;
+        }
+    }
+}
+
+impl AddAssign for Spend {
+    fn add_assign(&mut self, s: Spend) {
+        self.requests += s.requests;
+        self.retries += s.retries;
+        self.all += s.all;
+        self.retried += s.retried;
+    }
+}
+
+/// Builds one node with [`write_line`], adding what its requests took to `spent`. Returns who
+/// wrote it, and the line.
+pub fn summarize(backend: &dyn Backend, job: &Job, spent: &mut Spend) -> Result<(Who, String)> {
+    write_line(backend, COMPACT, &message(job), &job.node, spent)
+}
+
+/// `conv`'s reply to `message`; what the request took goes into `spent`, failed or not.
+fn ask(
+    conv: &mut dyn Conversation,
+    message: &[Block],
+    retry: bool,
+    spent: &mut Spend,
+) -> Result<String> {
+    let reply = conv.say(message);
+    spent.add(conv.used(), retry);
+    reply
 }
 
 /// The line the model writes for `message` under the system prompt `system`, retried in the
 /// same conversation while over [`NODE`] bytes, up to [`TRIES`]; the shortest try wins.
-/// Returns who wrote it, and the line; `node` names it in the log.
+/// Returns who wrote it, and the line; `node` names it in the log. What every request took
+/// goes into `spent`, even when the line fails.
 pub fn write_line(
     backend: &dyn Backend,
     system: &str,
     message: &[Block],
     node: &dyn fmt::Display,
+    spent: &mut Spend,
 ) -> Result<(Who, String)> {
     let mut conv = backend.open(system)?;
-    let mut reply = conv.say(message)?;
+    let mut reply = ask(&mut *conv, message, false, spent)?;
     let mut tries: Vec<String> = Vec::new();
     loop {
         let line = flat(reply.trim());
         if line.len() > NODE {
-            warn!(node = %node, bytes = line.len(), attempt = tries.len() + 1, "over limit");
+            let u = conv.used();
+            warn!(
+                node = %node,
+                bytes = line.len(),
+                attempt = tries.len() + 1,
+                input = u.input,
+                cache_write = u.cache_write,
+                cache_read = u.cache_read,
+                output = u.output,
+                cost = log::usd(u.cost),
+                "over limit"
+            );
         }
         if line.is_empty() {
             bail!("empty reply");
@@ -108,7 +164,12 @@ pub fn write_line(
             tries.push(line);
             break;
         }
-        reply = conv.say(&[Block::new(retry_text(&line), false)])?;
+        reply = ask(
+            &mut *conv,
+            &[Block::new(retry_text(&line), false)],
+            true,
+            spent,
+        )?;
         tries.push(line);
     }
     let who = Who {
@@ -175,7 +236,7 @@ impl fmt::Display for GaveUp {
 
 impl std::error::Error for GaveUp {}
 
-type Done = (Coord, Duration, Result<(Who, String)>);
+type Done = (Coord, Duration, Spend, Result<(Who, String)>);
 
 /// The pump: builds every node whose sources exist and whose context is all summaries,
 /// up to `jobs` at once, each through `backend` on its own thread. One per memory.
@@ -189,6 +250,7 @@ pub struct Compactor<'s> {
     waits: Vec<(Instant, Coord)>,
     reports: Vec<String>,
     built: u64,
+    spent: Spend,
     tx: Sender<Done>,
     rx: Receiver<Done>,
     _lock: crate::file::Lock,
@@ -212,6 +274,7 @@ impl<'s> Compactor<'s> {
             waits: Vec::new(),
             reports: Vec::new(),
             built: 0,
+            spent: Spend::default(),
             tx,
             rx,
             _lock: lock,
@@ -225,6 +288,11 @@ impl<'s> Compactor<'s> {
     /// Nodes built by the model so far.
     pub fn built(&self) -> u64 {
         self.built
+    }
+
+    /// What its requests to the model took so far.
+    pub fn spent(&self) -> Spend {
+        self.spent
     }
 
     /// The first failure of each node since it last succeeded, once.
@@ -276,17 +344,19 @@ impl<'s> Compactor<'s> {
                 let _d = dispatcher::set_default(&dispatch);
                 let _s = span.enter();
                 let start = Instant::now();
-                let r = summarize(&*backend, &job);
-                let _ = tx.send((job.node, start.elapsed(), r));
+                let mut spent = Spend::default();
+                let r = summarize(&*backend, &job, &mut spent);
+                let _ = tx.send((job.node, start.elapsed(), spent, r));
             });
         }
         Ok(())
     }
 
-    fn finish(&mut self, (c, took, r): Done) -> Result<()> {
+    fn finish(&mut self, (c, took, spent, r): Done) -> Result<()> {
+        self.spent += spent;
         match r {
             Ok((who, text)) => {
-                info!(node = %c, bytes = text.len(), secs = log::secs(took), "built");
+                log::spend!(info, spent, { node = %c, bytes = text.len(), secs = log::secs(took) }, "built");
                 let (built, snap) = self.store.put_node(c, &who, &text)?;
                 for (k, t) in built {
                     self.mem.set(k, t);
@@ -312,10 +382,10 @@ impl<'s> Compactor<'s> {
                 };
                 let (secs, wait_secs) = (log::secs(took), log::secs(wait));
                 if first {
-                    warn!(node = %c, error, secs, wait = wait_secs, "failed");
+                    log::spend!(warn, spent, { node = %c, error, secs, wait = wait_secs }, "failed");
                     self.reports.push(format!("{c}: {error}"));
                 } else {
-                    debug!(node = %c, error, secs, wait = wait_secs, "failed again");
+                    log::spend!(debug, spent, { node = %c, error, secs, wait = wait_secs }, "failed again");
                 }
                 self.waits.push((Instant::now() + wait, c));
             }
