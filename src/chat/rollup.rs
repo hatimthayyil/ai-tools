@@ -18,7 +18,7 @@ pub const MAX_WORDS: usize = 200;
 const RATIO: usize = 10;
 /// What a tool call adds to what a line covers, in words of the AI's own.
 const CALL: usize = 20;
-/// The most one call reads of a turn, in bytes; a longer turn is cut into chunks.
+/// The most one call reads of a turn's work, in bytes; longer work is cut into chunks.
 pub const INPUT: usize = 48 * 1024;
 /// The most a call reads of one tool call's input or one tool output: its head and tail.
 pub const CLIP: usize = 4 * 1024;
@@ -114,17 +114,18 @@ impl Pack {
 /// What a line is made from. Items are sequence numbers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// Consecutive items of a turn over [`INPUT`], read with the message it answers.
+    /// A turn's work, or one chunk of it when the work is over [`INPUT`] (`whole` false), read
+    /// with the message it answers.
     Chunk {
         message: Option<u64>,
         items: Vec<u64>,
+        whole: bool,
     },
-    /// A whole turn.
-    Turn(Vec<u64>),
-    /// A turn over [`INPUT`]: its message, then its chunk lines.
-    Chunked {
+    /// A turn: its message, its work's chunk lines in order, and its final reply.
+    Turn {
         message: Option<u64>,
-        chunks: Vec<Key>,
+        work: Vec<Key>,
+        reply: Option<u64>,
     },
     /// Two adjacent lines, the earlier first.
     Node([Key; 2]),
@@ -134,7 +135,7 @@ impl Source {
     pub fn kind(&self) -> LineKind {
         match self {
             Source::Chunk { .. } => LineKind::Chunk,
-            Source::Turn(_) | Source::Chunked { .. } => LineKind::Turn,
+            Source::Turn { .. } => LineKind::Turn,
             Source::Node(_) => LineKind::Node,
         }
     }
@@ -142,18 +143,18 @@ impl Source {
     /// The lines it is made from.
     pub fn children(&self) -> &[Key] {
         match self {
-            Source::Chunked { chunks, .. } => chunks,
+            Source::Turn { work, .. } => work,
             Source::Node(pair) => pair,
-            Source::Chunk { .. } | Source::Turn(_) => &[],
+            Source::Chunk { .. } => &[],
         }
     }
 }
 
-/// One turn of a branch, with its chunks.
+/// One turn of a branch, with the chunks of its work.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     pub turn: Turn,
-    /// Positions on the path, when the turn is over [`INPUT`].
+    /// Positions on the path: one chunk when its work fits in [`INPUT`], none without work.
     pub chunks: Vec<Range<usize>>,
 }
 
@@ -233,10 +234,11 @@ pub fn nodes(lines: &[Key]) -> Vec<(Key, [Key; 2])> {
     out
 }
 
-const TURN: &str = "Compress this turn";
-const CHUNK: &str = "Compress this part of a long turn";
-const CHUNKED: &str =
-    "Compress this long turn, given as its message and the lines of its parts in order,";
+const WORK: &str =
+    "Compress the work of this turn, the steps between its message and its final reply,";
+const PART: &str = "Compress this part of the work of a long turn";
+const TURN: &str =
+    "Compress this turn, given as its message, the lines of its work in order and its final reply,";
 const MERGE: &str = "Merge these two adjacent lines, the earlier first,";
 
 /// A call's message: the size of a line of `words` words, what to do, the context and the
@@ -259,21 +261,17 @@ pub fn branch(tree: &Tree, tip: usize) -> Branch {
     cut(tree, seqs, |s| size[s])
 }
 
-/// The turns of the path `seqs`, with their chunks; `size` gives an item's rendered bytes by
-/// sequence number.
+/// The turns of the path `seqs`, with the chunks of their work; `size` gives an item's rendered
+/// bytes by sequence number.
 fn cut(tree: &Tree, seqs: Vec<usize>, size: impl Fn(usize) -> usize) -> Branch {
     let path: Vec<&Item> = seqs.iter().map(|&i| &tree.items()[i]).collect();
     let size = |p: usize| size(seqs[p]);
     let call = |p: usize| matches!(path[p].kind, Kind::ToolCall { .. });
     let parts = turns(&path)
         .into_iter()
-        .map(|x| {
-            let over = x.span.clone().map(size).sum::<usize>() > INPUT;
-            let chunks = match over {
-                true => chunk(&x.steps, INPUT, size, call),
-                false => Vec::new(),
-            };
-            Part { turn: x, chunks }
+        .map(|x| Part {
+            chunks: chunk(x.work(), INPUT, size, call),
+            turn: x,
         })
         .collect();
     Branch { seqs, parts }
@@ -319,22 +317,20 @@ impl Rollup {
             let first = b.seqs[p.turn.span.start];
             let message = tree.items()[first].kind.opens().then_some(first as u64);
             let keys = b.chunk_keys(p);
+            let whole = p.turn.closed && keys.len() == 1;
             for (c, &k) in p.done().iter().zip(&keys) {
                 self.lines.entry(k).or_insert_with(|| Source::Chunk {
                     message,
                     items: seqs(c),
+                    whole,
                 });
             }
             if let Some(k) = b.line(p) {
-                self.lines
-                    .entry(k)
-                    .or_insert_with(|| match keys.is_empty() {
-                        true => Source::Turn(seqs(&p.turn.span)),
-                        false => Source::Chunked {
-                            message,
-                            chunks: keys.clone(),
-                        },
-                    });
+                self.lines.entry(k).or_insert_with(|| Source::Turn {
+                    message,
+                    work: keys,
+                    reply: p.turn.reply.map(|r| b.seqs[r] as u64),
+                });
             }
         }
         for (k, pair) in nodes(&b.lines()) {
@@ -377,14 +373,30 @@ impl Rollup {
 
     /// What line `key` covers, by [`weight`].
     fn size(&self, key: Key) -> usize {
+        let weight = |s: &u64| self.weights[*s as usize];
         match self.lines.get(&key) {
-            Some(Source::Chunk { items, .. } | Source::Turn(items)) => {
-                items.iter().map(|&s| self.weights[s as usize]).sum()
+            Some(Source::Chunk { items, .. }) => items.iter().map(weight).sum(),
+            Some(Source::Turn {
+                message,
+                work,
+                reply,
+            }) => {
+                let ends: usize = message.iter().chain(reply).map(weight).sum();
+                ends + work.iter().map(|&k| self.size(k)).sum::<usize>()
             }
-            Some(Source::Chunked { chunks, .. }) => chunks.iter().map(|&k| self.size(k)).sum(),
             Some(Source::Node([a, b])) => self.size(*a) + self.size(*b),
             None => 0,
         }
+    }
+
+    /// Chunk line `key` as a turn's input lists it: `t.i+n|text`.
+    fn chunk_line(&self, key: Key, text: &str) -> String {
+        let first = match self.lines.get(&key) {
+            Some(Source::Chunk { items, .. }) => items[0],
+            _ => key.last,
+        };
+        let id = Id::line(0, self.place(first), self.place(key.last));
+        format!("{id}|{text}\n")
     }
 
     /// The words line `key` is asked for: one per [`RATIO`] of what it covers, at least
@@ -397,20 +409,17 @@ impl Rollup {
     /// from is `built`.
     fn input<'a>(&self, key: Key, built: impl Fn(Key) -> Option<&'a str>) -> Option<String> {
         Some(match self.lines.get(&key)? {
-            Source::Chunk { items, .. } | Source::Turn(items) => {
-                items.iter().map(|&s| self.text(s)).collect()
-            }
-            Source::Chunked { message, chunks } => {
+            Source::Chunk { items, .. } => items.iter().map(|&s| self.text(s)).collect(),
+            Source::Turn {
+                message,
+                work,
+                reply,
+            } => {
                 let mut s = message.map_or(String::new(), |m| self.text(m).into());
-                for &k in chunks {
-                    let first = match self.lines.get(&k) {
-                        Some(Source::Chunk { items, .. }) => items[0],
-                        _ => k.last,
-                    };
-                    let id = Id::line(0, self.place(first), self.place(k.last));
-                    s += &format!("{id}|{}\n", built(k)?);
+                for &k in work {
+                    s += &self.chunk_line(k, built(k)?);
                 }
-                s
+                s + reply.map_or("", |r| self.text(r))
             }
             Source::Node([a, b]) => format!("{}\n{}\n", built(*a)?, built(*b)?),
         })
@@ -420,19 +429,29 @@ impl Rollup {
     /// call; `None` when it needs one, or until every line it is made from is `built`.
     pub fn free<'a>(&self, key: Key, built: impl Fn(Key) -> Option<&'a str>) -> Option<String> {
         let max = limit(self.words(key));
+        let len = |s: &u64| self.text(*s).len();
         let text = match self.lines.get(&key)? {
-            Source::Chunk { items, .. } | Source::Turn(items) => {
-                if items.iter().map(|&s| self.text(s).len()).sum::<usize>() > max {
+            Source::Chunk { items, .. } => {
+                if items.iter().map(len).sum::<usize>() > max {
                     return None;
                 }
                 items.iter().map(|&s| bare(self.text(s))).collect()
             }
-            Source::Chunked { message, chunks } => {
-                let mut s = message.map_or(String::new(), |m| bare(self.text(m)));
-                for &k in chunks {
-                    s += &format!("{}\n", built(k)?);
+            Source::Turn {
+                message,
+                work,
+                reply,
+            } => {
+                let lines = work.iter().map(|&k| built(k)).collect::<Option<Vec<_>>>()?;
+                let ends: usize = message.iter().chain(reply).map(len).sum();
+                if ends + lines.iter().map(|l| l.len() + 1).sum::<usize>() > max {
+                    return None;
                 }
-                s
+                let mut s = message.map_or(String::new(), |m| bare(self.text(m)));
+                for l in lines {
+                    s += &format!("{l}\n");
+                }
+                s + &reply.map_or(String::new(), |r| bare(self.text(r)))
             }
             Source::Node(_) => self.input(key, built)?,
         };
@@ -446,14 +465,13 @@ impl Rollup {
         let input = self.input(key, built)?;
         let words = self.words(key);
         Some(match source {
-            Source::Chunk { message, .. } => task(
-                CHUNK,
+            Source::Chunk { message, whole, .. } => task(
+                if *whole { WORK } else { PART },
                 words,
                 message.map(|m| clip(self.text(m), CLIP)).as_deref(),
                 &input,
             ),
-            Source::Turn(_) => task(TURN, words, None, &input),
-            Source::Chunked { .. } => task(CHUNKED, words, None, &input),
+            Source::Turn { .. } => task(TURN, words, None, &input),
             Source::Node(_) => task(MERGE, words, None, &input),
         })
     }

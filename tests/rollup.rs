@@ -61,6 +61,12 @@ impl Script {
             "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}))
     }
 
+    /// A text that ends the turn: its final reply.
+    fn reply(&mut self, text: &str) -> u64 {
+        self.entry(json!({"type": "assistant", "message": {"role": "assistant",
+            "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}))
+    }
+
     fn call(&mut self, name: &str, input: Value) -> u64 {
         let id = format!("toolu_{}", self.lines.len());
         self.entry(json!({"type": "assistant", "message": {"role": "assistant",
@@ -79,10 +85,10 @@ impl Script {
         self.last = Some(format!("e{seq}"));
     }
 
-    /// A turn of a short prompt and a reply too long to be its own line.
+    /// A turn of a short prompt and a final reply too long to be its own line.
     fn turn(&mut self, k: usize) -> u64 {
         self.user(&format!("task {k}"));
-        self.ai(&format!("done {k}: {}", "r".repeat(600)))
+        self.reply(&format!("done {k}: {}", "r".repeat(600)))
     }
 
     /// `n` steps of a text, a Read and a long output; returns the last.
@@ -198,9 +204,9 @@ impl Fake {
 fn reply(task: &str) -> String {
     let input = task.split_once("<input>\n").expect("an input").1;
     let verb = [
-        ("Compress this turn", "turn"),
+        ("Compress the work", "work"),
         ("Compress this part", "part"),
-        ("Compress this long turn", "chunked"),
+        ("Compress this turn", "turn"),
         ("Merge these", "merge"),
     ]
     .into_iter()
@@ -304,9 +310,9 @@ fn short_turns_and_their_nodes_are_free_lines() {
     let r = Repo::new();
     let mut s = Script::new();
     s.user("hi");
-    let a = s.ai("Hello.");
+    let a = s.reply("Hello.");
     s.user("thanks");
-    let b = s.ai("Welcome.");
+    let b = s.reply("Welcome.");
     s.user("bye");
     let t = r.thread(&s);
     let fake = Fake::new();
@@ -336,7 +342,7 @@ fn every_level_is_built_and_only_once() {
     let e1 = s.turn(1);
     let big = s.user("read every file");
     s.steps(14);
-    let e2 = s.ai("read them all");
+    let e2 = s.reply("read them all");
     let e3 = s.turn(3);
     let e4 = s.turn(4);
     s.user("next");
@@ -348,7 +354,8 @@ fn every_level_is_built_and_only_once() {
     assert_eq!(b.parts.len(), 6);
     let chunks = b.chunk_keys(&b.parts[2]);
     assert_eq!(chunks.len(), 2, "14 steps of about 4.2 KB in 48 KB chunks");
-    assert_eq!(chunks[1], key(0, e2));
+    assert_eq!(chunks[1], key(0, e2 - 1), "the final reply is no work");
+    assert_eq!(b.chunk_keys(&b.parts[0]), [], "a reply alone has no work");
     assert_eq!(
         b.lines(),
         [key(1, e0), key(1, e1), key(1, e2), key(1, e3), key(1, e4)]
@@ -356,9 +363,10 @@ fn every_level_is_built_and_only_once() {
     assert!(b.line(&b.parts[5]).is_none(), "the open turn has no line");
     assert_eq!(
         roll.source(key(1, e2)),
-        Some(&Source::Chunked {
+        Some(&Source::Turn {
             message: Some(big),
-            chunks: chunks.clone()
+            work: chunks.clone(),
+            reply: Some(e2),
         })
     );
 
@@ -372,10 +380,13 @@ fn every_level_is_built_and_only_once() {
     let span = |kind: &str, a: u64, b: u64| format!("{kind} [{}]..[{}]", id(a), id(b));
     let want = [
         (chunks[0].to_string(), span("part", big + 1, chunks[0].last)),
-        (format!("0@{e2}"), span("part", chunks[0].last + 1, e2)),
+        (
+            chunks[1].to_string(),
+            span("part", chunks[0].last + 1, e2 - 1),
+        ),
         (format!("1@{e0}"), span("turn", 0, e0)),
         (format!("1@{e1}"), span("turn", e0 + 1, e1)),
-        (format!("1@{e2}"), span("chunked", big, e2)),
+        (format!("1@{e2}"), span("turn", big, e2)),
         (format!("1@{e3}"), span("turn", e2 + 1, e3)),
         (format!("1@{e4}"), span("turn", e3 + 1, e4)),
         (format!("2@{e1}"), span("merge", 0, e1)),
@@ -409,8 +420,9 @@ fn every_level_is_built_and_only_once() {
     let tasks = fake.tasks();
     let chunk_tasks: Vec<&String> = tasks
         .iter()
-        .filter(|t| t.contains("part of a long"))
+        .filter(|t| t.contains("part of the work of a long turn"))
         .collect();
+    assert_eq!(chunk_tasks.len(), 2);
     let context = "<context>\n2.0|user: read every file\n</context>";
     assert!(chunk_tasks.iter().all(|t| t.contains(context)));
     assert!(
@@ -420,7 +432,7 @@ fn every_level_is_built_and_only_once() {
     );
     let whole = tasks
         .iter()
-        .find(|t| t.contains("long turn, given"))
+        .find(|t| t.contains("|user: read every file") && t.contains("lines of its work"))
         .unwrap();
     let n = chunks[0].last - big;
     assert!(
@@ -428,6 +440,10 @@ fn every_level_is_built_and_only_once() {
             "<input>\n2.0|user: read every file\n2.1+{n}|part [2.1]..[2.{n}]"
         )),
         "{whole}"
+    );
+    assert!(
+        whole.ends_with("2.43|ai: read them all\n</input>"),
+        "the final reply whole: {whole}"
     );
     assert!(tasks.iter().all(|t| t.ends_with("</input>")));
 }
@@ -443,9 +459,9 @@ fn a_line_is_asked_for_more_words_as_the_ai_s_words_and_calls_grow() {
         let c = s.call("Read", json!({"file_path": format!("/src/f{j}.rs")}));
         s.result(c, &"out ".repeat(500));
     }
-    let e1 = s.ai("done");
+    let e1 = s.reply("done");
     s.user("task 2");
-    let e2 = s.ai(&"word ".repeat(3000));
+    let e2 = s.reply(&"word ".repeat(3000));
     let e3 = s.turn(3);
     s.user("next");
     let t = r.thread(&s);
@@ -463,25 +479,36 @@ fn a_line_is_asked_for_more_words_as_the_ai_s_words_and_calls_grow() {
         "a merged line scales with what it covers"
     );
 
+    let work = key(0, e1 - 1);
+    assert_eq!(roll.words(work), 140, "the work holds the turn's calls");
+
     let fake = Fake::new();
     let built = summarised(&t, &fake);
     assert_eq!(
         built.calls, 4,
-        "each merge fits its larger line, so joins free"
+        "turn 1's line fits its work line and reply, and each merge its larger line, so join free"
     );
     let tasks = fake.tasks();
-    for (k, n) in [(0, 50), (1, 140), (2, 200), (3, 50)] {
+    for (k, n, verb) in [
+        (0, 50, "Compress this turn"),
+        (1, 140, "Compress the work"),
+        (2, 200, "Compress this turn"),
+        (3, 50, "Compress this turn"),
+    ] {
         let task = tasks
             .iter()
             .find(|t| t.contains(&format!("|user: task {k}\n")))
             .unwrap();
         let ruler = format!("For scale only, this meaningless filler is exactly {n} words:\n");
         assert!(task.starts_with(&ruler), "{task}");
-        assert!(task.contains(&format!(
-            "Compress this turn into one line of at most {n} words."
-        )));
+        assert!(task.contains(verb), "{task}");
+        assert!(task.contains(&format!(" into one line of at most {n} words.")));
     }
     let l = lines(&t);
+    assert_eq!(
+        l[&key(1, e1)].text,
+        format!("user: task 1 {} ai: done", l[&work].text)
+    );
     assert_eq!(
         l[&key(2, e1)].text,
         format!("{} {}", l[&key(1, e0)].text, l[&key(1, e1)].text)
@@ -627,7 +654,7 @@ fn build_returns_at_its_deadline() {
     let mut s = Script::new();
     let e0 = s.turn(0);
     s.user("hi");
-    let e1 = s.ai("hello");
+    let e1 = s.reply("hello");
     s.user("open");
     let t = r.thread(&s);
     let slow = Fake::with(Duration::from_secs(3), |_| false);
@@ -984,7 +1011,7 @@ fn failed_lines_stay_unbuilt_and_a_failing_model_stops_the_summariser() {
     let mut s = Script::new();
     let e0 = s.turn(0);
     s.user("poison");
-    let e1 = s.ai(&"p".repeat(600));
+    let e1 = s.reply(&"p".repeat(600));
     let e2 = s.turn(2);
     s.user("open");
     let t = r.thread(&s);

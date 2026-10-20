@@ -165,6 +165,17 @@ pub struct Turn {
     /// The position its lines are keyed by: the item that ends it, so markers after it change
     /// no key; else its last.
     pub last: usize,
+    /// Its final reply: the item that ends it, when that is the assistant's words. Only
+    /// markers follow it, so it starts the last step.
+    pub reply: Option<usize>,
+}
+
+impl Turn {
+    /// Its work: the steps between its message and its final reply; every step while it has
+    /// none.
+    pub fn work(&self) -> &[Range<usize>] {
+        &self.steps[..self.steps.len() - usize::from(self.reply.is_some())]
+    }
 }
 
 /// The turns along `path`, in order.
@@ -196,6 +207,7 @@ pub fn turns(path: &[&Item]) -> Vec<Turn> {
                 steps,
                 closed: end < path.len() || ending.is_some(),
                 last: ending.unwrap_or(end - 1),
+                reply: ending.filter(|&i| matches!(path[i].kind, Kind::Text(_))),
             }
         })
         .collect()
@@ -297,6 +309,7 @@ mod tests {
             span,
             steps: steps.iter().map(|&(a, b)| a..b).collect(),
             closed,
+            reply: None,
         };
         assert_eq!(
             turns(&path),
@@ -339,6 +352,49 @@ mod tests {
             ends(9),
             [(true, 3), (false, 8)],
             "a step after the end reopens the turn"
+        );
+    }
+
+    #[test]
+    fn a_turn_s_work_runs_from_its_message_to_its_final_reply() {
+        let all = items(&[
+            ("u1", "", 'u'),
+            ("t1", "", 't'),
+            ("c1", "", 'c'),
+            ("r1", "", 'r'),
+            ("e1", "", 'e'),
+            ("m1", "", 'm'),
+            ("u2", "", 'u'),
+            ("e2", "", 'e'),
+            ("u3", "", 'u'),
+            ("t3", "", 't'),
+            ("c3", "", 'c'),
+            ("u4", "", 'u'),
+            ("c4", "", 'c'),
+            ("e4", "", 'e'),
+            ("c5", "", 'c'),
+        ]);
+        let path: Vec<&Item> = all.iter().collect();
+        let parts = |n: usize| {
+            turns(&path[..n])
+                .iter()
+                .map(|x| (x.reply, x.work().iter().map(|r| (r.start, r.end)).collect()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            parts(11),
+            [
+                (Some(4), vec![(1, 4)]),
+                (Some(7), vec![]),
+                (None, vec![(9, 11)]),
+            ],
+            "the reply and the markers after it are no work; a turn a message cuts short has none"
+        );
+        assert_eq!(parts(14)[3], (Some(13), vec![(12, 13)]));
+        assert_eq!(
+            parts(15)[3],
+            (None, vec![(12, 13), (13, 15)]),
+            "a step after the end makes the reply work"
         );
     }
 

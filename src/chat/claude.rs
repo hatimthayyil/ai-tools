@@ -684,6 +684,41 @@ mod tests {
             items[3].kind,
             Kind::User("The licence is CC0-1.0, not MIT.".into())
         );
+        let roll = rollup::Rollup::new(&Tree::new(items));
+        let key = |level, last| Key { level, last };
+        assert_eq!(
+            roll.source(key(0, 2)),
+            Some(&rollup::Source::Chunk {
+                message: Some(0),
+                items: vec![1, 2],
+                whole: true,
+            }),
+            "the run the message cut short is work, with no final reply"
+        );
+        assert_eq!(
+            roll.source(key(1, 4)),
+            Some(&rollup::Source::Turn {
+                message: Some(3),
+                work: vec![],
+                reply: Some(4),
+            })
+        );
+        for name in ["interject.jsonl", "interject-inline.jsonl"] {
+            let items = load(name);
+            let roll = rollup::Rollup::new(&Tree::new(items.clone()));
+            let opens = |seq: &u64| items[*seq as usize].kind.opens();
+            for s in roll.lines().values() {
+                match s {
+                    rollup::Source::Chunk { items: work, .. } => {
+                        assert!(!work.iter().any(opens), "{name}: no message is work")
+                    }
+                    rollup::Source::Turn { message, .. } => {
+                        assert!(message.as_ref().is_some_and(opens), "{name}")
+                    }
+                    rollup::Source::Node(_) => {}
+                }
+            }
+        }
     }
 
     #[test]

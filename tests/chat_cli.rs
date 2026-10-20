@@ -369,7 +369,8 @@ fn fixture(name: &str) -> String {
     fs::read_to_string(p.join(name)).unwrap()
 }
 
-/// A transcript of `n` turns: the user's `ask(k)` and a reply.
+/// A transcript of `n` turns: the user's `ask(k)` and a reply that does not end the turn, so
+/// it is the turn's work and the last turn stays open.
 fn talk(n: usize, ask: impl Fn(usize) -> String) -> String {
     let mut out = String::new();
     let mut parent = Value::Null;
@@ -815,8 +816,8 @@ fn view_syncs_its_session_and_writes_no_line() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(
         lines(&s),
-        3,
-        "compact-session writes the lines its view needs"
+        6,
+        "compact-session writes the lines its view needs, each turn's with its work"
     );
     assert!(!stdout(&o).contains("not summarised yet"), "{}", stdout(&o));
 }
@@ -1249,7 +1250,7 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
         "the line written by hand stays: {dry}"
     );
     assert!(
-        dry.ends_with("Dry run: 2 lines, 0 by the model; nothing stored.\n"),
+        dry.ends_with("Dry run: 4 lines, 0 by the model; nothing stored.\n"),
         "{dry}"
     );
     let all = |s: &Sandbox| {
@@ -1265,19 +1266,21 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
 
     ok(
         s.ai_in("s-1", &["build"]),
-        "Wrote 2 lines, 0 by the model.\n",
+        "Wrote 4 lines, 0 by the model.\n",
     );
     ok(s.ai(&["build", "-t", "dev"]), "Nothing to write.\n");
     let o = s.ai_in("s-1", &["build", "--rebuild", "--dry-run"]);
     let dry = stdout(&o);
     assert!(
-        dry.starts_with(&format!("{fresh}  was: first, by hand\n")),
+        dry.starts_with(&format!(
+            "0.1|ai: reply 0\n  was: ai: reply 0\n{fresh}  was: first, by hand\n"
+        )),
         "{dry}"
     );
-    assert!(dry.ends_with("Dry run: 3 lines, 0 by the model; nothing stored.\n"));
+    assert!(dry.ends_with("Dry run: 5 lines, 0 by the model; nothing stored.\n"));
     ok(
         s.ai_in("s-1", &["build", "--rebuild"]),
-        "Dropped 3 lines; wrote 3, 0 by the model.\n",
+        "Dropped 5 lines; wrote 5, 0 by the model.\n",
     );
     let t = s.chat().thread("dev").unwrap();
     let line = t
@@ -1301,7 +1304,7 @@ fn build_writes_or_rewrites_one_line() {
     s.line("dev", 1, ends[0], "by hand");
     ok(
         s.ai_in("s-1", &["build", "0+2"]),
-        "Wrote 2 lines, 0 by the model.\n",
+        "Wrote 3 lines, 0 by the model.\n",
     );
     ok(
         s.ai_in("s-1", &["build", "0"]),
@@ -1309,24 +1312,26 @@ fn build_writes_or_rewrites_one_line() {
     );
     ok(
         s.ai_in("s-1", &["build", "0", "--rebuild", "--dry-run"]),
-        "0|user: question 0 ai: reply 0\n  was: by hand\n\
-         Dry run: 1 line, 0 by the model; nothing stored.\n",
+        "0.1|ai: reply 0\n0|user: question 0 ai: reply 0\n  was: by hand\n\
+         Dry run: 2 lines, 0 by the model; nothing stored.\n",
     );
     let dry = stdout(&s.ai(&["build", "-t", "dev", "2+2", "--dry-run"]));
     let ids: Vec<&str> = dry.lines().map(|l| l.split('|').next().unwrap()).collect();
     assert_eq!(
         ids,
         [
+            "2.1",
             "2",
+            "3.1",
             "3",
             "2+2",
-            "Dry run: 3 lines, 0 by the model; nothing stored."
+            "Dry run: 5 lines, 0 by the model; nothing stored."
         ],
         "{dry}"
     );
     ok(
         s.ai_in("s-1", &["build"]),
-        "Wrote 4 lines, 0 by the model.\n",
+        "Wrote 7 lines, 0 by the model.\n",
     );
     ok(
         s.ai_in("s-1", &["build", "0", "--rebuild"]),
@@ -1348,15 +1353,15 @@ fn build_writes_or_rewrites_one_line() {
     );
     fails(
         s.ai_in("s-1", &["build", "4"]),
-        "4 is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and chunks (12.3+7).\n",
+        "4 is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and their work (12.1+7).\n",
     );
     fails(
         s.ai_in("s-1", &["build", "1+3"]),
-        "1+3 is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and chunks (12.3+7).\n",
+        "1+3 is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and their work (12.1+7).\n",
     );
     fails(
         s.ai_in("s-1", &["build", "x"]),
-        "'x' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3+7 (a chunk).\n",
+        "'x' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.1+7 (the work of turn 12).\n",
     );
 }
 
@@ -1428,7 +1433,7 @@ fn build_off_a_terminal_shows_no_progress() {
     );
     ok(
         s.ai_in("s-1", &["build"]),
-        "Wrote 3 lines, 2 by the model.\n",
+        "Wrote 5 lines, 2 by the model.\n",
     );
 }
 

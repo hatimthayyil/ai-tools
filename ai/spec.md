@@ -3,6 +3,7 @@
 - Attaching a session to another thread requires an explicit detach first; a rejected attach leaves both threads unchanged.
 - The store retains complete, byte-for-byte copies of a thread's original session files, including subagent files.
 - History is an ordered sequence of turns; each opens at a message from the user or another agent, and closes at the next one or where the harness ends the assistant's turn.
+- A turn is its message, its work and its final reply: the item that ends it when that is the assistant's text. Its work, the steps in between (every step when there is no final reply), is summarised in its own lines; its turn line is written from the message, those lines and the final reply. No message is ever part of a turn's work.
 - Only `compact-session`, `ai chat start` and `ai chat build` write summary lines; reading a thread never calls the model.
 - Only `/ai` compacts a session, into `ai view`: the memory's whole view, then its thread's view. It does so only once the thread's view is built; otherwise it compacts nothing. `/compact` and automatic compaction stay Claude Code's own.
 - `ai view` and the views, zooms and searches of `ai memory` and `ai chat` print whole on a terminal; otherwise in parts of at most 20,000 bytes, each ending with `--part N --at <state>` for the next, which reads the state the first part showed. A search's parts run newest first. `/ai` reads `ai view --whole`. `ai view` records its memory read as an `ai memory view`.

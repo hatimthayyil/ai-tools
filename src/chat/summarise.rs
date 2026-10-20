@@ -369,12 +369,15 @@ pub fn dry_run(
 /// The first item line `key` covers.
 pub fn first(roll: &Rollup, key: Key) -> u64 {
     match roll.source(key) {
-        Some(Source::Chunk { items, .. } | Source::Turn(items)) => {
-            items.first().copied().unwrap_or(key.last)
-        }
-        Some(Source::Chunked { message, chunks }) => {
-            message.unwrap_or_else(|| chunks.first().map_or(key.last, |&c| first(roll, c)))
-        }
+        Some(Source::Chunk { items, .. }) => items.first().copied().unwrap_or(key.last),
+        Some(Source::Turn {
+            message,
+            work,
+            reply,
+        }) => message
+            .or_else(|| work.first().map(|&c| first(roll, c)))
+            .or(*reply)
+            .unwrap_or(key.last),
         Some(Source::Node([a, _])) => first(roll, *a),
         None => key.last,
     }

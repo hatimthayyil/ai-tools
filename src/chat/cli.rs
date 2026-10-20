@@ -143,7 +143,7 @@ enum Command {
 struct Build {
     #[command(flatten)]
     target: Target,
-    #[arg(help = "one line: 12 (a turn), 8+4 (a node), 12.3+7 (a chunk)")]
+    #[arg(help = "one line: 12 (a turn), 8+4 (a node), 12.1+7 (a turn's work)")]
     id: Option<String>,
     #[arg(
         long,
@@ -872,12 +872,12 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
     let line = match id {
         Some(v) => {
             let id = Id::parse(v).with_context(|| {
-                format!("'{v}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3+7 (a chunk).")
+                format!("'{v}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.1+7 (the work of turn 12).")
             })?;
             let key = read_branch(&t.snapshot()?, session.as_ref())?
                 .and_then(|b| b.line_key(id))
                 .with_context(|| {
-                    format!("{id} is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and chunks (12.3+7).")
+                    format!("{id} is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and their work (12.1+7).")
                 })?;
             Some((id, key))
         }
