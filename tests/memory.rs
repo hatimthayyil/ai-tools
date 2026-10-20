@@ -876,7 +876,11 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["zoom", "0+64"]).stderr, "No line 0+64.");
     assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
     assert!(run(d, &["zoom", "x"]).stderr.contains("not a line id"));
-    assert!(run(d, &["zoom", "3", "99"]).stderr.contains("No part 99"));
+    assert!(
+        run(d, &["zoom", "3", "--part", "99"])
+            .stderr
+            .contains("No part 99")
+    );
 
     let origin = Store::open(d).unwrap().origin().to_string();
     let show = run(d, &["show", "40"]).stdout;
@@ -936,20 +940,13 @@ fn a_life_through_the_cli() {
         "No match.\n"
     );
     let g = run(d, &["grep", "message", "-m", "5"]).stdout;
-    let footer = g.lines().last().unwrap();
-    assert_eq!(
-        footer,
-        "Newest 5 of 40. Older: ai memory grep 'message' -m 5 --before 35"
-    );
-    let g = run(
-        d,
-        &["grep", "message", "-m", "1", "--time", "-o", "repo,kind"],
-    )
-    .stdout;
-    assert_eq!(
-        g.lines().last().unwrap(),
-        "Newest 1 of 40. Older: ai memory grep 'message' -m 1 --time -o repo,kind --before 39"
-    );
+    let ids: Vec<&str> = g
+        .lines()
+        .filter_map(|l| l.split_once('|'))
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(ids, ["35", "36", "37", "38", "39"], "{g}");
+    assert_eq!(g.lines().last().unwrap(), "Newest 5 of 40 matches.");
     let g = run(d, &["grep", "big"]).stdout;
     assert!(g.starts_with(&format!("{today}\n41|big bbb")), "{g}");
     assert_eq!(run(d, &["grep", "^"]).code, 0);
@@ -1031,23 +1028,59 @@ fn long_output_comes_in_parts_of_one_state_and_whole_on_a_terminal() {
             .contains("\nPart 1 of 2. Next: ai memory view --part 2 --at ")
     );
 
-    let mut parts = String::new();
-    for k in 1.. {
-        let p = run(d, &["zoom", "80", &k.to_string()]).stdout;
-        let next = Regex::new(&format!(
-            r"\nPart {k} of 2\. Next: ai memory zoom 80 {}\n$",
-            k + 1
-        ))
-        .unwrap();
-        match next.find(&p) {
-            Some(m) => parts += &p[..m.start()],
-            None => {
-                parts += &p;
-                break;
-            }
-        }
-    }
-    assert_eq!(parts, format!("2020-01-02\n80|{big}\n"));
+    let first = run(d, &["zoom", "80"]).stdout;
+    let (body, next) = first.split_once("\nPart 1 of 2. Next: ai memory ").unwrap();
+    assert!(
+        Regex::new(r"^zoom 80 --part 2 --at [0-9a-f]{40}\n$")
+            .unwrap()
+            .is_match(next),
+        "{next}"
+    );
+    let rest = run(d, &next.split_whitespace().collect::<Vec<_>>()).stdout;
+    let rest = rest.strip_suffix("Part 2 of 2.\n").unwrap();
+    assert_eq!(format!("{body}{rest}"), format!("2020-01-02\n80|{big}\n"));
+    assert_eq!(
+        run_rt(d, &terminal, &["zoom", "80"]).stdout,
+        format!("2020-01-02\n80|{big}\n"),
+        "a terminal reads a zoom whole"
+    );
+
+    let ids = |out: &str| -> Vec<String> {
+        out.lines()
+            .filter_map(|l| l.split_once('|'))
+            .map(|(id, _)| id.to_string())
+            .collect()
+    };
+    let first = run(d, &["grep", "^note", "--time"]).stdout;
+    let (newer, footer) = first.trim_end().rsplit_once('\n').unwrap();
+    let parts = Regex::new(
+        r"^Part 1 of 2, newest first: (\d+) of 80 matches\. Next: ai memory (grep '\^note' --time --part 2 --at [0-9a-f]{40})$",
+    )
+    .unwrap();
+    let caps = parts.captures(footer).expect(footer);
+    let shown: usize = caps[1].parse().unwrap();
+    assert!(newer.len() < 20_000);
+    run(d, &["note", "note lands between two parts"]);
+    let args: Vec<&str> = caps[2].split(' ').map(|a| a.trim_matches('\'')).collect();
+    let second = run(d, &args).stdout;
+    let (older, footer) = second.trim_end().rsplit_once('\n').unwrap();
+    assert_eq!(
+        footer,
+        format!("Part 2 of 2, newest first: {} of 80 matches.", 80 - shown)
+    );
+    let want: Vec<String> = (0..80).map(|k| k.to_string()).collect();
+    assert_eq!(
+        [ids(older), ids(newer)].concat(),
+        want,
+        "every match once, oldest first, from one state"
+    );
+    let whole = run_rt(d, &terminal, &["grep", "^note"]).stdout;
+    assert_eq!(
+        ids(&whole),
+        [want, vec!["82".into()]].concat(),
+        "a terminal reads the latest search whole"
+    );
+    assert!(whole.ends_with("\n81 matches.\n"), "{whole}");
 }
 
 #[test]

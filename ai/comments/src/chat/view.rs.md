@@ -33,4 +33,4 @@ Zoom (`Branch::zoom`)
 
 Grep (`Branch::grep`)
 - Searches the session's branch: message and reply words, tool calls (`key=value` input), tool output only with `--tool-output`, and every line built over the branch (chunk lines, turn lines of closed turns, nodes). Markers never. One line per match, `id|kind: excerpt` or `id|excerpt`, memory's 400-byte window around the match (`memory::excerpt`).
-- Matches sort by their last position, then by span, so an item comes before the lines that end with it, as `ai memory grep` orders by last member then size. `--before <id>` keeps what sorts before that id's span: the CLI prints the newest matches that fit one part and names the oldest shown as the next page's `--before`.
+- Matches sort by their last position, then by span, so an item comes before the lines that end with it, as `ai memory grep` orders by last member then size. The CLI pages them (page.rs.md, searches).

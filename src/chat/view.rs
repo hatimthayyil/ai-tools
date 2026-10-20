@@ -269,12 +269,7 @@ impl Branch {
 
     /// The matches of `re` on this branch, oldest first: the words of messages and replies,
     /// tool calls, tool output only with `tool_output`, and the lines built over the branch.
-    /// `before` keeps those that end before it, or are smaller and end with it.
-    pub fn grep(&self, re: &Regex, tool_output: bool, before: Option<Id>) -> Option<Vec<Hit>> {
-        let below = match before {
-            Some(id) => order(&self.positions(id)?),
-            None => (usize::MAX, 0),
-        };
+    pub fn grep(&self, re: &Regex, tool_output: bool) -> Vec<Hit> {
         let mut hits = Vec::new();
         for p in 0..self.path.len() {
             if let Some((label, text)) = searched(self.item(p), tool_output)
@@ -312,10 +307,9 @@ impl Branch {
                 order: order(&r),
                 line,
             })
-            .filter(|h| h.order < below)
             .collect();
         hits.sort_by_key(|h| h.order);
-        Some(hits)
+        hits
     }
 
     /// The key of the line `id` names on this branch: a closed turn, a node over closed turns,
@@ -1052,16 +1046,10 @@ mod tests {
             &[(1, 4, "user asked for the needle"), (2, 6, "needle twice")],
         );
         let re = Regex::new("needle").unwrap();
-        let grep = |out: bool, before: Option<&str>| -> Vec<String> {
-            let before = before.map(|b| Id::parse(b).unwrap());
-            b.grep(&re, out, before)
-                .unwrap()
-                .into_iter()
-                .map(|h| h.line)
-                .collect()
-        };
+        let grep =
+            |out: bool| -> Vec<String> { b.grep(&re, out).into_iter().map(|h| h.line).collect() };
         assert_eq!(
-            grep(false, None),
+            grep(false),
             [
                 "0.0|user: find the needle",
                 "0.2|tool Bash: grep needle",
@@ -1070,12 +1058,6 @@ mod tests {
                 "2.0|user: more needle",
             ]
         );
-        assert!(grep(true, None).contains(&"0.3|output: needle found here".to_string()));
-        assert_eq!(
-            grep(false, Some("0")),
-            ["0.0|user: find the needle", "0.2|tool Bash: grep needle"],
-            "before turn 0's line: what ends before it"
-        );
-        assert_eq!(b.grep(&re, false, Some(Id::parse("9").unwrap())), None);
+        assert!(grep(true).contains(&"0.3|output: needle found here".to_string()));
     }
 }

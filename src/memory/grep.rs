@@ -6,13 +6,13 @@ use regex::{Regex, RegexBuilder};
 
 use crate::{
     memory::{
-        cli::{line_id, plural},
+        cli::plural,
         meta::{Line, Meta},
         record::{Kind, Message, Who, flat, midnight},
-        store::{ME, Snapshot},
+        store::{ME, Store},
         tree::Coord,
     },
-    page::PART,
+    page,
 };
 
 const EXCERPT: usize = 400;
@@ -89,17 +89,11 @@ pub struct Grep {
     #[arg(long, value_name = "OWNER/NAME", help = "only noted in this repo")]
     repo: Option<String>,
     #[arg(
-        long,
-        value_name = "ID+N",
-        help = "only older than this line: the next page"
-    )]
-    before: Option<String>,
-    #[arg(
         short = 'm',
         long = "max-count",
         value_name = "N",
         value_parser = clap::value_parser!(u64).range(1..),
-        help = "at most N matches per page"
+        help = "only the newest N matches"
     )]
     max: Option<u64>,
     #[arg(
@@ -114,6 +108,14 @@ pub struct Grep {
     count: bool,
     #[command(flatten)]
     meta: Meta,
+    #[arg(long, hide = true, help = "the part to print, as printed")]
+    part: Option<u64>,
+    #[arg(
+        long,
+        hide = true,
+        help = "the memory state the parts come from, as printed"
+    )]
+    at: Option<String>,
 }
 
 type Key = (u64, u64);
@@ -199,7 +201,7 @@ impl Grep {
         self.kind.is_some() || self.repo.is_some()
     }
 
-    /// The arguments, as typed, but `--before`.
+    /// The arguments, as typed, but `--part` and `--at`.
     fn args(&self) -> Vec<String> {
         let mut a = self.pat.args();
         let flags = [(self.tree, "-t"), (self.count, "-c")];
@@ -231,8 +233,11 @@ impl Grep {
     /// Every argument, as typed.
     pub fn typed(&self) -> Vec<String> {
         let mut a = self.args();
-        if let Some(b) = &self.before {
-            a.extend(["--before".into(), b.clone()]);
+        if let Some(p) = self.part {
+            a.extend(["--part".into(), p.to_string()]);
+        }
+        if let Some(at) = &self.at {
+            a.extend(["--at".into(), at.clone()]);
         }
         a
     }
@@ -275,86 +280,40 @@ impl Unit {
     fn key(&self) -> Key {
         key(self.line)
     }
-}
 
-/// The newest units within a byte and count budget; everything at or below `floor` was dropped.
-struct Page {
-    units: VecDeque<Unit>,
-    size: u64,
-    chars: u64,
-    max: u64,
-    floor: Option<Key>,
-}
-
-impl Page {
-    fn new(chars: u64, max: Option<u64>) -> Page {
-        Page {
-            units: VecDeque::new(),
-            size: 0,
-            chars,
-            max: max.unwrap_or(u64::MAX),
-            floor: None,
-        }
-    }
-
-    fn push(&mut self, u: Unit) {
-        if self.floor.is_some_and(|f| u.key() <= f) {
-            return;
-        }
-        self.size += u.size;
-        self.units.push_back(u);
-        self.trim();
-    }
-
+    /// Adds `line`, message `i`, as context after the match.
     fn extend(&mut self, i: u64, line: Line) {
-        let Some(u) = self.units.back_mut() else {
-            return;
-        };
-        u.span = u.span.map(|(lo, _)| (lo, i + 1));
-        let n = cost(u.lines.last(), &line);
-        u.size += n;
-        self.size += n;
-        u.lines.push(line);
-        self.trim();
-    }
-
-    fn trim(&mut self) {
-        while self.units.len() > 1 && (self.size > self.chars || self.units.len() as u64 > self.max)
-        {
-            let u = self.units.pop_front().expect("len > 1");
-            self.size -= u.size;
-            self.floor = self.floor.max(Some(u.key()));
-        }
+        self.span = self.span.map(|(lo, _)| (lo, i + 1));
+        self.size += cost(self.lines.last(), &line);
+        self.lines.push(line);
     }
 }
 
-pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
+/// The matches of the memory's state `--at`, else of its latest, oldest first: all of them when
+/// `whole`, else in parts newest first, each cut from the state the first read.
+pub fn grep(store: &Store, out: &mut dyn Write, g: &Grep, whole: bool) -> Result<ExitCode> {
+    let s = &match &g.at {
+        Some(at) => store.snapshot_at(at.parse()?)?,
+        None => store.snapshot()?,
+    };
     let pat = g.pat.regex()?;
-    let t = s.log_len()?;
-    let before = g
-        .before
-        .as_deref()
-        .map(|b| line_id(b, t))
-        .transpose()?
-        .map(key);
-    let below = |k: Key| before.is_none_or(|b| k < b);
-    let end = before.map_or(t, |b| b.0 + 1);
+    let end = s.log_len()?;
     let since = g.since.map(midnight).unwrap_or_default();
-    let (mut pages, mut hits) = (vec![Page::new(PART, g.max)], 0);
+    let mut units: Vec<Unit> = Vec::new();
 
-    let log = &mut pages[0];
     let (mut ring, mut after) = (VecDeque::new(), 0);
     s.scan(end, |i, m| {
-        if below((i, 1)) && g.admits_message(&since, &m) && pat.is_match(&m.text) {
-            hits += 1;
+        if g.admits_message(&since, &m) && pat.is_match(&m.text) {
             let first = ring.front().map_or(i, |&(j, _)| j);
             let mut lines: Vec<_> = ring.drain(..).map(|(_, l)| l).collect();
             lines.push(detail(i, &m, &g.meta, Some(&pat)));
-            log.push(Unit::new(Coord::leaf(i), Some((first, i + 1)), lines));
+            units.push(Unit::new(Coord::leaf(i), Some((first, i + 1)), lines));
             after = g.context;
         } else if after > 0 {
             after -= 1;
-            log.extend(i, detail(i, &m, &g.meta, None));
+            if let Some(u) = units.last_mut() {
+                u.extend(i, detail(i, &m, &g.meta, None));
+            }
         } else if g.context > 0 {
             ring.push_back((i, detail(i, &m, &g.meta, None)));
             if ring.len() as u64 > g.context {
@@ -366,23 +325,20 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
 
     let mut l = 1;
     while g.tree && !g.message_only() && 1u64 << l <= end {
-        let mut page = Page::new(PART, g.max);
         for (i, n) in s.level(l)?.into_iter().enumerate() {
             let c = Coord::new(l, i as u64);
             let Some(n) = n.filter(|_| c.end() <= end) else {
                 continue;
             };
-            if below(key(c)) && g.admits(&since, &n.ts, &n.origin, &n.who) && pat.is_match(&n.text)
-            {
-                hits += 1;
+            if g.admits(&since, &n.ts, &n.origin, &n.who) && pat.is_match(&n.text) {
                 let line = g.meta.line_at(s, c, &n.text)?;
-                page.push(Unit::new(c, None, vec![line]));
+                units.push(Unit::new(c, None, vec![line]));
             }
         }
-        pages.push(page);
         l += 1;
     }
 
+    let hits = units.len() as u64;
     if hits == 0 {
         writeln!(out, "No match.")?;
         return Ok(ExitCode::SUCCESS);
@@ -391,16 +347,16 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
         writeln!(out, "{}.", plural(hits, "match"))?;
         return Ok(ExitCode::SUCCESS);
     }
-    let mut units: Vec<_> = pages.iter_mut().flat_map(|p| p.units.drain(..)).collect();
     units.sort_unstable_by_key(Unit::key);
-    let mut page = Page::new(PART, g.max);
-    page.floor = pages.iter().filter_map(|p| p.floor).max();
-    for u in units {
-        page.push(u);
-    }
+    let kept = &units[units.len() - g.max.map_or(units.len(), |m| units.len().min(m as usize))..];
+    let sizes: Vec<u64> = kept.iter().map(|u| u.size).collect();
+    let mark = s.mark();
+    let (shown, footer) = page::search(&sizes, hits, page::pick(g.part, whole), |k| {
+        format!("{} --part {k} --at {mark}", g.command())
+    })?;
 
     let (mut prev, mut last) = (None, None);
-    for (k, u) in page.units.iter().enumerate() {
+    for (k, u) in kept[shown].iter().enumerate() {
         let joined = prev.is_some_and(|e| u.span.is_some_and(|(lo, _)| lo == e));
         if g.context > 0 && k > 0 && !joined {
             writeln!(out, "--")?;
@@ -414,16 +370,7 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
         }
         prev = u.span.map(|(_, hi)| hi);
     }
-    let shown = page.units.len() as u64;
-    match page.units.front() {
-        Some(u) if shown < hits => writeln!(
-            out,
-            "Newest {shown} of {hits}. Older: {} --before {}",
-            g.command(),
-            u.line
-        )?,
-        _ => writeln!(out, "{}.", plural(hits, "match"))?,
-    }
+    writeln!(out, "{footer}")?;
     Ok(ExitCode::SUCCESS)
 }
 

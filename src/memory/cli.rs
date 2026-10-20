@@ -32,7 +32,7 @@ use crate::{
         view::{Mem, PLACEHOLDER, VIEW},
         zoom::zoom,
     },
-    page::{self, PART, page},
+    page,
 };
 
 const TEMPLATE: &str = "\
@@ -136,14 +136,20 @@ enum Command {
     },
     #[command(about = "build every summary that can be built now, with Claude Code.")]
     Build,
-    #[command(about = "search every message ever recorded, newest page first.")]
+    #[command(about = "search every message ever recorded, newest first.")]
     Grep(Grep),
     #[command(about = "open a line of the view into the four lines two levels under it.")]
     Zoom {
         #[arg(help = "a line's id, as printed: 2184+8, or 7 for message 7")]
         id: String,
-        #[arg(help = "the part of a long message to show, as printed")]
+        #[arg(long, hide = true, help = "the part to print, as printed")]
         part: Option<u64>,
+        #[arg(
+            long,
+            hide = true,
+            help = "the memory state the parts come from, as printed"
+        )]
+        at: Option<String>,
         #[command(flatten)]
         meta: Meta,
     },
@@ -171,20 +177,23 @@ enum Command {
 impl Command {
     /// Its name and arguments, as typed; a note's text is in the store.
     fn typed(&self) -> (&'static str, Vec<String>) {
-        let part = |p: &Option<u64>| p.map(|p| p.to_string());
+        let parts = |p: &Option<u64>, at: &Option<String>| {
+            p.iter()
+                .flat_map(|p| ["--part".into(), p.to_string()])
+                .chain(at.iter().flat_map(|a| ["--at".into(), a.clone()]))
+                .collect::<Vec<String>>()
+        };
         match self {
             Command::Init => ("init", Vec::new()),
             Command::View {
-                part: p,
+                part,
                 at,
                 whole,
                 meta,
             } => (
                 "view",
-                part(p)
+                parts(part, at)
                     .into_iter()
-                    .flat_map(|p| ["--part".into(), p])
-                    .chain(at.iter().flat_map(|a| ["--at".into(), a.clone()]))
                     .chain(whole.then(|| "--whole".into()))
                     .chain(meta.args())
                     .collect(),
@@ -192,10 +201,10 @@ impl Command {
             Command::Note { .. } => ("note", Vec::new()),
             Command::Build => ("build", Vec::new()),
             Command::Grep(g) => ("grep", g.typed()),
-            Command::Zoom { id, part: p, meta } => (
+            Command::Zoom { id, part, at, meta } => (
                 "zoom",
                 std::iter::once(id.clone())
-                    .chain(part(p))
+                    .chain(parts(part, at))
                     .chain(meta.args())
                     .collect(),
             ),
@@ -342,9 +351,13 @@ impl Command {
             } => view(s, out, part, at.as_deref(), whole || rt.terminal, &meta),
             Command::Note { text } => note(s, out, &text, rt, place, who),
             Command::Build => build(s, out, rt),
-            Command::Grep(g) => grep(&s.snapshot()?, out, &g),
-            Command::Zoom { id, part, meta } => {
-                zoom_cmd(&s.snapshot()?, out, &id, part.unwrap_or(1), &meta)
+            Command::Grep(g) => grep(s, out, &g, rt.terminal),
+            Command::Zoom { id, part, at, meta } => {
+                let snap = match at {
+                    Some(at) => s.snapshot_at(at.parse()?)?,
+                    None => s.snapshot()?,
+                };
+                zoom_cmd(&snap, out, &id, page::pick(part, rt.terminal), &meta)
             }
             Command::Show { id } => show(&s.snapshot()?, out, &id),
             Command::Config { sets } => config(s, out, &sets),
@@ -613,27 +626,23 @@ fn config(s: &Store, out: &mut dyn Write, sets: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// What line `id` of state `s` opens into: whole for `part` `None`, else that part, each part
+/// naming the state for the next.
 fn zoom_cmd(
     s: &Snapshot,
     out: &mut dyn Write,
     id: &str,
-    part: u64,
+    part: Option<u64>,
     meta: &Meta,
 ) -> Result<ExitCode> {
     let c = line_id(id, s.log_len()?)?;
     let Some(text) = zoom(s, c.id(), c.n(), Some(meta))? else {
         bail!("No line {c}.");
     };
-    let (text, n) = page(&text, PART, part)?;
-    writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(text))?;
-    if part < n {
-        writeln!(
-            out,
-            "Part {part} of {n}. Next: {ME} zoom {c} {}{}",
-            part + 1,
-            meta.flags()
-        )?;
-    }
+    let mark = s.mark();
+    page::print(out, &text, part, |k| {
+        format!("{ME} zoom {c} --part {k} --at {mark}{}", meta.flags())
+    })?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, ops::Range};
 
 use anyhow::{Result, bail};
 
@@ -64,9 +64,99 @@ pub fn print(
     Ok(())
 }
 
+/// The parts of a search's matches, given each match's size, oldest first: part 1 the newest
+/// that fit in [`PART`] bytes (at least one), each later part the newest of those left.
+pub fn newest_first(sizes: &[u64]) -> Vec<Range<usize>> {
+    let (mut parts, mut end) = (Vec::new(), sizes.len());
+    while end > 0 {
+        let (mut start, mut size) = (end - 1, sizes[end - 1]);
+        while start > 0 && size + sizes[start - 1] <= PART {
+            start -= 1;
+            size += sizes[start];
+        }
+        parts.push(start..end);
+        end = start;
+    }
+    parts
+}
+
+/// Which of a search's matches to print and the footer after them, for `part` as [`pick`] gives
+/// it: all of them for `None`, else that part of [`newest_first`]. `sizes` are the newest
+/// matches kept of `hits`; `next` gives the command for part `k + 1`.
+pub fn search(
+    sizes: &[u64],
+    hits: u64,
+    part: Option<u64>,
+    next: impl FnOnce(u64) -> String,
+) -> Result<(Range<usize>, String)> {
+    let kept = sizes.len() as u64;
+    let all = match kept < hits {
+        true => format!("Newest {kept} of {hits} matches."),
+        false if hits == 1 => "1 match.".into(),
+        false => format!("{hits} matches."),
+    };
+    let Some(k) = part else {
+        return Ok((0..sizes.len(), all));
+    };
+    let parts = newest_first(sizes);
+    let n = parts.len() as u64;
+    let Some(r) = k.checked_sub(1).and_then(|i| parts.get(i as usize)) else {
+        bail!("No part {k}: it has {n}.");
+    };
+    if n == 1 {
+        return Ok((r.clone(), all));
+    }
+    let of = match kept < hits {
+        true => format!("the newest {kept} of {hits} matches"),
+        false => format!("{hits} matches"),
+    };
+    let mut footer = format!("Part {k} of {n}, newest first: {} of {of}.", r.len());
+    if k < n {
+        footer += &format!(" Next: {}", next(k + 1));
+    }
+    Ok((r.clone(), footer))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn searches_page_the_newest_first() {
+        assert_eq!(newest_first(&[]), Vec::<Range<usize>>::new());
+        assert_eq!(newest_first(&[5, 15_000, 4_000, 3_000]), [2..4, 0..2]);
+        assert_eq!(newest_first(&[30_000, 1]), [1..2, 0..1]);
+        let next = |k| format!("next {k}");
+        assert_eq!(
+            search(&[1, 2], 2, None, next).unwrap(),
+            (0..2, "2 matches.".into())
+        );
+        assert_eq!(
+            search(&[1], 1, Some(1), next).unwrap(),
+            (0..1, "1 match.".into())
+        );
+        assert_eq!(
+            search(&[1, 2], 9, None, next).unwrap(),
+            (0..2, "Newest 2 of 9 matches.".into())
+        );
+        let sizes = [15_000, 15_000, 15_000];
+        assert_eq!(
+            search(&sizes, 3, Some(1), next).unwrap(),
+            (
+                2..3,
+                "Part 1 of 3, newest first: 1 of 3 matches. Next: next 2".into()
+            )
+        );
+        assert_eq!(
+            search(&sizes, 5, Some(3), next).unwrap(),
+            (
+                0..1,
+                "Part 3 of 3, newest first: 1 of the newest 3 of 5 matches.".into()
+            )
+        );
+        assert!(search(&sizes, 3, Some(4), next).is_err());
+        assert!(search(&sizes, 3, Some(0), next).is_err());
+    }
 
     #[test]
     fn pages_cut_at_line_ends_and_characters() {

@@ -27,7 +27,7 @@ use crate::{
     },
     file,
     memory::{Pattern, broken_pipe, claude::uuid, plural, quote, word},
-    page::{self, PART, page},
+    page,
 };
 
 /// The exit code of plumbing for a session attached to no thread; it prints nothing.
@@ -77,14 +77,8 @@ enum Command {
         thread: Option<String>,
         #[command(flatten)]
         session: Session,
-        #[arg(long, hide = true, help = "the part of the view to print, as printed")]
-        part: Option<u64>,
-        #[arg(
-            long,
-            hide = true,
-            help = "the thread state the parts come from, as printed"
-        )]
-        at: Option<String>,
+        #[command(flatten)]
+        parts: Parts,
     },
     #[command(about = "attach this session to a thread, creating it if new.")]
     Attach {
@@ -104,12 +98,14 @@ enum Command {
         target: Target,
         #[arg(help = "an id: 12 (turn 12), 8+4 (turns 8 to 11), 12.3 (item 3 of turn 12)")]
         id: String,
-        #[arg(help = "the part of a long output to show, as printed")]
-        part: Option<u64>,
+        #[command(flatten)]
+        parts: Parts,
         #[arg(long, help = "include tool output")]
         tool_output: bool,
     },
-    #[command(about = "search a thread: messages, replies, tool calls and summary lines.")]
+    #[command(
+        about = "search a thread: messages, replies, tool calls and summary lines, newest first."
+    )]
     Grep {
         #[command(flatten)]
         target: Target,
@@ -117,12 +113,8 @@ enum Command {
         pat: Pattern,
         #[arg(long, help = "also search tool output")]
         tool_output: bool,
-        #[arg(
-            long,
-            value_name = "ID",
-            help = "only matches before this id, for the next page"
-        )]
-        before: Option<String>,
+        #[command(flatten)]
+        parts: Parts,
     },
     #[command(
         about = "write a thread's summary lines that are ready, or one line, stopping at the first that fails."
@@ -175,6 +167,29 @@ struct Build {
         help = "run as the background summariser: build what it can past a failed line"
     )]
     background: bool,
+}
+
+/// Which part of a long output to print, and the thread state the parts come from.
+#[derive(Args, Debug, Default)]
+struct Parts {
+    #[arg(long, hide = true, help = "the part to print, as printed")]
+    part: Option<u64>,
+    #[arg(
+        long,
+        hide = true,
+        help = "the thread state the parts come from, as printed"
+    )]
+    at: Option<String>,
+}
+
+impl Parts {
+    /// The state `at` names, else the thread's latest.
+    fn snapshot(&self, t: &Thread) -> Result<Snapshot> {
+        match &self.at {
+            Some(at) => t.snapshot_at(at.parse()?),
+            None => t.snapshot(),
+        }
+    }
 }
 
 /// The harness session a command is for: its flags, else the harness's environment.
@@ -270,13 +285,12 @@ impl Cli {
         }
     }
 
-    /// Runs in `cwd`, printing to `out`; views print whole on a `terminal`.
+    /// Runs in `cwd`, printing to `out`; views, zooms and searches print whole on a `terminal`.
     pub fn run(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             thread: None,
             session: Session::default(),
-            part: None,
-            at: None,
+            parts: Parts::default(),
         });
         match command {
             Command::Start { name, args } => launch(cwd, &name, &args),
@@ -285,30 +299,22 @@ impl Cli {
             Command::View {
                 thread,
                 session,
-                part,
-                at,
-            } => view(
-                cwd,
-                out,
-                thread,
-                session,
-                page::pick(part, terminal),
-                at.as_deref(),
-            ),
+                parts,
+            } => view(cwd, out, thread, session, &parts, terminal),
             Command::Attach { name, session } => attach(cwd, out, &name, session),
             Command::Detach { session } => detach(cwd, out, session),
             Command::Zoom {
                 target,
                 id,
-                part,
+                parts,
                 tool_output,
-            } => zoom(cwd, out, target, &id, part.unwrap_or(1), tool_output),
+            } => zoom(cwd, out, target, &id, &parts, terminal, tool_output),
             Command::Grep {
                 target,
                 pat,
                 tool_output,
-                before,
-            } => grep(cwd, out, target, &pat, tool_output, before.as_deref()),
+                parts,
+            } => grep(cwd, out, target, &pat, tool_output, &parts, terminal),
             Command::Build(a) => build_cmd(cwd, out, a),
             Command::SyncSession { session } => sync_session(cwd, session),
             Command::CompactSession { session } => compact_session(cwd, out, session),
@@ -724,20 +730,20 @@ pub fn thread_view(
 }
 
 /// The thread's view, from one state of it: of the session's branch when the session is
-/// attached to it (synced first), else of its newest branch; whole for `part` `None`, else that
-/// part. It writes no line: a turn not summarised yet shows its message; `--at` reads the state
+/// attached to it (synced first), else of its newest branch; whole on a `terminal`, else in
+/// parts. It writes no line: a turn not summarised yet shows its message; `--at` reads the state
 /// it names.
 fn view(
     cwd: &Path,
     out: &mut dyn Write,
     name: Option<String>,
     s: Session,
-    part: Option<u64>,
-    at: Option<&str>,
+    parts: &Parts,
+    terminal: bool,
 ) -> Result<ExitCode> {
     let (chat, t, session) = pick(cwd, name, s.current(), "ai chat view <name>")?;
-    let snap = match at {
-        Some(at) => t.snapshot_at(at.parse()?)?,
+    let snap = match &parts.at {
+        Some(_) => parts.snapshot(&t)?,
         None => latest(&chat, &t, session.as_ref())?,
     };
     let shown = view_in(&t, &snap, session.as_ref())?.map(|v| (v, snap.mark()));
@@ -745,19 +751,21 @@ fn view(
         writeln!(out, "Thread {} holds nothing yet.", t.name())?;
         return Ok(ExitCode::SUCCESS);
     };
-    page::print(out, &text, part, |k| {
+    page::print(out, &text, page::pick(parts.part, terminal), |k| {
         format!("ai chat view {} --part {k} --at {mark}", t.name())
     })?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// What `id` holds on the picked thread's branch (the session's, else the newest), in parts.
+/// What `id` holds on the picked thread's branch (the session's, else the newest): whole on a
+/// `terminal`, else in parts, each cut from the state the first read.
 fn zoom(
     cwd: &Path,
     out: &mut dyn Write,
     target: Target,
     id: &str,
-    part: u64,
+    parts: &Parts,
+    terminal: bool,
     tool_output: bool,
 ) -> Result<ExitCode> {
     let usage = "ai chat zoom -t <name> <id>";
@@ -767,70 +775,43 @@ fn zoom(
             "'{id}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3 (an item)."
         );
     };
-    let snap = t.snapshot()?;
+    let snap = parts.snapshot(&t)?;
     let branch = read_branch(&snap, session.as_ref())?;
     let Some(text) = branch.and_then(|b| b.zoom(parsed, tool_output)) else {
         bail!("This branch has no {parsed}.");
     };
-    let (text, n) = page(&text, PART, part)?;
-    writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(text))?;
-    if part < n {
-        let flag = if tool_output { " --tool-output" } else { "" };
-        writeln!(
-            out,
-            "Part {part} of {n}. Next: ai chat zoom -t {} {parsed} {}{flag}",
-            t.name(),
-            part + 1
-        )?;
-    }
+    let (mark, flag) = (snap.mark(), if tool_output { " --tool-output" } else { "" });
+    page::print(out, &text, page::pick(parts.part, terminal), |k| {
+        format!(
+            "ai chat zoom -t {} {parsed} --part {k} --at {mark}{flag}",
+            t.name()
+        )
+    })?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// The matches of `pat` on the picked thread's branch (the session's, else the newest), oldest
-/// first: the newest that fit in [`PART`] bytes, then how to get the older ones.
+/// first: all on a `terminal`, else in parts newest first, each cut from the state the first
+/// read.
 fn grep(
     cwd: &Path,
     out: &mut dyn Write,
     target: Target,
     pat: &Pattern,
     tool_output: bool,
-    before: Option<&str>,
+    parts: &Parts,
+    terminal: bool,
 ) -> Result<ExitCode> {
     let usage = "ai chat grep -t <name> <pattern>";
     let (_, t, session) = pick(cwd, target.thread, target.session.current(), usage)?;
     let re = pat.regex()?;
-    let before = match before {
-        Some(v) => {
-            Some(Id::parse(v).with_context(|| format!("'{v}' is not an id. Copy it as printed."))?)
-        }
-        None => None,
-    };
-    let snap = t.snapshot()?;
+    let snap = parts.snapshot(&t)?;
     let hits = match read_branch(&snap, session.as_ref())? {
-        Some(b) => b.grep(&re, tool_output, before),
-        None => before.is_none().then(Vec::new),
-    };
-    let Some(hits) = hits else {
-        bail!(
-            "This branch has no {}.",
-            before.expect("only a bad --before")
-        );
+        Some(b) => b.grep(&re, tool_output),
+        None => Vec::new(),
     };
     if hits.is_empty() {
         writeln!(out, "No match.")?;
-        return Ok(ExitCode::SUCCESS);
-    }
-    let mut from = hits.len();
-    let mut size = 0;
-    while from > 0 && (from == hits.len() || size + hits[from - 1].line.len() < PART as usize) {
-        from -= 1;
-        size += hits[from].line.len() + 1;
-    }
-    for h in &hits[from..] {
-        writeln!(out, "{}", h.line)?;
-    }
-    if from == 0 {
-        writeln!(out, "{}.", plural(hits.len() as u64, "match"))?;
         return Ok(ExitCode::SUCCESS);
     }
     let a = pat.args();
@@ -841,13 +822,18 @@ fn grep(
     if tool_output {
         cmd += " --tool-output";
     }
-    writeln!(
-        out,
-        "Newest {} of {}. Older: {cmd} --before {}",
-        hits.len() - from,
-        hits.len(),
-        hits[from].id
+    let sizes: Vec<u64> = hits.iter().map(|h| h.line.len() as u64 + 1).collect();
+    let mark = snap.mark();
+    let (shown, footer) = page::search(
+        &sizes,
+        hits.len() as u64,
+        page::pick(parts.part, terminal),
+        |k| format!("{cmd} --part {k} --at {mark}"),
     )?;
+    for h in &hits[shown] {
+        writeln!(out, "{}", h.line)?;
+    }
+    writeln!(out, "{footer}")?;
     Ok(ExitCode::SUCCESS)
 }
 

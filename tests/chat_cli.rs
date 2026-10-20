@@ -963,17 +963,27 @@ fn zoom_opens_lines_and_items() {
         "2.0|user: question 2\n2.1|ai: reply 2\n",
     );
     ok(s.ai_in("s-1", &["zoom", "2.1"]), "2.1|ai: reply 2\n");
-    let o = s.ai_in("s-1", &["zoom", "4.0"]);
-    let out = stdout(&o);
-    assert!(out.ends_with("\nPart 1 of 2. Next: ai chat zoom -t dev 4.0 2\n"));
-    let rest = stdout(&s.ai(&["zoom", "-t", "dev", "4.0", "2"]));
-    let whole = out.rsplit_once("\nPart 1").unwrap().0.to_string() + &rest;
+    let next = |args: &[&str], want: &str| -> String {
+        let out = stdout(&s.ai_in("s-1", args));
+        let (body, next) = out.split_once("\nPart 1 of 2. Next: ai chat ").expect(&out);
+        assert!(Regex::new(want).unwrap().is_match(next), "{next}");
+        let rest = stdout(&s.ai(&next.split_whitespace().collect::<Vec<_>>()));
+        format!(
+            "{body}{}",
+            rest.strip_suffix("Part 2 of 2.\n").expect(&rest)
+        )
+    };
     assert_eq!(
-        whole,
+        next(
+            &["zoom", "4.0"],
+            r"^zoom -t dev 4\.0 --part 2 --at \d+\.\d+\.\d+\n$"
+        ),
         format!("4.0|user: {}\n", "paste ".repeat(5_000).trim_end())
     );
-    let o = s.ai_in("s-1", &["zoom", "4", "--tool-output"]);
-    assert!(stdout(&o).ends_with("\nPart 1 of 2. Next: ai chat zoom -t dev 4 2 --tool-output\n"));
+    next(
+        &["zoom", "4", "--tool-output"],
+        r"^zoom -t dev 4 --part 2 --at \S+ --tool-output\n$",
+    );
     for (id, err) in [
         (
             "x",
@@ -1009,7 +1019,9 @@ fn grep_pages_the_newest_matches_first() {
     ok(s.ai_in("s-1", &["grep", "nothing"]), "No match.\n");
     let mut seen = Vec::new();
     let mut args = vec!["grep".to_string(), "Question".into(), "-i".into()];
+    let mut k = 0;
     loop {
+        k += 1;
         let out = stdout(&s.ai_in("s-1", &args.iter().map(String::as_str).collect::<Vec<_>>()));
         let (body, footer) = out.trim_end().rsplit_once('\n').unwrap();
         let page: Vec<&str> = body.lines().collect();
@@ -1019,28 +1031,35 @@ fn grep_pages_the_newest_matches_first() {
             page.iter()
                 .map(|l| l.split('|').next().unwrap().to_string()),
         );
-        match footer.split_once(" Older: ai chat ") {
+        let head = format!("Part {k} of ");
+        assert!(footer.starts_with(&head), "{footer}");
+        match footer.split_once(" Next: ai chat ") {
             Some((_, next)) => {
-                assert!(
-                    next.starts_with("grep -t dev 'Question' -i --before "),
-                    "{next}"
-                );
+                let want = format!(r"^grep -t dev 'Question' -i --part {} --at \S+$", k + 1);
+                assert!(Regex::new(&want).unwrap().is_match(next), "{next}");
                 args = next
                     .split(' ')
                     .map(|a| a.trim_matches('\'').to_string())
                     .collect();
             }
             None => {
-                assert_eq!(footer, format!("{} matches.", page.len()));
+                assert_eq!(
+                    footer,
+                    format!(
+                        "Part {k} of {k}, newest first: {} of 300 matches.",
+                        page.len()
+                    )
+                );
                 break;
             }
         }
     }
+    assert!(k > 1);
     let want: Vec<String> = (0..300).map(|k| format!("{k}.0")).collect();
     assert_eq!(seen, want, "every match once, oldest first");
     fails(
-        s.ai_in("s-1", &["grep", "x", "--before", "9.9"]),
-        "This branch has no 9.9.\n",
+        s.ai_in("s-1", &["grep", "Question", "-i", "--part", "99"]),
+        &format!("No part 99: it has {k}.\n"),
     );
 }
 
