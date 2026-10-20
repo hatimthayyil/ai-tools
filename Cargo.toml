@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 backon = { version = "1.6.0", default-features = false, features = ["std"] }
 clap = { version = "4.6.7", features = ["derive"] }
+dialoguer = { version = "0.12.0", default-features = false }
 getrandom = "0.4.3"
 gix = { version = "0.88.0", default-features = false, features = ["anyhow", "index", "sha1"] }
 indicatif = "0.18.6"

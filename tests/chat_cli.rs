@@ -1,7 +1,12 @@
 use std::{
-    fs,
+    fs::{self, File},
+    io::{self, Read, Write},
+    mem::MaybeUninit,
+    os::fd::{AsRawFd, FromRawFd},
     path::{Path, PathBuf},
     process::{Command, Output},
+    ptr, thread,
+    time::{Duration, Instant},
 };
 
 use ai_tools::{
@@ -275,6 +280,55 @@ done
         t.put_line(Key { level, last }, kind, &Who::default(), text)
             .unwrap();
     }
+
+    /// `ai chat args` in the repository on a terminal, `keys` typed once it reads a key: its
+    /// exit code and everything the terminal showed.
+    fn on_terminal(&self, args: &[&str], keys: &[u8]) -> (i32, String) {
+        let (mut master, slave) = pty();
+        let mut c = self.cmd(&self.repo());
+        c.args(args)
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave.try_clone().unwrap());
+        let mut child = c.spawn().unwrap();
+        drop(c);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while canonical(&slave) {
+            assert!(child.try_wait().unwrap().is_none(), "it ended unasked");
+            assert!(Instant::now() < deadline, "it never read a key");
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(slave);
+        master.write_all(keys).unwrap();
+        let mut shown = Vec::new();
+        let _ = master.read_to_end(&mut shown);
+        let code = child.wait().unwrap().code().unwrap();
+        (code, String::from_utf8_lossy(&shown).into())
+    }
+}
+
+/// A pseudo-terminal of 24 rows by 80 columns: its master and slave ends.
+fn pty() -> (File, File) {
+    let (mut master, mut slave) = (0, 0);
+    let size = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let r = unsafe { libc::openpty(&mut master, &mut slave, ptr::null_mut(), ptr::null(), &size) };
+    assert_eq!(r, 0, "openpty: {}", io::Error::last_os_error());
+    unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
+}
+
+/// Whether terminal `t` reads lines, not keys: the picker has not asked yet.
+fn canonical(t: &File) -> bool {
+    let mut tio = MaybeUninit::<libc::termios>::uninit();
+    assert_eq!(
+        unsafe { libc::tcgetattr(t.as_raw_fd(), tio.as_mut_ptr()) },
+        0
+    );
+    unsafe { tio.assume_init() }.c_lflag & libc::ICANON != 0
 }
 
 fn stdout(o: &Output) -> String {
@@ -383,23 +437,82 @@ fn plumbing_for_an_unattached_session_exits_3_silently() {
 #[test]
 fn porcelain_without_a_thread_says_what_to_do() {
     let s = Sandbox::new();
-    let attach = "This session is not attached to a thread. Attach it with `ai chat attach <name>`, or name a thread with -t.\n";
-    let name = "Name a thread with -t; this shell is outside an agent session. List the threads: ai chat list\n";
+    let attach = "This session is not attached to a thread, and this repository has none. Attach it to a new one: ai chat attach <name>\n";
+    let start = "No threads in this repository. Start one: ai chat start <name>\n";
     for cmd in [&["view"][..], &["zoom", "0"], &["grep", "x"], &["build"]] {
         fails(s.ai_in("s-1", cmd), attach);
-        fails(s.ai(cmd), name);
+        fails(s.ai(cmd), start);
     }
     fails(
         s.ai_in("s-1", &["detach"]),
         "This session is not attached to a thread.\n",
     );
     fails(
-        s.ai(&["view", "-t", "dev"]),
+        s.ai(&["view", "dev"]),
         "No thread dev in this repository. List the threads: ai chat list\n",
     );
     fails(
-        s.outside(&["view", "-t", "dev"]),
+        s.outside(&["view", "dev"]),
         "Not in a git repository. Run this inside the repository that holds the thread.\n",
+    );
+}
+
+#[test]
+fn a_thread_is_named_else_attached_else_the_only_one_else_listed() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &talk(2, |k| format!("question {k}")));
+    ok(
+        s.ai_in("s-1", &["attach", "dev"]),
+        "Attached to dev, a new thread.\n",
+    );
+    let dev = stdout(&s.ai(&["view", "dev"]));
+    assert!(dev.starts_with("# Thread `dev`\n"), "{dev}");
+    ok(s.ai(&["view"]), &dev);
+    ok(s.ai_in("s-2", &["view"]), &dev);
+    let zoom = stdout(&s.ai(&["zoom", "-t", "dev", "0"]));
+    ok(s.ai_in("s-2", &["zoom", "0"]), &zoom);
+
+    s.transcript("s-3", &talk(3, |k| format!("other {k}")));
+    ok(
+        s.ai_in("s-3", &["attach", "other"]),
+        "Attached to other, a new thread.\n",
+    );
+    let rows = "This repository's threads, newest first:\n  other  3 turns  2026-10-14 10:00\n  dev  2 turns  2026-10-14 10:00\n";
+    fails(
+        s.ai(&["view"]),
+        &format!("Name a thread: ai chat view <name>. {rows}"),
+    );
+    fails(
+        s.ai_in("s-2", &["zoom", "0"]),
+        &format!(
+            "This session is not attached to a thread. Attach it with `ai chat attach <name>`, or name one: ai chat zoom -t <name> <id>. {rows}"
+        ),
+    );
+    ok(s.ai_in("s-1", &["view"]), &dev);
+    ok(s.ai_in("s-1", &["zoom", "0"]), &zoom);
+    ok(
+        s.ai_in("s-1", &["view", "other"]),
+        &stdout(&s.ai(&["view", "other"])),
+    );
+}
+
+#[test]
+fn on_a_terminal_a_picker_chooses_the_thread() {
+    let s = Sandbox::new();
+    for (session, name, n) in [("s-1", "dev", 2), ("s-2", "other", 3)] {
+        s.transcript(session, &talk(n, |k| format!("{name} {k}")));
+        assert_eq!(code(&s.ai_in(session, &["attach", name])), 0);
+    }
+    let (code, shown) = s.on_terminal(&["view"], b"\x1b");
+    assert_eq!(code, 1, "{shown}");
+    assert!(shown.contains("No thread chosen."), "{shown}");
+    assert!(!shown.contains("# Thread"), "{shown}");
+
+    let (code, shown) = s.on_terminal(&["view"], b"\r");
+    assert_eq!(code, 0, "{shown}");
+    assert!(
+        shown.contains("# Thread `other`"),
+        "Enter takes the newest, listed first: {shown}"
     );
 }
 
@@ -611,12 +724,12 @@ fn view_prints_a_thread_in_parts_from_one_state() {
     let first = stdout(&s.ai_in("s-2", &["view"]));
     assert_eq!(
         first,
-        stdout(&s.ai(&["view", "-t", "long-one"])),
+        stdout(&s.ai(&["view", "long-one"])),
         "outside the session: the thread's newest branch, here the same"
     );
     let (body, footer) = first.trim_end().rsplit_once('\n').unwrap();
     let next = footer.strip_prefix("Part 1 of 3. Next: ai chat ").unwrap();
-    assert!(next.starts_with("view -t long-one --part 2 --at "));
+    assert!(next.starts_with("view long-one --part 2 --at "));
     let mut parts = body.to_string() + "\n";
     s.transcript("s-2", &talk(101, ask));
     ok(s.ai_in("s-2", &["sync-session"]), "");
@@ -672,7 +785,7 @@ fn view_syncs_its_session_and_writes_no_line() {
     };
     s.transcript("s-1", &talk(4, |k| format!("question {k}")));
 
-    let outside = stdout(&s.ai(&["view", "-t", "dev"]));
+    let outside = stdout(&s.ai(&["view", "dev"]));
     assert!(
         section(&outside, "The turn in progress")[0].ends_with("|user: question 1"),
         "outside the session, nothing is synced: {outside}"
@@ -708,7 +821,7 @@ fn view_syncs_its_session_and_writes_no_line() {
 }
 
 #[test]
-fn ai_view_prints_the_whole_memory_then_the_sessions_thread() {
+fn ai_view_prints_the_whole_memory_then_a_thread() {
     let s = Sandbox::new();
     let memory = |args: &[&str]| s.top(None, &[&["memory"][..], args].concat());
     assert_eq!(code(&memory(&["init"])), 0);
@@ -717,11 +830,6 @@ fn ai_view_prints_the_whole_memory_then_the_sessions_thread() {
     }
     assert_eq!(code(&memory(&["config", "PART_CHARS=200"])), 0);
     assert!(stdout(&memory(&["view"])).starts_with("Your memory comes in parts"));
-    s.transcript("s-1", &talk(2, |k| format!("question {k}")));
-    ok(
-        s.ai_in("s-1", &["attach", "dev"]),
-        "Attached to dev, a new thread.\n",
-    );
 
     let alone = s.top(None, &["view"]);
     assert_eq!((code(&alone), stderr(&alone).as_str()), (0, ""));
@@ -733,13 +841,39 @@ fn ai_view_prints_the_whole_memory_then_the_sessions_thread() {
         alone.ends_with(
             "\nYou are awake. Zoom the marked lines that touch your task before you act.\n"
         ),
-        "outside a session, only the memory: {alone}"
+        "with no thread, only the memory: {alone}"
     );
 
+    s.transcript("s-1", &talk(2, |k| format!("question {k}")));
+    ok(
+        s.ai_in("s-1", &["attach", "dev"]),
+        "Attached to dev, a new thread.\n",
+    );
     let both = stdout(&s.top(Some("s-1"), &["view"]));
     let (mem, thread) = both.split_once("\n# Thread `dev`\n").expect(&both);
     assert_eq!(mem, alone);
     assert!(thread.contains("|user: question 1"), "{thread}");
+    assert_eq!(
+        stdout(&s.top(None, &["view"])),
+        both,
+        "outside a session, the repository's only thread"
+    );
+    assert_eq!(
+        stdout(&s.top(Some("s-2"), &["view"])),
+        alone,
+        "a session attached to none reads no thread unless named"
+    );
+    assert_eq!(stdout(&s.top(Some("s-2"), &["view", "dev"])), both);
+
+    s.transcript("s-3", &talk(3, |k| format!("other {k}")));
+    ok(
+        s.ai_in("s-3", &["attach", "other"]),
+        "Attached to other, a new thread.\n",
+    );
+    fails(
+        s.top(None, &["view"]),
+        "Name a thread: ai view <name>. This repository's threads, newest first:\n  other  3 turns  2026-10-14 10:00\n  dev  2 turns  2026-10-14 10:00\n",
+    );
 
     let usage = fs::read_to_string(s.root.join("home/.ai/memory/usage.jsonl")).unwrap();
     assert_eq!(
@@ -747,8 +881,8 @@ fn ai_view_prints_the_whole_memory_then_the_sessions_thread() {
             .lines()
             .filter(|l| l.contains(r#""cmd":"view","args":["--whole"]"#))
             .count(),
-        2,
-        "each ai view reads the memory once: {usage}"
+        5,
+        "each ai view reads the memory once, after its thread is known: {usage}"
     );
 }
 

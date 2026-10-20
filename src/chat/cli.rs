@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     env,
     io::{self, IsTerminal, Write},
     os::unix::process::CommandExt,
@@ -9,7 +10,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use dialoguer::Select;
 use indicatif::{ProgressBar, ProgressStyle};
+use jiff::Timestamp;
 
 use crate::{
     chat::{
@@ -17,7 +20,7 @@ use crate::{
         id::Id,
         record::{Binding, Key},
         rollup::Rollup,
-        store::{Chat, Snapshot, Thread, check_name},
+        store::{Chat, Snapshot, Thread, ThreadInfo, check_name},
         summarise::{OnFail, build, dry_run, first, rebuild, rewrite, summarise},
         sync::Synced,
         view::Branch,
@@ -72,8 +75,10 @@ enum Command {
     },
     #[command(about = "print a thread's view, from the summaries written so far (the default).")]
     View {
+        #[arg(help = THREAD_HELP)]
+        thread: Option<String>,
         #[command(flatten)]
-        target: Target,
+        session: Session,
         #[arg(long, hide = true, help = "the part of the view to print, as printed")]
         part: Option<u64>,
         #[arg(
@@ -193,15 +198,13 @@ pub struct Session {
     transcript: Option<PathBuf>,
 }
 
-/// The thread a command reads: `-t`, else the one this session is attached to.
-#[derive(Args, Debug, Default)]
+/// What a thread argument defaults to: [`pick`]'s order.
+pub const THREAD_HELP: &str = "the thread [default: the one this session is attached to, else the repository's only thread, else one you pick on a terminal]";
+
+/// The thread a command reads, by `-t`, as [`pick`] resolves it.
+#[derive(Args, Debug)]
 struct Target {
-    #[arg(
-        short = 't',
-        long = "thread",
-        value_name = "NAME",
-        help = "the thread [default: the one this session is attached to]"
-    )]
+    #[arg(short = 't', long = "thread", value_name = "NAME", help = THREAD_HELP)]
     thread: Option<String>,
     #[command(flatten)]
     session: Session,
@@ -270,7 +273,8 @@ impl Cli {
 
     pub fn run(self, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
-            target: Target::default(),
+            thread: None,
+            session: Session::default(),
             part: None,
             at: None,
         });
@@ -278,9 +282,12 @@ impl Cli {
             Command::Start { name, args } => launch(cwd, &name, &args),
             Command::Resume { name, args } => resume(cwd, &name, &args),
             Command::List { session } => list(cwd, out, session),
-            Command::View { target, part, at } => {
-                view(cwd, out, target, part.unwrap_or(1), at.as_deref())
-            }
+            Command::View {
+                thread,
+                session,
+                part,
+                at,
+            } => view(cwd, out, thread, session, part.unwrap_or(1), at.as_deref()),
             Command::Attach { name, session } => attach(cwd, out, &name, session),
             Command::Detach { session } => detach(cwd, out, session),
             Command::Zoom {
@@ -317,34 +324,94 @@ fn find(cwd: &Path) -> Result<Chat> {
     })
 }
 
-/// The thread `-t` names, else the one the session is attached to; with the session when it is
-/// attached to that thread.
-fn pick(cwd: &Path, t: Target) -> Result<(Chat, Thread, Option<Current>)> {
+/// The thread `name`, else the one session `c` is attached to, else [`choose`]'s; with the
+/// session when it is attached to that thread. `usage` shows how to name a thread.
+fn pick(
+    cwd: &Path,
+    name: Option<String>,
+    c: Option<Current>,
+    usage: &str,
+) -> Result<(Chat, Thread, Option<Current>)> {
     let chat = find(cwd)?;
-    let current = t.session.current();
-    let attached = match &current {
+    let attached = match &c {
         Some(c) => chat.attached(&c.harness, &c.session)?.map(|(a, _)| a),
         None => None,
     };
-    match t.thread {
-        Some(name) => {
+    match (name, attached) {
+        (Some(name), attached) => {
             let thread = chat.thread(&name)?;
             if !thread.exists()? {
                 bail!("No thread {name} in this repository. List the threads: ai chat list");
             }
-            let current = current.filter(|_| attached.is_some_and(|a| a.name() == name));
-            Ok((chat, thread, current))
+            let c = c.filter(|_| attached.is_some_and(|a| a.name() == name));
+            Ok((chat, thread, c))
         }
-        None => match attached {
-            Some(thread) => Ok((chat, thread, current)),
-            None if current.is_some() => bail!(
-                "This session is not attached to a thread. Attach it with `ai chat attach <name>`, or name a thread with -t."
-            ),
-            None => bail!(
-                "Name a thread with -t; this shell is outside an agent session. List the threads: ai chat list"
-            ),
-        },
+        (None, Some(thread)) => Ok((chat, thread, c)),
+        (None, None) => {
+            let thread = choose(&chat, c.is_some(), usage)?;
+            Ok((chat, thread, None))
+        }
     }
+}
+
+/// The repository's only thread, else one picked on a terminal, newest first (Esc cancels);
+/// else an error listing them, newest first. `session`: the caller is an agent session
+/// attached to none.
+fn choose(chat: &Chat, session: bool, usage: &str) -> Result<Thread> {
+    let mut threads = chat.threads()?;
+    match threads.len() {
+        0 if session => bail!(
+            "This session is not attached to a thread, and this repository has none. Attach it to a new one: ai chat attach <name>"
+        ),
+        0 => bail!("No threads in this repository. Start one: ai chat start <name>"),
+        1 => return Ok(threads.remove(0)),
+        _ => {}
+    }
+    let mut infos = chat.list()?;
+    infos.sort_by_key(|t| Reverse(t.newest.as_ref().map(|h| h.ts)));
+    let rows: Vec<String> = infos.iter().map(row).collect();
+    if io::stdin().is_terminal() && io::stderr().is_terminal() {
+        let picked = Select::new()
+            .with_prompt("Which thread?")
+            .items(&rows)
+            .default(0)
+            .interact_opt()?;
+        let Some(i) = picked else {
+            bail!("No thread chosen.");
+        };
+        return chat.thread(&infos[i].name);
+    }
+    let mut msg = match session {
+        true => format!(
+            "This session is not attached to a thread. Attach it with `ai chat attach <name>`, or name one: {usage}."
+        ),
+        false => format!("Name a thread: {usage}."),
+    };
+    msg += " This repository's threads, newest first:";
+    for r in rows {
+        msg += &format!("\n  {r}");
+    }
+    bail!(msg)
+}
+
+/// A minute of `ts`, in UTC.
+fn when(ts: &Timestamp) -> String {
+    ts.strftime("%Y-%m-%d %H:%M").to_string()
+}
+
+/// A thread's row in `list` and [`choose`]: its name, turns, newest item and, when more than
+/// one, branches.
+fn row(t: &ThreadInfo) -> String {
+    let last = t.newest.as_ref().map_or("-".into(), |h| when(&h.ts));
+    let branches = match t.tips.len() {
+        0 | 1 => String::new(),
+        n => format!("  {n} branches"),
+    };
+    format!(
+        "{}  {}  {last}{branches}",
+        t.name,
+        plural(t.turns as u64, "turn")
+    )
 }
 
 /// The branch a command reads in `s`: session `c`'s (to its newest item, else its graft), else
@@ -513,19 +580,8 @@ fn list(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     let current = s.current();
-    let when = |ts: &jiff::Timestamp| ts.strftime("%Y-%m-%d %H:%M").to_string();
     for t in threads {
-        let last = t.newest.as_ref().map_or("-".into(), |h| when(&h.ts));
-        let branches = match t.tips.len() {
-            0 | 1 => String::new(),
-            n => format!("  {n} branches"),
-        };
-        writeln!(
-            out,
-            "{}  {}  {last}{branches}",
-            t.name,
-            plural(t.turns as u64, "turn")
-        )?;
+        writeln!(out, "{}", row(&t))?;
         let wh = t.sessions.iter().map(|(b, _)| b.harness.len()).max();
         let ws = t.sessions.iter().map(|(b, _)| b.session.len()).max();
         let (wh, ws) = (wh.unwrap_or(0), ws.unwrap_or(0));
@@ -619,13 +675,34 @@ fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-/// The view of the thread session `s` is attached to, of its branch, synced first; `None` where
-/// [`synced`] finds no attached session, or while its branch holds no item. It writes no line.
-pub fn session_view(cwd: &Path, s: Session) -> Result<Option<String>> {
-    match synced(cwd, s)? {
-        Some((_, t, c)) => view_in(&t, &t.snapshot()?, Some(&c)),
-        None => Ok(None),
+/// The thread's latest snapshot, session `c` synced into it first when given.
+fn latest(chat: &Chat, t: &Thread, c: Option<&Current>) -> Result<Snapshot> {
+    if let Some(c) = c {
+        chat.sync(&c.harness, &c.session, c.transcript.as_deref())?;
     }
+    t.snapshot()
+}
+
+/// The thread view `ai view` prints after the memory: [`pick`]'s thread, of the session's
+/// branch (synced first) when it is attached there, else of the newest. Unnamed, an agent
+/// session reads only the thread it is attached to, and outside a repository with threads
+/// there is none. `None` too while the branch holds no item. It writes no line.
+pub fn thread_view(cwd: &Path, name: Option<String>, s: Session) -> Result<Option<String>> {
+    let c = s.current();
+    if name.is_none() {
+        let Some(chat) = Chat::find(cwd)? else {
+            return Ok(None);
+        };
+        let none = match &c {
+            Some(c) => chat.attached(&c.harness, &c.session)?.is_none(),
+            None => chat.threads()?.is_empty(),
+        };
+        if none {
+            return Ok(None);
+        }
+    }
+    let (chat, t, c) = pick(cwd, name, c, "ai view <name>")?;
+    view_in(&t, &latest(&chat, &t, c.as_ref())?, c.as_ref())
 }
 
 /// The thread's view, in parts from one state of it: of the session's branch when the
@@ -634,19 +711,15 @@ pub fn session_view(cwd: &Path, s: Session) -> Result<Option<String>> {
 fn view(
     cwd: &Path,
     out: &mut dyn Write,
-    target: Target,
+    name: Option<String>,
+    s: Session,
     part: u64,
     at: Option<&str>,
 ) -> Result<ExitCode> {
-    let (chat, t, session) = pick(cwd, target)?;
+    let (chat, t, session) = pick(cwd, name, s.current(), "ai chat view <name>")?;
     let snap = match at {
         Some(at) => t.snapshot_at(at.parse()?)?,
-        None => {
-            if let Some(c) = &session {
-                chat.sync(&c.harness, &c.session, c.transcript.as_deref())?;
-            }
-            t.snapshot()?
-        }
+        None => latest(&chat, &t, session.as_ref())?,
     };
     let shown = view_in(&t, &snap, session.as_ref())?.map(|v| (v, snap.mark()));
     let Some((text, mark)) = shown else {
@@ -659,7 +732,7 @@ fn view(
         let next = part + 1;
         writeln!(
             out,
-            "Part {part} of {n}. Next: ai chat view -t {} --part {next} --at {mark}",
+            "Part {part} of {n}. Next: ai chat view {} --part {next} --at {mark}",
             t.name()
         )?;
     } else if n > 1 {
@@ -677,7 +750,8 @@ fn zoom(
     part: u64,
     tool_output: bool,
 ) -> Result<ExitCode> {
-    let (_, t, session) = pick(cwd, target)?;
+    let usage = "ai chat zoom -t <name> <id>";
+    let (_, t, session) = pick(cwd, target.thread, target.session.current(), usage)?;
     let Some(parsed) = Id::parse(id) else {
         bail!(
             "'{id}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3 (an item)."
@@ -712,7 +786,8 @@ fn grep(
     tool_output: bool,
     before: Option<&str>,
 ) -> Result<ExitCode> {
-    let (_, t, session) = pick(cwd, target)?;
+    let usage = "ai chat grep -t <name> <pattern>";
+    let (_, t, session) = pick(cwd, target.thread, target.session.current(), usage)?;
     let re = pat.regex()?;
     let before = match before {
         Some(v) => {
@@ -796,7 +871,8 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         background,
     } = a;
     let (id, model) = (id.as_deref(), model.as_deref());
-    let (chat, t, session) = pick(cwd, target)?;
+    let usage = "ai chat build -t <name>";
+    let (chat, t, session) = pick(cwd, target.thread, target.session.current(), usage)?;
     let line = match id {
         Some(v) => {
             let id = Id::parse(v).with_context(|| {

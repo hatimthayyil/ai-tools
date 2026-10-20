@@ -50,13 +50,13 @@ Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_
 ai chat start dev [-- claude args]   # Claude Code in a new session of thread dev; an existing thread's view is its context
 ai chat resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in
 ai chat list                         # the threads here, newest first, and their sessions
-ai chat view -t dev                  # dev's view, from the summaries written so far
+ai chat view dev                     # dev's view, from the summaries written so far
 ai chat zoom -t dev <id>             # open a line of it; --tool-output adds tool output
 ai chat grep -t dev <regex>          # search it
 ai chat build -t dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
-Inside a session, `/ai attach <name>` and `/ai detach`; `-t` defaults to the session's thread, so the agent reads it with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
+Unnamed, a command reads the session's thread, else the repository's only thread, else the one you pick on a terminal; elsewhere it lists the threads. Inside a session, `/ai attach <name>` and `/ai detach`, so the agent reads its thread with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
 
 A session has one active thread. Detach it explicitly before attaching it elsewhere; its previous thread retains the recorded history.
 
