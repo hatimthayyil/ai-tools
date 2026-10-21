@@ -1,12 +1,12 @@
 # upgrade/mod.rs
 
-Design: `ai/research/20261013T224252---record-versioning.md`; crate and prior-art survey: `20261013T224300---format-versioning-crates.md`.
+Design: `ai/research/20261013T224252--record-versioning.md`; crate and prior-art survey: `20261013T224300--format-versioning-crates.md`.
 
 - `FORMAT`: the one store format this ai reads and writes. No version enum: live code knows only `FORMAT`; older formats exist only as indices into `UPGRADES` and as decoders inside their upgrader modules.
 - `UPGRADES: [Upgrade; FORMAT - 1]` (rusqlite_migration's model): raising `FORMAT` without adding its upgrader fails to compile. `UPGRADES[v - 1]` takes format `v` to `v + 1`; `step` adds the `format` blob.
 - Where the number lives: the `format` blob at the tree root, committed with the data it describes. Absent is format 1 (every store from ai ≤ 0.7.0). `Ref::parse_format` (git.rs, shared with `ai chat`) refuses 0 and non-numbers as corrupt.
 - `Ref::readable`: a newer store is refused before any write: "This memory is format N; this ai reads up to M. Upgrade ai."
-- Upgraders are pure: a tree in, changes out, no network, model, clock or machine state, so the result is deterministic and the upgrade runs unasked. Machine-dependent fills (`root` on old notes) are a separate command (`ai memory link`, not yet written).
+- Upgraders are pure: a tree in, changes out, no network, model, clock or machine state, so the result is deterministic and the upgrade runs unasked. Machine-dependent fills (`root` on old notes) are a separate command (`ai memory update-links`, not yet written).
 - Format bumps: removing a field, changing a field's meaning or encoding, moving paths. An optional field or node column added: no bump.
 - Pruning: an upgrader stays while stores of its source format may exist; dropping one names the minimum release to upgrade through.
 - Format 2 (0.8.0): named message headers and node segments with a column row (record.rs.md); `root` on new notes.
