@@ -1,0 +1,44 @@
+CHANGELOG.md
+  s_e69713af998ee3::t_1a9f4266950c19 1-24,26-50,52-64,66-96,98-103
+  s_b19b0f79274433::t_4a1d8dbb490de2 25,51,65,97
+Cargo.lock
+  s_e69713af998ee3::t_8226ac8ac459f2 16
+cliff.toml
+  s_b19b0f79274433::t_3fcd875c75f800 4
+  s_fe54791af50299::t_89c2c807eeca2e 32
+  s_b19b0f79274433::t_8a743230044e35 2
+Cargo.toml
+  s_e69713af998ee3::t_713d7a0b52c228 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "17de722fc921e5ff885d367541a1163bddce8efe",
+  "prompts": {},
+  "sessions": {
+    "s_b19b0f79274433": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a15bc3-d92c-70da-b6b7-0cf2f74d431d",
+        "model": "deepseek-flash"
+      },
+      "human_author": null
+    },
+    "s_e69713af998ee3": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a15bc1-843c-71ce-b6ad-1e57860da7fd",
+        "model": "deepseek-flash"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    },
+    "s_fe54791af50299": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a15bc0-a5a6-7205-9e5d-3f16e5a26269",
+        "model": "deepseek-flash"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
