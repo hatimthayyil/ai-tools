@@ -260,7 +260,7 @@ fn a_note_is_a_markdown_file_and_one_commit() {
         .captures(&out)
         .unwrap_or_else(|| panic!("{out}"))[1]
         .to_string();
-    let rel = format!("linguistics/syntax/minimalism/{id}---merge-is-binary.md");
+    let rel = format!("linguistics/syntax/minimalism/{id}--merge-is-binary.md");
     assert_eq!(
         n.read(&rel),
         "---\nsource: https://example.org/mp\nconfidence: reported\nchecked: 2026-10-13\n\
@@ -385,7 +385,7 @@ fn ids_are_unique_and_permanent() {
     n.ok(&["mv", &ids[0], "u"]);
     assert!(
         n.ok(&["show", &ids[0]])
-            .starts_with(&format!("u/{}---claim-0.md\n", ids[0]))
+            .starts_with(&format!("u/{}--claim-0.md\n", ids[0]))
     );
 }
 
@@ -705,7 +705,7 @@ fn links_are_weak_references_that_do_not_touch_summaries() {
     assert!(!old.exists());
     assert_eq!(
         n.leaf_file(&a),
-        n.dir.join(format!("p/{a}---renamed-by-hand.md")),
+        n.dir.join(format!("p/{a}--renamed-by-hand.md")),
         "a write renames the file after its title, keeping the id"
     );
     assert_eq!(n.log().iter().filter(|m| m.starts_with("link ")).count(), 2);

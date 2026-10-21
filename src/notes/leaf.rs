@@ -156,9 +156,9 @@ pub fn slug(title: &str) -> String {
     if out.is_empty() { "note".into() } else { out }
 }
 
-/// `<id>---<slug>.md`, split.
+/// `<id>--<slug>.md`, split.
 pub fn parse_name(name: &str) -> Option<(&str, &str)> {
-    let (id, slug) = name.strip_suffix(".md")?.split_once("---")?;
+    let (id, slug) = name.strip_suffix(".md")?.split_once("--")?;
     is_id(id).then_some((id, slug))
 }
 
@@ -182,7 +182,7 @@ impl Leaf {
 
     pub fn parse(topic: &Topic, name: &str, text: &str) -> Result<Leaf> {
         let Some((id, _)) = parse_name(name) else {
-            bail!("{name} is not named <id>---<slug>.md");
+            bail!("{name} is not named <id>--<slug>.md");
         };
         let (front, rest) = Front::parse(text)?;
         let (title, body) = match rest.strip_prefix("# ") {
@@ -199,11 +199,11 @@ impl Leaf {
         })
     }
 
-    /// The file name its title gives it: `<id>---<slug of title>.md`; its current name if untitled.
+    /// The file name its title gives it: `<id>--<slug of title>.md`; its current name if untitled.
     pub fn file_name(&self) -> String {
         match self.title.is_empty() {
             true => self.name.clone(),
-            false => format!("{}---{}.md", self.id, slug(&self.title)),
+            false => format!("{}--{}.md", self.id, slug(&self.title)),
         }
     }
 
@@ -290,7 +290,7 @@ mod tests {
                     decay: slow\nlinks: [20261013T221500, 20261013T221501]\n\
                     supersedes: 20261001T000000\ninvalid_at: 2026-10-14\nmine: kept\n---\n\
                     # Merge is binary\n\nMerge combines two objects.\n\n--- not a fence\n";
-        let leaf = Leaf::parse(&Topic::default(), "20261013T221502---merge.md", text).unwrap();
+        let leaf = Leaf::parse(&Topic::default(), "20261013T221502--merge.md", text).unwrap();
         assert_eq!(leaf.title, "Merge is binary");
         assert_eq!(leaf.body, "Merge combines two objects.\n\n--- not a fence");
         assert_eq!(leaf.front.get("mine"), Some("kept"));
@@ -316,21 +316,21 @@ mod tests {
             "Merge is binary",
             "Body.",
         );
-        assert_eq!(l.name, "20261013T221502---merge-is-binary.md");
+        assert_eq!(l.name, "20261013T221502--merge-is-binary.md");
         assert_eq!(
             l.rel(),
-            PathBuf::from("a/20261013T221502---merge-is-binary.md")
+            PathBuf::from("a/20261013T221502--merge-is-binary.md")
         );
         assert_eq!(l.render(), "# Merge is binary\n\nBody.\n");
-        let mut hand = Leaf::parse(&t, "20261013T221502---old.md", "# New title\nBody.").unwrap();
+        let mut hand = Leaf::parse(&t, "20261013T221502--old.md", "# New title\nBody.").unwrap();
         assert_eq!(
             (hand.title.as_str(), hand.body.as_str()),
             ("New title", "Body.")
         );
-        assert_eq!(hand.file_name(), "20261013T221502---new-title.md");
-        assert_eq!(hand.rel(), PathBuf::from("a/20261013T221502---old.md"));
+        assert_eq!(hand.file_name(), "20261013T221502--new-title.md");
+        assert_eq!(hand.rel(), PathBuf::from("a/20261013T221502--old.md"));
         hand.title.clear();
-        assert_eq!(hand.file_name(), "20261013T221502---old.md");
+        assert_eq!(hand.file_name(), "20261013T221502--old.md");
         assert_eq!(hand.label(), "Body.");
     }
 
@@ -338,7 +338,7 @@ mod tests {
     fn links_come_from_the_frontmatter_and_the_body() {
         let mut leaf = Leaf::parse(
             &Topic::default(),
-            "20261013T221502---hub.md",
+            "20261013T221502--hub.md",
             "---\nlinks: [20261013T221500]\n---\n# Hub\nSee [[20261013T221501]] and [[20261013T221500]].",
         )
         .unwrap();
@@ -354,7 +354,7 @@ mod tests {
             assert!(!is_id(bad), "{bad}");
         }
         assert_eq!(
-            parse_name("20261013T221500---merge-is-binary.md"),
+            parse_name("20261013T221500--merge-is-binary.md"),
             Some(("20261013T221500", "merge-is-binary"))
         );
         assert_eq!(parse_name("_summary.md"), None);
