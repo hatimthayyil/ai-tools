@@ -152,7 +152,7 @@ struct Build {
     rebuild: bool,
     #[arg(
         long,
-        help = "the model for this run [default: ai.chat.model, else sonnet]"
+        help = "the model for this run [default: chat.model in ai.toml, else sonnet]"
     )]
     model: Option<String>,
     #[arg(
@@ -504,7 +504,7 @@ fn failures(snap: &Snapshot, failed: &[(Key, String)]) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Starts the thread's background summariser, unless `ai.chat.background` is false.
+/// Starts the thread's background summariser, unless `ai.toml` sets `chat.background` false.
 fn start_summariser(cwd: &Path, thread: &str) -> Result<()> {
     let chat = find(cwd)?;
     chat.spawn_summariser(&chat.thread(thread)?)?;

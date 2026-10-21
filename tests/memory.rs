@@ -12,9 +12,9 @@ use std::{
 };
 
 use ai_tools::memory::{
-    Backend, Block, Cli, Compactor, Conversation, Coord, Field, GaveUp, HIDDEN, Kind, LONG_PROMPT,
-    Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY, REMINDER, Runtime, Store,
-    Usage, VIEW, Who, zoom,
+    Backend, Block, Cli, Compactor, Config, Conversation, Coord, Field, GaveUp, HIDDEN, Kind,
+    LONG_PROMPT, Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY, REMINDER,
+    Runtime, Store, Usage, VIEW, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -52,6 +52,7 @@ fn runtime(backend: Arc<dyn Backend>) -> Runtime {
         backend: Box::new(move |_| Ok(backend.clone())),
         terminal: false,
         opts: opts(VIEW, 8),
+        config: Config::default(),
         summarise_on_note: false,
         before_release: Box::new(|| {}),
         stdin: Box::new(|| Ok(String::new())),
@@ -92,6 +93,15 @@ fn run(dir: &Path, args: &[&str]) -> Out {
         &runtime(Arc::new(Model(Arc::new(Fake::summaries())))),
         args,
     )
+}
+
+/// [`run`] with the sizes `config` sets.
+fn run_sized(dir: &Path, config: Config, args: &[&str]) -> Out {
+    let rt = Runtime {
+        config,
+        ..runtime(Arc::new(Model(Arc::new(Fake::summaries()))))
+    };
+    run_rt(dir, &rt, args)
 }
 
 fn hook(dir: &Path, input: &str) -> Out {
@@ -803,8 +813,11 @@ fn a_life_through_the_cli() {
     }
     assert_eq!(run(d, &["build"]).stdout, "Nothing to build.\n");
 
-    assert_eq!(run(d, &["config", "VIEW_LINES=8"]).code, 0);
-    let view = run(d, &["view"]).stdout;
+    let eight = Config {
+        view_lines: Some(8),
+        ..Config::default()
+    };
+    let view = run_sized(d, eight, &["view"]).stdout;
     let ids = line_ids(&view);
     assert_eq!(ids.len(), 8, "{view}");
     assert!(
@@ -813,7 +826,6 @@ fn a_life_through_the_cli() {
     );
     assert!(ids.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0), "{view}");
     assert_eq!(ids[7].0 + ids[7].1, 42, "{view}");
-    assert_eq!(run(d, &["config", "VIEW_LINES="]).code, 0);
 
     let one = run(d, &["view"]).stdout;
     assert!(is_day(one.lines().next().unwrap()), "{one}");
@@ -1106,8 +1118,10 @@ fn every_store_has_one_origin_stamped_on_what_it_writes() {
             .unwrap()
             .is_match(&origin)
     );
-    let config = fs::read_to_string(d.join("config")).unwrap();
-    assert!(config.contains(&format!("origin = {origin}")), "{config}");
+    assert_eq!(
+        fs::read_to_string(d.join("origin")).unwrap(),
+        format!("{origin}\n")
+    );
     assert_eq!(Store::open(&d).unwrap().origin(), origin);
 
     let old = Message {
@@ -1138,6 +1152,15 @@ fn every_store_has_one_origin_stamped_on_what_it_writes() {
     assert_eq!(Store::open(&d).unwrap().origin(), "NEW456");
     s.append("t", &[msg(Kind::Note, "after")]).unwrap();
     assert_eq!(s.snapshot().unwrap().message(2).unwrap().origin, "NEW456");
+
+    fs::write(d.join("origin"), "two words\n").unwrap();
+    assert!(
+        Store::open(&d)
+            .err()
+            .unwrap()
+            .to_string()
+            .ends_with("/origin is not an origin: one word.")
+    );
 }
 
 #[test]
@@ -1171,37 +1194,27 @@ fn the_log_is_in_time_order() {
 }
 
 #[test]
-fn the_note_limit_is_a_knob_up_to_one_node() {
+fn the_note_limit_is_a_knob() {
     let (_tmp, d) = store();
-    assert_eq!(run(&d, &["config", "ENTRY_CHARS=10"]).code, 0);
+    let ten = Config {
+        entry_chars: Some(10),
+        ..Config::default()
+    };
     assert!(
-        run(&d, &["note", "eleven char"])
+        run_sized(&d, ten.clone(), &["note", "eleven char"])
             .stderr
             .contains("limit 10")
     );
-    assert_eq!(run(&d, &["note", "ten chars!"]).code, 0);
-    assert!(run(&d, &["init"]).stdout.contains("max 10 bytes"));
+    assert_eq!(run_sized(&d, ten.clone(), &["note", "ten chars!"]).code, 0);
     assert!(
-        run(&d, &["config", "ENTRY_CHARS=513"])
-            .stderr
-            .contains("at most 512")
+        run_sized(&d, ten.clone(), &["init"])
+            .stdout
+            .contains("max 10 bytes")
     );
-}
-
-#[test]
-fn a_bad_knob_names_its_key() {
-    let (_tmp, d) = store();
-    fs::write(
-        d.join("config"),
-        fs::read_to_string(d.join("config")).unwrap() + "[ai \"memory\"]\n\tentryChars = lots\n",
-    )
-    .unwrap();
-    let r = run(&d, &["view"]);
-    assert!(
-        r.stderr
-            .contains("ai.memory.entryChars must be a positive whole number"),
-        "{}",
-        r.stderr
+    assert_eq!(
+        run_sized(&d, ten, &["config"]).stdout,
+        "view-lines   96      how many lines view prints (96 is about 8k tokens)\n\
+         entry-chars  10      the longest one note may be, in bytes (default 280)\n"
     );
 }
 

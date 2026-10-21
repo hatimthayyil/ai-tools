@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fmt, fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     rc::Rc,
     str::FromStr,
@@ -8,12 +9,12 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use gix::ObjectId;
+use tempfile::NamedTempFile;
 
 use crate::{
     file::{self, AtPath, pretty},
-    git::{Changes, Ref, Snap, edit_config, fan_path},
+    git::{Changes, Ref, Snap, fan_path},
     memory::{
-        config::{Config, SECTION, SUBSECTION},
         meta::stamp,
         record::{COLUMNS, Message, Node, Who, now},
         tree::{Coord, free, joined},
@@ -44,8 +45,20 @@ pub type Built = Vec<(Coord, String)>;
 pub struct Store {
     git: Ref,
     dir: PathBuf,
-    pub cfg: Config,
     origin: String,
+}
+
+/// The origin in `p`, `None` without the file.
+fn read_origin(p: &Path) -> Result<Option<String>> {
+    let o = match fs::read_to_string(p) {
+        Ok(o) => o,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).at(p),
+    };
+    match o.trim() {
+        o if !o.is_empty() && !o.contains(char::is_whitespace) => Ok(Some(o.into())),
+        _ => bail!("{} is not an origin: one word.", pretty(p)),
+    }
 }
 
 /// `len` Crockford base-32 digits of `bits`.
@@ -96,11 +109,9 @@ impl Store {
             return Ok(None);
         }
         repo.committer_or_set_fallback(ME, "ai@localhost")?;
-        let cfg = Config::load(&repo.config_snapshot(), &pretty(&dir.join("config")))?;
         let mut s = Store {
             git: Ref::new(repo, REF.into(), "memory", FORMAT),
             dir: dir.to_path_buf(),
-            cfg,
             origin: String::new(),
         };
         s.upgrade()?;
@@ -153,20 +164,20 @@ impl Store {
         file::try_lock(&self.dir.join(LOCK))
     }
 
-    /// The origin in this store's config, created by the first open.
+    /// The origin in this store's `origin` file, made by the first open.
     fn load_origin(&self) -> Result<String> {
-        let key = format!("{SECTION}.{SUBSECTION}.{ORIGIN}");
-        if let Some(o) = self.git.repo().config_snapshot().string(key.as_str()) {
-            return Ok(o.to_string());
+        let p = self.dir.join(ORIGIN);
+        if let Some(o) = read_origin(&p)? {
+            return Ok(o);
         }
-        self.edit_config(|f| {
-            if let Some(o) = f.string_by(SECTION, Some(SUBSECTION.into()), ORIGIN) {
-                return Ok(o.to_string());
-            }
-            let o = crockford(getrandom::u32()?, 6);
-            f.set_raw_value_by(SECTION, Some(SUBSECTION.into()), ORIGIN, o.as_str())?;
-            Ok(o)
-        })
+        let mut f = NamedTempFile::new_in(&self.dir).at(&self.dir)?;
+        writeln!(f, "{}", crockford(getrandom::u32()?, 6)).at(f.path())?;
+        match f.persist_noclobber(&p) {
+            Ok(_) => {}
+            Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.error).at(&p),
+        }
+        read_origin(&p)?.with_context(|| format!("{} vanished.", pretty(&p)))
     }
 
     pub fn dir(&self) -> &Path {
@@ -178,15 +189,15 @@ impl Store {
         &self.origin
     }
 
-    /// Replaces this store's id in its config.
+    /// Replaces this store's id in its `origin` file.
     pub fn set_origin(&mut self, origin: &str) -> Result<()> {
         if origin.is_empty() || origin.contains(char::is_whitespace) {
             bail!("'{origin}' is not an origin: one word.");
         }
-        self.edit_config(|f| {
-            f.set_raw_value_by(SECTION, Some(SUBSECTION.into()), ORIGIN, origin)?;
-            Ok(())
-        })?;
+        let p = self.dir.join(ORIGIN);
+        let mut f = NamedTempFile::new_in(&self.dir).at(&self.dir)?;
+        writeln!(f, "{origin}").at(f.path())?;
+        f.persist(&p).map_err(|e| e.error).at(&p)?;
         self.origin = origin.into();
         Ok(())
     }
@@ -226,14 +237,6 @@ impl Store {
         change: impl FnMut(&Snapshot) -> Result<(R, Changes)>,
     ) -> Result<(R, Snapshot<'_>)> {
         self.git.mutate(msg, |c| self.at(c), change)
-    }
-
-    fn edit_config<R>(&self, edit: impl FnOnce(&mut gix::config::File) -> Result<R>) -> Result<R> {
-        edit_config(&self.dir.join("config"), edit)
-    }
-
-    pub fn save_config(&self, cfg: &Config) -> Result<()> {
-        self.edit_config(|f| cfg.save(f))
     }
 
     /// Appends `items` in order, with every free node they complete; returns the first new id.
@@ -437,10 +440,6 @@ impl<'s> AsRef<Snap<'s>> for Snapshot<'s> {
 }
 
 impl Snapshot<'_> {
-    pub fn cfg(&self) -> &Config {
-        &self.store.cfg
-    }
-
     /// Its state, for [`Store::snapshot_at`].
     pub fn mark(&self) -> Mark {
         Mark(self.git.commit())

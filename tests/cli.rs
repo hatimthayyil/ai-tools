@@ -75,6 +75,13 @@ impl Sandbox {
         c
     }
 
+    /// Writes `text` as the user's `ai.toml`.
+    fn user_toml(&self, text: &str) {
+        let d = self.path().join("home/.ai");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("ai.toml"), text).unwrap();
+    }
+
     fn ai(&self, args: &[&str]) -> Output {
         self.ai_at(&self.store(), args)
     }
@@ -449,7 +456,7 @@ fn nothing_is_written_outside_the_store_but_the_root_cache() {
         vec!["note", "first"],
         vec!["note", "second"],
         vec!["view"],
-        vec!["config", "VIEW_LINES=4"],
+        vec!["config"],
         vec!["grep", "first", "-t"],
         vec!["zoom", "0+2"],
         vec!["show", "0+2"],
@@ -487,10 +494,45 @@ fn nothing_is_written_outside_the_store_but_the_root_cache() {
             "hooks",
             "info",
             "objects",
+            "origin",
             "refs",
             "usage.jsonl"
         ]
     );
+}
+
+#[test]
+fn a_projects_ai_toml_overrides_the_users_key_by_key() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    s.user_toml("[memory]\nview-lines = 50\nentry-chars = 100\n");
+    let work = s.path().join("work");
+    let sub = work.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(work.join("ai.toml"), "[memory]\nentry-chars = 10\n").unwrap();
+    let config = |cwd: &Path| s.cmd(cwd, Some(&s.store())).arg("config").output().unwrap();
+    assert_eq!(
+        text(&config(&sub).stdout),
+        "view-lines   50      how many lines view prints (96 is about 8k tokens) (default 96)\n\
+         entry-chars  10      the longest one note may be, in bytes (default 280)\n"
+    );
+    assert!(text(&config(s.path()).stdout).contains("entry-chars  100 "));
+
+    fs::write(work.join("ai.toml"), "[memory]\nentry-chars = 513\n").unwrap();
+    let r = s
+        .cmd(&sub, Some(&s.store()))
+        .args(["note", "x"])
+        .output()
+        .unwrap();
+    let err = text(&r.stderr);
+    assert!(!r.status.success(), "{err}");
+    assert!(
+        err.contains(&format!("{}: ", work.join("ai.toml").display()))
+            && err.contains("entry-chars = 513")
+            && err.contains("is at most 512"),
+        "{err}"
+    );
+    assert_eq!(s.memories().len(), 0);
 }
 
 fn usage(s: &Sandbox) -> Vec<serde_json::Value> {
@@ -798,6 +840,9 @@ fn a_format_1_store_upgrades_once_and_reads_as_before() {
     assert_eq!(s.store_git(&["show", &format!("{REF}:format")]), "2");
 
     for (args, want) in &golden[1..] {
+        if args[0] == "config" {
+            s.user_toml("[memory]\nview-lines = 3\n");
+        }
         let r = s.ai(args);
         assert!(
             r.status.success() && text(&r.stderr).is_empty(),

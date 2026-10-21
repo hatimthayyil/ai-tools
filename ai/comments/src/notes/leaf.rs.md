@@ -5,5 +5,5 @@
 - Title: the claim in a few words (`--title`, required, one line, ≤ `TITLE_MAX` = 80 characters), stored once as the note's first line `# <title>` after the frontmatter and parsed back from there. No `title` field: one source. The body cap counts the body without the title. A file without a `# ` first line parses with an empty title; `label()` then falls back to the body's first line.
 - Slug: the title's ASCII words, at most 48 bytes, else `note`. `name` is the file name on disk, `file_name()` the one the title gives; they differ only after a hand edit of the title. Every lookup is by id, so a stale slug breaks nothing, and every write of an existing note (`Store::put_leaf`, from `link`; `mv`'s rename) puts it under the title's name, keeping the id.
 - `links()`: frontmatter `links` plus every `[[id]]` in the body (hub notes), once each.
-- `LEAF_MAX` = 1024 bytes of body, a constant: memory's `ENTRY_CHARS` knob is per-memory config tied to the view's line size; notes have no view line to fit.
+- `LEAF_MAX` = 1024 bytes of body, a constant: memory's `entry-chars` knob is a setting tied to the view's line size; notes have no view line to fit.
 - `Confidence`: the four design values, required on `add`.

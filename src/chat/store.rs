@@ -159,6 +159,7 @@ pub struct Chat {
     repo: gix::Repository,
     id: String,
     root: PathBuf,
+    cwd: PathBuf,
 }
 
 impl Chat {
@@ -178,11 +179,21 @@ impl Chat {
         };
         let root = base.join(&id);
         file::check_format(&root, FORMAT, "chat")?;
-        Ok(Some(Chat { repo, id, root }))
+        Ok(Some(Chat {
+            repo,
+            id,
+            root,
+            cwd: dir.to_path_buf(),
+        }))
     }
 
     pub(super) fn repo(&self) -> &gix::Repository {
         &self.repo
+    }
+
+    /// The directory it was found from.
+    pub(super) fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     /// The store's directory.

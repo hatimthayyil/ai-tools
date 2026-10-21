@@ -1,6 +1,6 @@
 # tests/chat_cli.rs
 
-`ai chat` as a binary. `Sandbox`: a temporary directory (canonical, as `getcwd` gives it) holding a repository (`gix::init`, background summariser off), a Claude Code config dir (`CLAUDE_CONFIG_DIR`, so transcripts go to `projects/<project dir of the repo>/`), `HOME`, and a fake `claude` first on `PATH` that writes its arguments to `out/argv` and its working directory to `out/cwd`. `GIT_CEILING_DIRECTORIES` stops discovery at the sandbox, so `out/` is outside any repository and a second repository (`init`) sits beside the first.
+`ai chat` as a binary. `Sandbox`: a temporary directory (canonical, as `getcwd` gives it) holding a repository (`gix::init`), a `HOME` whose `.ai/ai.toml` switches the background summariser off, a Claude Code config dir (`CLAUDE_CONFIG_DIR`, so transcripts go to `projects/<project dir of the repo>/`), and a fake `claude` first on `PATH` that writes its arguments to `out/argv` and its working directory to `out/cwd`. `GIT_CEILING_DIRECTORIES` stops discovery at the sandbox, so `out/` is outside any repository and a second repository (`init`) sits beside the first.
 
 Lines are written through the library (`Thread::put_line`), keyed by `turn_ends`, as the roll-up would. `ran_in` stamps a transcript's entries with the `cwd` Claude Code records.
 

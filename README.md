@@ -58,7 +58,7 @@ ai chat grep -t dev <regex>          # search it
 ai chat build -t dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
-Unnamed, a command reads the session's thread, else the repository's only thread, else the one you pick on a terminal; elsewhere it lists the threads. Inside a session, `/ai attach <name>` and `/ai detach`, so the agent reads its thread with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them; `git config ai.chat.model` picks the summariser's model.
+Unnamed, a command reads the session's thread, else the repository's only thread, else the one you pick on a terminal; elsewhere it lists the threads. Inside a session, `/ai attach <name>` and `/ai detach`, so the agent reads its thread with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<root commit>`, or under `$AI_CHAT_DIR` if set, so every worktree and clone of a repository shares them.
 
 A session has one active thread. Detach it explicitly before attaching it elsewhere; its previous thread retains the recorded history.
 
@@ -73,6 +73,22 @@ This needs the Claude Code plugin in `share/ai/plugins/claude` of the package (`
 ```
 
 or for one session with `claude --plugin-dir <dir>`.
+
+### Settings
+
+`ai` reads `~/.ai/ai.toml`, then the nearest `ai.toml` at or above the current directory, whose keys win. Every key is optional:
+
+```toml
+[chat]
+model = "sonnet"   # the summariser's model; default $AI_MEMORY_MODEL, else Sonnet
+background = true  # summarise in the background after each turn
+
+[memory]
+view-lines = 96    # how many lines `ai memory view` prints
+entry-chars = 280  # the longest note, in bytes; at most 512
+```
+
+`ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 
 ## Credits
 

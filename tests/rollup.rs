@@ -16,7 +16,7 @@ use ai_tools::{
         Built, Chat, Id, Key, Line, LineKind, OnFail, Rollup, Source, Thread, build, dry_run,
         rebuild, rewrite, rollup, summarise,
     },
-    memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage, claude},
+    memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage},
 };
 use anyhow::{Result, bail};
 use indicatif::ProgressBar;
@@ -1044,16 +1044,15 @@ fn failed_lines_stay_unbuilt_and_a_failing_model_stops_the_summariser() {
 }
 
 #[test]
-fn config_sets_the_model_and_switches_the_summariser_off() {
+fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     let r = Repo::new();
-    let chat = r.chat();
+    let toml = r.path().join("ai.toml");
+    fs::write(&toml, "[chat]\nmodel = \"haiku\"\nbackground = false\n").unwrap();
+    let sub = r.path().join("src");
+    fs::create_dir(&sub).unwrap();
+    let chat = Chat::find_in(&r.base(), &sub).unwrap().unwrap();
     let c = chat.config().unwrap();
-    assert_eq!((c.model, c.background), (claude::model(), true));
-    r.git(&["config", "ai.chat.model", "haiku"]);
-    r.git(&["config", "ai.chat.background", "false"]);
-    let chat = r.chat();
-    let c = chat.config().unwrap();
-    assert_eq!((c.model.as_str(), c.background), ("haiku", false));
+    assert_eq!((c.model().as_str(), c.background()), ("haiku", false));
     let mut s = Script::new();
     s.user("hi");
     let t = r.thread(&s);
@@ -1061,10 +1060,10 @@ fn config_sets_the_model_and_switches_the_summariser_off() {
         !chat.spawn_summariser(&t).unwrap(),
         "switched off: nothing starts"
     );
-    r.git(&["config", "ai.chat.background", "maybe"]);
-    let err = r.chat().config().unwrap_err();
+    fs::write(&toml, "[chat]\nbackground = \"maybe\"\n").unwrap();
+    let err = format!("{:#}", r.chat().config().unwrap_err());
     assert!(
-        format!("{err:#}").contains("ai.chat.background is true or false"),
-        "{err:#}"
+        err.contains("ai.toml: ") && err.contains("background = \"maybe\""),
+        "{err}"
     );
 }

@@ -12,12 +12,13 @@ use clap::{Parser, Subcommand};
 use tracing::{info, info_span};
 
 use crate::{
+    config::{self as settings, Settings},
     file::{AtPath, pretty},
     memory::{
         backend::MakeBackend,
         claude::{self, CALLS, ClaudeCode},
         compact::{Compactor, GaveUp, Options, Spend},
-        config::Knob,
+        config::{Config, Knob},
         cover::cover,
         grep::{Grep, grep},
         hook::{REMINDED, hook},
@@ -158,11 +159,11 @@ enum Command {
         #[arg(help = "a line's id, as printed: 2184+8, or 7 for message 7")]
         id: String,
     },
-    #[command(about = "show this memory's sizes, or change one.")]
-    Config {
-        #[arg(value_name = "NAME=VALUE")]
-        sets: Vec<String>,
-    },
+    #[command(
+        about = "show the memory's sizes.",
+        after_help = "Set them under [memory] in ~/.ai/ai.toml, or in a project's ai.toml."
+    )]
+    Config,
     #[command(about = "bulk-load dated notes (bootstrap only).")]
     Import { file: PathBuf },
     #[command(about = "count how often agents view, note, zoom, grep and show.")]
@@ -209,7 +210,7 @@ impl Command {
                     .collect(),
             ),
             Command::Show { id } => ("show", vec![id.clone()]),
-            Command::Config { sets } => ("config", sets.clone()),
+            Command::Config => ("config", Vec::new()),
             Command::Import { file } => ("import", vec![file.display().to_string()]),
             Command::Stats(st) => ("stats", st.args()),
             Command::PromptHook => ("prompt-hook", Vec::new()),
@@ -223,6 +224,8 @@ pub struct Runtime {
     /// Whether stdout is a terminal, where views print whole.
     pub terminal: bool,
     pub opts: Options,
+    /// The sizes `ai.toml` sets.
+    pub config: Config,
     /// Whether `note` starts a background `build`.
     pub summarise_on_note: bool,
     /// Called by `build` when a round is done, while it still holds the compactor lock.
@@ -236,6 +239,7 @@ impl Default for Runtime {
             backend: Box::new(|calls| Ok(Arc::new(ClaudeCode::compactor(calls)?))),
             terminal: false,
             opts: Options::default(),
+            config: Config::default(),
             summarise_on_note: std::env::var_os("AI_MEMORY_SUMMARISE").is_none_or(|v| v != "0"),
             before_release: Box::new(|| {}),
             stdin: Box::new(|| io::read_to_string(io::stdin())),
@@ -256,9 +260,9 @@ pub fn store_dir(var: &str, name: &str) -> Result<PathBuf> {
     if let Some(d) = std::env::var_os(var).filter(|d| !d.is_empty()) {
         return Ok(d.into());
     }
-    let home = std::env::home_dir()
+    let home = settings::home()
         .with_context(|| format!("No home directory. Point {var} at the {name}."))?;
-    Ok(home.join(".ai").join(name))
+    Ok(home.join(name))
 }
 
 /// `$AI_MEMORY_DIR`, else `~/.ai/memory`.
@@ -279,20 +283,18 @@ impl Cli {
         }
     }
 
-    /// Runs against the default memory, printing to stdout.
+    /// Runs against the default memory, with the sizes `ai.toml` sets here, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
+        let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
         let rt = Runtime {
             terminal: io::stdout().is_terminal(),
+            config: Settings::find(&cwd)?.memory,
             ..Runtime::default()
         };
         match self.run_with(&default_dir()?, &mut io::stdout().lock(), &rt) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
             r => r,
         }
-    }
-
-    pub fn run(self, dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
-        self.run_with(dir, out, &Runtime::default())
     }
 
     pub fn run_with(self, dir: &Path, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
@@ -303,7 +305,7 @@ impl Cli {
             meta: Meta::default(),
         });
         if let Command::Init = command {
-            return init(dir, out);
+            return init(dir, out, &rt.config);
         }
         let s = Store::open(dir)?;
         let cwd = std::env::current_dir().ok();
@@ -348,7 +350,15 @@ impl Command {
                 at,
                 whole,
                 meta,
-            } => view(s, out, part, at.as_deref(), whole || rt.terminal, &meta),
+            } => view(
+                s,
+                out,
+                &rt.config,
+                part,
+                at.as_deref(),
+                whole || rt.terminal,
+                &meta,
+            ),
             Command::Note { text } => note(s, out, &text, rt, place, who),
             Command::Build => build(s, out, rt),
             Command::Grep(g) => grep(s, out, &g, rt.terminal),
@@ -360,7 +370,7 @@ impl Command {
                 zoom_cmd(&snap, out, &id, page::pick(part, rt.terminal), &meta)
             }
             Command::Show { id } => show(&s.snapshot()?, out, &id),
-            Command::Config { sets } => config(s, out, &sets),
+            Command::Config => config(out, &rt.config),
             Command::Import { file } => import(s, out, &file),
             Command::Stats(st) => stats(&s.snapshot()?, s.dir(), out, &st),
         }
@@ -413,7 +423,7 @@ fn check(text: &str, limit: u64) -> Result<&str> {
     Ok(text)
 }
 
-fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+fn init(dir: &Path, out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
     let (s, fresh) = Store::create(dir)?;
     let at = pretty(dir);
     if fresh {
@@ -424,7 +434,8 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     }
     writeln!(
         out,
-        "Sizes live in {at}/config as ai.memory.*; the defaults are fine.\n"
+        "Sizes live under [memory] in ~/.ai/{}; the defaults are fine.\n",
+        settings::FILE
     )?;
     writeln!(
         out,
@@ -433,7 +444,7 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     let block = TEMPLATE
         .replace("{memo}", ME)
         .replace("{data}", &at)
-        .replace("{chars}", &s.cfg.get(Knob::EntryChars).to_string());
+        .replace("{chars}", &cfg.get(Knob::EntryChars).to_string());
     writeln!(out, "{block}")?;
     Ok(ExitCode::SUCCESS)
 }
@@ -443,6 +454,7 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
 fn view(
     s: &Store,
     out: &mut dyn Write,
+    cfg: &Config,
     part: Option<u64>,
     at: Option<&str>,
     whole: bool,
@@ -455,15 +467,15 @@ fn view(
     let mark = snap.mark();
     page::print(
         out,
-        &view_text(&snap, meta)?,
+        &view_text(&snap, cfg.get(Knob::ViewLines), meta)?,
         page::pick(part, whole),
         |k| format!("{ME} view --part {k} --at {mark}{}", meta.flags()),
     )?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// Every line of the view under its date headers, then the line that says you are awake.
-fn view_text(snap: &Snapshot, meta: &Meta) -> Result<String> {
+/// The view's `n` lines under their date headers, then the line that says you are awake.
+fn view_text(snap: &Snapshot, n: u64, meta: &Meta) -> Result<String> {
     let t = snap.log_len()?;
     if t == 0 {
         return Ok(format!(
@@ -471,7 +483,7 @@ fn view_text(snap: &Snapshot, meta: &Meta) -> Result<String> {
         ));
     }
     let mut lines = Vec::new();
-    for c in cover(t, snap.cfg().get(Knob::ViewLines)) {
+    for c in cover(t, n) {
         view_lines(snap, c, meta, &mut lines)?;
     }
     let mut text: String = dated(&lines).into_iter().map(|l| l + "\n").collect();
@@ -504,7 +516,7 @@ fn note(
     place: &Place,
     who: &Who,
 ) -> Result<ExitCode> {
-    let text = check(text, s.cfg.get(Knob::EntryChars))?;
+    let text = check(text, rt.config.get(Knob::EntryChars))?;
     let m = Message {
         place: place.clone(),
         who: who.clone(),
@@ -592,36 +604,13 @@ fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime, spent: &mut Spend) -> Re
     Ok(built)
 }
 
-fn config(s: &Store, out: &mut dyn Write, sets: &[String]) -> Result<ExitCode> {
-    let mut cfg = s.cfg.clone();
-    for a in sets {
-        let knob = a
-            .split_once('=')
-            .and_then(|(k, v)| Some((Knob::parse(&k.trim().to_uppercase())?, v.trim())));
-        let Some((k, v)) = knob else {
-            bail!(
-                "usage: {ME} config [NAME=VALUE ...]   # NAME one of {}",
-                Knob::names()
-            );
-        };
-        cfg.set(
-            k,
-            if v.is_empty() {
-                None
-            } else {
-                Some(k.validate(v, k.name())?)
-            },
-        );
-    }
-    if !sets.is_empty() {
-        s.save_config(&cfg)?;
-    }
+fn config(out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
     for k in Knob::ALL {
         let note = match cfg.overridden(k) {
             Some(_) => format!(" (default {})", k.default()),
             None => String::new(),
         };
-        writeln!(out, "{:<12} {:<7} {}{note}", k.name(), cfg.get(k), k.what())?;
+        writeln!(out, "{:<12} {:<7} {}{note}", k.key(), cfg.get(k), k.what())?;
     }
     Ok(ExitCode::SUCCESS)
 }

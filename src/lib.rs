@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod config;
 pub mod file;
 pub mod files;
 pub mod git;

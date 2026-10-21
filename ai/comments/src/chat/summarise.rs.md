@@ -3,7 +3,7 @@
 The summariser: builds the lines `rollup.rs` plans. Design: `ai/research/20261014T002322--chat-design.md`, Roll-up (background compactor) and Contract.
 
 Config (`Chat::config`)
-- From the repository's git config, so global (`~/.gitconfig`) or per repo: `ai.chat.model` (default `memory::claude::model()`: `$AI_MEMORY_MODEL`, else Sonnet, as memory's compactor), `ai.chat.background` (bool, default true). A value that is not a boolean is an error. Memory's knobs are numbers in the memory repo's config; chat's live with the repository the threads are in.
+- `[chat]` in `ai.toml` (config.rs.md), the user's under the project's: `model` (default `memory::claude::model()`: `$AI_MEMORY_MODEL`, else Sonnet, as memory's compactor; an empty one is an error), `background` (bool, default true). `Chat::config` reads the files from the directory the store was found from, each time it is asked, so a command that never needs them never reads them.
 - `backend(model)`: `ClaudeCode::compactor_at` with `model` (`build --model`), else the configured one (medium effort, isolated `claude -p`).
 
 Runs (`Run`)
@@ -34,7 +34,7 @@ Runs (`Run`)
 - One pass with `Run::dry` set: free lines and model replies go to the pass's in-memory map, so lines above them are built from them, and to the run's list instead of the store. With `rebuild` the pass reads no stored line (`Anew::All`), so it builds every line anew; with `line` it builds that line and the unbuilt ones under it, and with both it reads that one line as unbuilt (`Anew::Line`), as `rewrite` would write it. No lock: it writes nothing. Each line comes back with its first item (for its printed id) and the stored line it would replace. Logged under a `dry_run` span.
 
 `Chat::spawn_summariser(thread)` (for `ai chat sync-session`)
-- Unless `ai.chat.background` is false: this executable as `chat build -t <name>` from the repository's work tree (else its git dir), detached by `memory::log::spawn` (stdin/stdout null, stderr to the thread's log, own process group). No readiness check: a summariser with nothing to do exits after one pass, and sync stays fast.
+- Unless `chat.background` is false: this executable as `chat build -t <name>` from the repository's work tree (else its git dir), detached by `memory::log::spawn` (stdin/stdout null, stderr to the thread's log, own process group). No readiness check: a summariser with nothing to do exits after one pass, and sync stays fast.
 
 Smoke (2026-10-15, haiku, throwaway repo, synthetic 4-turn thread): 3 calls, 1 free turn line, 1 node; the spawning process's piped stdout closed at once (spawn 0.3 ms); a second summariser exited `busy`.
 

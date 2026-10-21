@@ -1,10 +1,6 @@
-use anyhow::{Result, bail};
-use gix::bstr::ByteSlice;
+use serde::{Deserialize, Deserializer, de::Error};
 
 use crate::memory::tree::NODE;
-
-pub const SECTION: &str = "ai";
-pub const SUBSECTION: &str = "memory";
 
 /// The longest note: one node, so it is its own line of the view.
 pub const NOTE_MAX: u64 = NODE as u64;
@@ -18,17 +14,11 @@ pub enum Knob {
 impl Knob {
     pub const ALL: [Knob; 2] = [Knob::ViewLines, Knob::EntryChars];
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Knob::ViewLines => "VIEW_LINES",
-            Knob::EntryChars => "ENTRY_CHARS",
-        }
-    }
-
+    /// Its key under `[memory]` in `ai.toml`.
     pub fn key(self) -> &'static str {
         match self {
-            Knob::ViewLines => "viewLines",
-            Knob::EntryChars => "entryChars",
+            Knob::ViewLines => "view-lines",
+            Knob::EntryChars => "entry-chars",
         }
     }
 
@@ -46,29 +36,42 @@ impl Knob {
         }
     }
 
-    pub fn parse(name: &str) -> Option<Knob> {
-        Knob::ALL.into_iter().find(|k| k.name() == name)
-    }
-
-    pub fn names() -> String {
-        Knob::ALL.map(Knob::name).join(", ")
-    }
-
-    pub fn validate(self, v: &str, label: &str) -> Result<u64> {
-        let n = match v.parse::<u64>() {
-            Ok(n) if n >= 1 && v.bytes().all(|b| b.is_ascii_digit()) => n,
-            _ => bail!("{label} must be a positive whole number, not '{v}'."),
-        };
+    fn check(self, n: u64) -> Result<u64, String> {
+        if n == 0 {
+            return Err("must be a positive whole number".into());
+        }
         if self == Knob::EntryChars && n > NOTE_MAX {
-            bail!("{label} is at most {NOTE_MAX}: a note has to fit one line of the view.");
+            return Err(format!(
+                "is at most {NOTE_MAX}: a note has to fit one line of the view"
+            ));
         }
         Ok(n)
     }
+
+    fn read<'de, D: Deserializer<'de>>(self, d: D) -> Result<Option<u64>, D::Error> {
+        self.check(u64::deserialize(d)?)
+            .map(Some)
+            .map_err(D::Error::custom)
+    }
 }
 
-/// The sizes one memory overrides; every other knob follows the tool's default.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Config([Option<u64>; 2]);
+/// `[memory]` in `ai.toml`: the sizes it sets; every other knob follows the tool's default.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Config {
+    #[serde(deserialize_with = "view_lines")]
+    pub view_lines: Option<u64>,
+    #[serde(deserialize_with = "entry_chars")]
+    pub entry_chars: Option<u64>,
+}
+
+fn view_lines<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Knob::ViewLines.read(d)
+}
+
+fn entry_chars<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Knob::EntryChars.read(d)
+}
 
 impl Config {
     pub fn get(&self, k: Knob) -> u64 {
@@ -76,43 +79,17 @@ impl Config {
     }
 
     pub fn overridden(&self, k: Knob) -> Option<u64> {
-        self.0[k as usize]
-    }
-
-    pub fn set(&mut self, k: Knob, v: Option<u64>) {
-        self.0[k as usize] = v;
-    }
-
-    /// Reads `ai.memory.<knob>` from `file`; `place` names where it is written.
-    pub fn load(file: &gix::config::File, place: &str) -> Result<Config> {
-        let mut cfg = Config::default();
-        for k in Knob::ALL {
-            if let Some(v) = file.string_by(SECTION, Some(SUBSECTION.into()), k.key()) {
-                let label = format!("{place}: {SECTION}.{SUBSECTION}.{}", k.key());
-                cfg.set(k, Some(k.validate(v.to_str_lossy().trim(), &label)?));
-            }
+        match k {
+            Knob::ViewLines => self.view_lines,
+            Knob::EntryChars => self.entry_chars,
         }
-        Ok(cfg)
     }
 
-    pub fn save(&self, file: &mut gix::config::File) -> Result<()> {
-        for k in Knob::ALL {
-            match self.overridden(k) {
-                Some(v) => {
-                    file.set_raw_value_by(
-                        SECTION,
-                        Some(SUBSECTION.into()),
-                        k.key(),
-                        v.to_string().as_str(),
-                    )?;
-                }
-                None => {
-                    if let Ok(mut s) = file.section_mut(SECTION, Some(SUBSECTION.into())) {
-                        while s.remove(k.key()).is_some() {}
-                    }
-                }
-            }
+    /// These sizes, then `base`'s for those unset here.
+    pub fn over(self, base: Config) -> Config {
+        Config {
+            view_lines: self.view_lines.or(base.view_lines),
+            entry_chars: self.entry_chars.or(base.entry_chars),
         }
-        Ok(())
     }
 }

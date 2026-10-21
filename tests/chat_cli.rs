@@ -27,8 +27,8 @@ const ISOLATE: [&str; 7] = [
     "GIT_COMMITTER_NAME",
 ];
 
-/// A git repository with the background summariser off, a Claude Code config dir and a fake
-/// `claude`, in a temporary directory.
+/// A git repository, a home whose `ai.toml` switches the background summariser off, a Claude
+/// Code config dir and a fake `claude`, in a temporary directory.
 struct Sandbox {
     _tmp: TempDir,
     root: PathBuf,
@@ -38,16 +38,21 @@ impl Sandbox {
     fn new() -> Sandbox {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        for d in ["home", "claude", "out", "bin"] {
-            fs::create_dir(root.join(d)).unwrap();
+        for d in ["home/.ai", "claude", "out", "bin"] {
+            fs::create_dir_all(root.join(d)).unwrap();
         }
+        fs::write(
+            root.join("home/.ai/ai.toml"),
+            "[chat]\nbackground = false\n",
+        )
+        .unwrap();
         let s = Sandbox { _tmp: tmp, root };
         s.init(&s.repo());
         s.fake_claude();
         s
     }
 
-    /// A git repository at `dir`, with the background summariser off.
+    /// A git repository at `dir`.
     fn init(&self, dir: &Path) {
         gix::init(dir).unwrap();
         let root = Command::new("git")
@@ -66,12 +71,6 @@ impl Sandbox {
             .status()
             .unwrap();
         assert!(root.success());
-        let off = Command::new("git")
-            .args(["config", "ai.chat.background", "false"])
-            .current_dir(dir)
-            .status()
-            .unwrap();
-        assert!(off.success());
     }
 
     fn repo(&self) -> PathBuf {

@@ -9,7 +9,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 
-use crate::{chat, memory, page};
+use crate::{chat, config::Settings, memory, page};
 
 /// `ai view`: the memory's whole view, read as `ai memory view`, then a thread's view
 /// (`chat::thread_view`); whole on a terminal, else in parts from one state of both.
@@ -100,8 +100,12 @@ impl Cli {
             Some(at) => at.memory,
             None => memory::Store::open(memory)?.snapshot()?.mark(),
         };
+        let rt = memory::Runtime {
+            config: Settings::find(cwd)?.memory,
+            ..memory::Runtime::default()
+        };
         let mut text = b"# Memory\n\n".to_vec();
-        let woke = memory::Cli::view_whole(mem).run(memory, &mut text)?;
+        let woke = memory::Cli::view_whole(mem).run_with(memory, &mut text, &rt)?;
         if woke != ExitCode::SUCCESS {
             out.write_all(&text)?;
             return Ok(woke);

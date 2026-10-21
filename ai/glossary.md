@@ -16,11 +16,12 @@
 - `part`: one page of a view's output when it is not on a terminal: at most `PART` (20,000) bytes, ending with `--part N --at <state>` for the next.
 - `state` (`--at`): what a view's parts are read from, so they join up: the memory's commit (`0` while empty), a thread's file lengths (`items.lines.sessions`), or for `ai view` both, `<commit>:<thread>:<items.lines.sessions>`.
 - `zoom`: open `id+n` two levels down; a bare `id` gives the original message in bounded pages (`part`, from 1).
-- `origin`: a store's random id (6 Crockford base-32 characters), made at `init` and kept in its git config as `ai.memory.origin`; stamped on every message and node the store writes.
+- `origin`: a store's random id (6 Crockford base-32 characters), made at `init` and kept in the store's `origin` file; stamped on every message and node the store writes.
 - `show`: every field of one message or node.
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes); off a terminal, in parts newest first.
 - `snapshot`: the memory as of one commit; every command reads one.
-- `knob`: a per-machine size in the memory repo's git config, set with `ai memory config NAME=VALUE`: `VIEW_LINES`, `ENTRY_CHARS`.
+- `knob`: a memory size set under `[memory]` in `ai.toml`, shown by `ai memory config`: `view-lines`, `entry-chars`.
+- `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[memory]`): the user's in `~/.ai`, and the project's, the nearest one at or above the cwd, whose keys win.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.
 - `format`: the store's format number, the `format` blob at the tree root (absent: 1). This ai reads and writes only its own (`FORMAT`); it refuses a newer store and upgrades an older one.
@@ -62,6 +63,6 @@
 - `chunk`: consecutive steps of a turn's work, at most `INPUT` (48 KB), cut greedily at step boundaries (an over-budget step before its tool calls); final once another chunk follows it. Work that fits is one chunk, its work line. Its call reads the turn's message as context.
 - `free line` (chat): a line whose input fits its limit (512 B per 50 words asked) is that input without item ids, flattened, with no model call.
 - `grep` (chat): `ai chat grep <regex>`: matches on a thread's branch in items' words and tool calls, tool output with `--tool-output`, and built lines; off a terminal, in parts newest first.
-- `build` (chat): `ai chat build -t <name>`: the thread's summariser, one per thread (its lock), building every ready line until none is; `sync-session` starts it in the background unless `ai.chat.background` is false. `--rebuild` drops every line and writes them again; `<id>` writes one line, and with `--rebuild` rewrites it and drops the lines above it for the next run; `--dry-run` prints what it would write and stores nothing; `--model` picks the model for the run.
+- `build` (chat): `ai chat build -t <name>`: the thread's summariser, one per thread (its lock), building every ready line until none is; `sync-session` starts it in the background unless `ai.toml` sets `chat.background` false. `--rebuild` drops every line and writes them again; `<id>` writes one line, and with `--rebuild` rewrites it and drops the lines above it for the next run; `--dry-run` prints what it would write and stores nothing; `--model` picks the model for the run.
 - `porcelain`: a command for users and agents (git's term): listed in help, errors worded as what to do.
 - `plumbing`: a command for harness glue, at least two words, hidden from help: `ai chat sync-session`, `ai chat compact-session`, `ai memory prompt-hook`.
