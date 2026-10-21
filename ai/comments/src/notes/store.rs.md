@@ -1,6 +1,6 @@
 # store.rs
 
-Spec: `ai/research/20261013T222521---notes-design.md` (Store). Layer 1.
+Spec: `ai/research/20261013T222521--notes-design.md` (Store). Layer 1.
 
 - Non-bare repo at `~/.ai/notes` (`AI_NOTES_DIR`): the files are the source of truth, readable and editable by hand. Reads (`load`) go to the work tree, not to git objects; hand edits are swept into the next commit.
 - `mutate`: takes `.git/ai-notes.lock` (blocking `flock`), loads the tree, lets the command edit files, then commits. Serialised writers instead of memory's lock-free CAS: a commit here rebuilds the tree from the work tree, so two writers at once would race on the files themselves, not only on the ref.
