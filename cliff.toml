@@ -1,6 +1,7 @@
 [changelog]
-header = "# Changelog\n\n"
+header = "# Changelog\n"
 body = """
+
 {% if version %}\
 ## {{ version }} - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else %}\
@@ -25,9 +26,11 @@ conventional_commits = true
 filter_unconventional = true
 commit_parsers = [
     { field = "breaking", pattern = "true", group = "Breaking changes" },
+    { field = "id", pattern = "^3198b9de", group = "Features" },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug fixes" },
     { message = "^perf", group = "Performance" },
+    { message = "^(docs|chore|refactor|test|build|ci|style)", skip = true },
     { message = ".*", group = "Other changes" },
 ]
 tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
