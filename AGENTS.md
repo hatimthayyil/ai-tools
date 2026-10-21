@@ -18,4 +18,4 @@
 ## Writing
 - Prefer terse prose
 - Write research notes in `ai/research`
-- When naming files that would benefit from chronological sequencing or keyword identifications, follow the Denote naming pattern. eg: `YYYYMMDDThhmmss---<slug>__<keywords>`. Keywords are optional and separate by `_`. Only add keywords from the "Keywords" section in `ai/glossary.md`.
+- When naming files that would benefit from chronological sequencing or keyword identifications, follow the Denote naming pattern. eg: `YYYYMMDDThhmmss--<slug>__<keywords>`. Keywords are optional and separate by `_`. Only add keywords from the "Keywords" section in `ai/glossary.md`.
