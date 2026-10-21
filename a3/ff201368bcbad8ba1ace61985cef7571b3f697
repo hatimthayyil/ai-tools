@@ -1,0 +1,32 @@
+ai/comments/src/chat/claude.rs.md
+  s_77b04d9838f161::t_d8734b6dab570b 15
+  s_77b04d9838f161::t_f77cd35df1b97b 12-13
+src/chat/claude.rs
+  s_77b04d9838f161::t_54d037f94a6cb5 376-377,383
+  s_77b04d9838f161::t_e50f2cceaec910 308
+  s_77b04d9838f161::t_a8761e06ab544a 860-905
+  s_77b04d9838f161::t_72e24bdb4a16b7 773
+  s_77b04d9838f161::t_171ea4f8602057 404-439,447-448,452-464
+  s_77b04d9838f161::t_67df30024dff9d 799
+  s_77b04d9838f161::t_ecaacd22f447e2 465,859
+tests/fixtures/claude/report.jsonl
+  s_77b04d9838f161::t_60b7eaa7159f5e 1-14
+ai/glossary.md
+  s_77b04d9838f161::t_837ee0d6993244 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a3ff201368bcbad8ba1ace61985cef7571b3f697",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
