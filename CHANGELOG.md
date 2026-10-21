@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.13.1 - 2026-10-21
+
+### Bug fixes
+
+- **memory:** the Nix build no longer fails the init test
+
 ## v0.13.0 - 2026-10-21
 
 ### Bug fixes
