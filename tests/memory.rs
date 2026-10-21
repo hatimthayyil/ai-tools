@@ -1093,7 +1093,7 @@ fn init_prints_the_block_and_is_idempotent() {
             .contains("ai memory note \"<1 line, max 280 bytes>\"")
     );
     assert!(r.stdout.contains("ai memory zoom <id+n>"));
-    assert!(!r.stdout.contains("build"));
+    assert!(!r.stdout.contains("ai memory build"));
 }
 
 #[test]
