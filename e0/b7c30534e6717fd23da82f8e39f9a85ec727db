@@ -1,0 +1,19 @@
+src/memory/claude.rs
+  s_77b04d9838f161::t_835aa318ecf251 827-830
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e0b7c30534e6717fd23da82f8e39f9a85ec727db",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
