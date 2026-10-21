@@ -1,0 +1,44 @@
+ai/comments/src/files/tree.rs.md
+  s_77b04d9838f161::t_1b575c184ecf11 1-11
+ai/comments/src/git.rs.md
+  s_77b04d9838f161::t_bf26f3972b5156 13
+src/notes/summary.rs
+  s_77b04d9838f161::t_9dbb9599c1f8f8 4
+src/git.rs
+  s_77b04d9838f161::t_9460e6c17d5f15 25-34
+src/files/tree.rs
+  s_77b04d9838f161::t_51bd070259cd4d 109
+  s_77b04d9838f161::t_c95f2c0f542522 301
+  s_77b04d9838f161::t_157fae96a9f1bc 13-16
+  s_77b04d9838f161::t_ab26e2147954c4 1-2,4-12,17-64,68-93,95-108,110-300,302-304
+  s_77b04d9838f161::t_0987a9d09d0f0f 3
+  s_77b04d9838f161::t_4fa537fd16795e 65-67
+  s_77b04d9838f161::t_a44005b1f4d494 94
+src/notes/cli.rs
+  s_77b04d9838f161::t_34bbd8bdb084b5 24
+  s_77b04d9838f161::t_51016f8597148c 16
+src/files/mod.rs
+  s_77b04d9838f161::t_4ee16d6aa4fc52 1-3
+Cargo.toml
+  s_77b04d9838f161::t_56291f3734cd22 21
+src/lib.rs
+  s_77b04d9838f161::t_d5d2c6fe69b328 3
+Cargo.lock
+  s_77b04d9838f161::t_ac972fa1473eb4 24,261-279,1121-1133,1181-1196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "76af12975b76eeebe69164e247df2a22348d85f3",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
