@@ -28,7 +28,7 @@
 - `root`: a note's repo identity: the first commit of the repo's default branch, cached per clone as `ai.root` in its git config.
 - `notes`: the store `ai notes` manages: a global knowledge base agents consult deliberately, never loaded at session start. A non-bare repo of Markdown files at `~/.ai/notes` (override `AI_NOTES_DIR`), one commit per change.
 - `topic`: a directory of the notes, named by its slug path with dots (`linguistics.syntax`); repo knowledge goes under `projects.<repo>`.
-- `leaf`: one note of the notes: one claim, titled (`# <title>`, ≤ 80 characters, the claim in a few words), body ≤ 1024 bytes, file `<id>---<slug of title>.md`; the id is its UTC Denote timestamp, permanent. Frontmatter: `source`, `confidence` (`verified | reported | speculative | assessment`), `checked`, `decay`, `links`, `supersedes`, `invalid_at`.
+- `leaf`: one note of the notes: one claim, titled (`# <title>`, ≤ 80 characters, the claim in a few words), body ≤ 1024 bytes, file `<id>--<slug of title>.md`; the id is its UTC Denote timestamp, permanent. Frontmatter: `source`, `confidence` (`verified | reported | speculative | assessment`), `checked`, `decay`, `links`, `supersedes`, `invalid_at`.
 - `scope`, `gist`: the two parts of a topic's `_summary.md`: one line on what lies below, and its key claims. Written by the compactor model from the topic's children; out of date when the hash of that input changes.
 - `breadcrumb`: a topic path as `ai notes grep` prints it: `physics › qm › decoherence`.
 - `item`: one normalised harness entry in `ai chat` (`chat::Item`): a user message, work, assistant text, tool call, tool output or marker, with its source id (harness, session, entry), parent and time. Thinking is dropped.
