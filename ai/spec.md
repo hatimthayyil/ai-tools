@@ -2,6 +2,10 @@
 - A session has at most one active thread attachment per repository.
 - Attaching a session to another thread requires an explicit detach first; a rejected attach leaves both threads unchanged.
 - The store retains complete, byte-for-byte copies of a thread's original session files, including subagent files.
+- A thread is one conversation. It can span many sessions.
+- A session carries on a branch of its thread. Several sessions can carry on one branch, one after another.
+- A branch splits off when a message is rewound or edited, or when two sessions carry on from the same point.
+- A session sees only its own branch: everything from its newest item back through its parents. View, zoom and grep in a session show nothing from another branch of its thread.
 - History is an ordered sequence of turns; each opens at a message from the user or another agent, and closes at the next one or where the harness ends the assistant's turn.
 - A turn is its message, its work and its final reply: the item that ends it when that is the assistant's text. Its work, the steps in between (every step when there is no final reply), is summarised in its own lines; its turn line is written from the message, those lines and the final reply. No message is ever part of a turn's work.
 - A thread's view is one list of its branch's turns, oldest first, whose ids cover turns 0..N once each, in order; detail never decreases toward the present: merged lines, then turn lines, then recent turns (message and final reply word for word, work lines between), then the newest turn with every item.
