@@ -107,7 +107,6 @@ Relative, inside a chat command:
 | `:b3.7.0` | this thread, branch `b3` |
 | `ai-chat.7.0` | thread `ai-chat`, its default branch |
 | `ai-chat:b3.7.0` | thread `ai-chat`, branch `b3` |
-| `ai-tools.ai-chat.7.0` | project `ai-tools`, thread `ai-chat` |
 
 Absolute:
 - `chat.<project>.<thread>:<branch>.<turn>.<item>`
@@ -115,14 +114,10 @@ Absolute:
 - `memory.<project>.<n>`: a project's memory, reserved and left out of this work
 
 Rules:
-- **Recommended:** a relative address fills from the right, `[project.]thread[:branch][.turn[.item]]`. The words before the first number decide: one is a thread, two are a project and a thread. A lone word is a thread.
+- A relative address stays inside the current project and fills from the right, `[thread][:branch][.turn[.item]]`. A leading name is a thread.
 - A thread without a branch means your session's branch if your session is attached to that thread, and `main` otherwise. That way grep in a session never reads another branch (`ai/spec.md`: "A session sees only its own branch").
-- Names contain no `.` or `:`, and a part made only of digits is always a position. Thread names can't be all digits or a store word (`chat`, `memory`, …), so `memory.5` is always a memory message. Any name can be a project, store words and all digits included.
-- **Recommended:** a store word in first position always means the store, and the project slot of a full form is read by its place, digits or not. A project named like a store, or all digits, is then reached through the full form: `chat.memory.ai-chat.7.0`, `chat.123.ai-chat.7.0`.
-  - `7.0`, `:b3.7.0`, `ai-chat.7.0` and `ai-chat:b3.7.0` never start with a project, so they're unaffected.
-  - `<project>.<thread>.7.0` with an all-digit project fails to parse: `123.ai-chat.7.0` is a position followed by a name.
-  - With a project named `chat` it fails too: `chat.ai-chat.7` reads as a full form with no thread.
-  - With a project named `memory` it can parse as a memory address: `memory.ai-chat.7` reads as message 7 of project `ai-chat`, with no error. This is the one silent misread; the full form `chat.memory.ai-chat.7` avoids it.
+- Thread names contain no `.` or `:`, and in a relative address a part made only of digits is a position. Thread names can't be all digits or a store word (`chat`, `memory`, …), so `memory.5` is always a memory message.
+- Another project is reached only through the full form, where the project is read by its place. Any name is a valid project: `chat.memory.ai-chat.7.0` and `chat.123.ai-chat.7.0` work.
 
 **`--at`** stays and becomes an opaque token, like the page tokens APIs hand out. A long view comes in parts, and each part ends with the command for the next, including `--at`, so the next part shows the same snapshot while the reader's own tool calls add items. Only the CLI writes and reads it, so it never clashes with addresses.
 
