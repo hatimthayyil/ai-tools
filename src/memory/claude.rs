@@ -561,11 +561,22 @@ mod tests {
         assert_ne!(uuid().unwrap(), u);
     }
 
+    fn script(path: &Path, text: &str) {
+        let mut sh = Command::new("sh")
+            .args(["-c", r#"cat >"$1" && chmod 755 "$1""#, "sh"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        sh.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        assert!(sh.wait().unwrap().success());
+    }
+
     #[test]
     fn a_call_keeps_what_went_in_and_every_byte_out() {
         let tmp = TempDir::new().unwrap();
         let program = tmp.path().join("claude");
-        fs::write(
+        script(
             &program,
             r#"#!/bin/sh
 while [ "$1" != --session-id ]; do shift; done
@@ -577,13 +588,7 @@ while read -r line; do
   printf '{"type":"result","is_error":false,"result":"r%s","usage":{"input_tokens":10,"cache_creation_input_tokens":1,"cache_read_input_tokens":2,"output_tokens":3},"total_cost_usd":0.%s5,"session_id":"%s"}\n' $n $n "$2"
 done
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(
-            &program,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
+        );
         let calls = tmp.path().join(CALLS);
         let c = ClaudeCode::compactor_at(program.into(), "sonnet", &calls).unwrap();
         let mut conv = c.open("Write a line.").unwrap();
