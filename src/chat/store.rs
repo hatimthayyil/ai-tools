@@ -24,7 +24,8 @@ use crate::{
     },
     file::{self, AtPath},
     jsonl,
-    memory::{CALLS, Who, prov::repo_root, store_dir},
+    memory::{CALLS, Who, store_dir},
+    project::Project,
 };
 
 /// The chat store format this ai reads and writes.
@@ -171,10 +172,7 @@ impl Chat {
 
     /// [`Chat::find`] with the stores in `base`.
     pub fn find_in(base: &Path, dir: &Path) -> Result<Option<Chat>> {
-        let Ok(repo) = gix::discover(dir) else {
-            return Ok(None);
-        };
-        let Some(id) = repo_root(&repo) else {
+        let Some(Project { repo, id }) = Project::find(dir) else {
             return Ok(None);
         };
         let root = base.join(&id);
@@ -315,7 +313,7 @@ impl Chat {
     /// Whether `dir` lies in this project: an existing directory whose repository has this
     /// store's root commit, a worktree or clone of this one.
     pub fn holds(&self, dir: &Path) -> bool {
-        gix::discover(dir).is_ok_and(|r| repo_root(&r).as_ref() == Some(&self.id))
+        Project::find(dir).is_some_and(|p| p.id == self.id)
     }
 }
 

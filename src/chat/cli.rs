@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use dialoguer::Select;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use jiff::Timestamp;
 
 use crate::{
@@ -27,7 +27,7 @@ use crate::{
     },
     file,
     memory::{Pattern, broken_pipe, claude::uuid, plural, quote, word},
-    page,
+    page, progress,
 };
 
 /// The exit code of plumbing for a session attached to no thread; it prints nothing.
@@ -840,17 +840,10 @@ fn grep(
 /// A bar on stderr for a summariser run when `show` and stderr is a terminal: lines written of
 /// those planned, calls running, failures and time so far. Else hidden.
 fn progress(show: bool) -> ProgressBar {
-    if !show || !io::stderr().is_terminal() {
-        return ProgressBar::hidden();
+    match show {
+        true => progress::bar("lines", "reading the thread"),
+        false => ProgressBar::hidden(),
     }
-    let style =
-        ProgressStyle::with_template("{spinner} {bar:30} {pos}/{len} lines · {msg} · {elapsed}")
-            .expect("a valid template");
-    let bar = ProgressBar::no_length()
-        .with_style(style)
-        .with_message("reading the thread");
-    bar.enable_steady_tick(Duration::from_millis(100));
-    bar
 }
 
 /// Writes the thread's ready lines, or with `rebuild` rewrites them all; with `id`, that one

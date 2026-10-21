@@ -4,6 +4,7 @@ The `ai` CLI: an all-in-one AI tool.
 
 - `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory view` prints the whole memory as one short view.
 - `ai notes`: a global knowledge store for AI agents. Each note is one claim, filed in a tree of topics; Claude Code summarises every topic from its children, so an agent can browse the tree or search it.
+- `ai files`: summaries of a project's files, rolled up its directory tree, so an agent can read a project from the top down.
 - `ai chat`: named conversations that span agent sessions. A thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
 
 ## Install
@@ -45,6 +46,16 @@ ai notes link <id> <id>         # link one note to another
 ```
 
 Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_DIR` if you set it. Every change is a commit.
+
+### ai files
+
+```sh
+ai files build          # summarise what changed since the last build, with a progress bar on a terminal
+ai files view           # the project's summary
+ai files view src/chat  # a directory's or a file's
+```
+
+A file's summary is asked for a tenth of its bytes, at least 512; a directory's is written from its children's summaries in passes that each halve the last, down to their mean size, at least 512. A summary may run a quarter over what it was asked for. What git ignores and files that are not text are left out. `build` runs only when you run it, up to 8 calls at once, each directory after its children; a summary is kept under the hash of what it covers, so the next build summarises only what changed, and a file or directory changed since shows no summary. A failed call stops the build, naming the path and the cause; the summaries written before it are kept. Summaries live in `~/.ai/files/<root commit>`, or under `$AI_FILES_DIR` if set, with every call to the model kept byte for byte in `calls/`.
 
 ### ai chat
 

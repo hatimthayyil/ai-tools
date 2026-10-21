@@ -17,6 +17,8 @@ enum Command {
     Notes(ai_tools::notes::Cli),
     #[command(about = "Named conversations that span agent sessions, kept in this repository.")]
     Chat(ai_tools::chat::Cli),
+    #[command(about = "Summaries of a project's files, rolled up its directory tree.")]
+    Files(ai_tools::files::Cli),
     #[command(about = "Your whole memory, then a thread's view: one read to wake on.")]
     View(ai_tools::view::Cli),
 }
@@ -26,6 +28,7 @@ fn main() -> ExitCode {
         Command::Memory(cli) => cli.exec(),
         Command::Notes(cli) => cli.exec(),
         Command::Chat(cli) => cli.exec(),
+        Command::Files(cli) => cli.exec(),
         Command::View(cli) => cli.exec(),
     };
     result.unwrap_or_else(|e| {

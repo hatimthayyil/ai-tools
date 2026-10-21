@@ -7,5 +7,7 @@ pub mod jsonl;
 pub mod memory;
 pub mod notes;
 pub mod page;
+pub mod progress;
+pub mod project;
 pub mod record;
 pub mod view;

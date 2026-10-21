@@ -39,6 +39,12 @@ impl Store {
         &self.dir
     }
 
+    /// The lock a build holds while it runs; `None` while another build holds it.
+    pub fn build_lock(&self) -> Result<Option<file::Lock>> {
+        file::ensure_format(&self.dir, FORMAT)?;
+        file::try_lock(&self.dir.join("build.lock"))
+    }
+
     /// Every summary, by key; a key written twice keeps its first.
     pub fn load(&self) -> Result<HashMap<String, Summary>> {
         let p = self.dir.join(SUMMARIES);
