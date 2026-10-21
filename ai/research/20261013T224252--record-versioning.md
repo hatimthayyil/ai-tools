@@ -1,6 +1,6 @@
 # Record versioning and store upgrades
 
-Author: Claude Code (Claude Opus 5.5). Status: proposal. Crate survey: `20261013T224300---format-versioning-crates.md`.
+Author: Claude Code (Claude Opus 5.5). Status: proposal. Crate survey: `20261013T224300--format-versioning-crates.md`.
 
 ## Ground
 
@@ -79,11 +79,11 @@ Format bumps: removing a field, changing a field's meaning or encoding, moving p
 - Messages stay at `log/`: the name describes the structure (append-only, position is id) and pairs with `tree/`.
 - Git's repository format is no lever. gix 0.88 refuses `repositoryformatversion` 2 before any open option applies, locking out the new binary and plain `git` alike. Version 1 with an unknown `extensions.*` key is ignored by gix and refused by plain `git`.
 
-### `root` and `ai memory link`
+### `root` and `ai memory update-links`
 
 - New notes record `root`: the root commit of the default branch (oldest when several), cached per clone in `.git/config`. Survives moves, renames and rebases; a history rewrite (`filter-repo`) changes it.
 - `repo` keeps the name the repo had when the note was taken.
-- Old notes: `ai memory link`, run in a repo, sets `root` on notes from that repo lacking one (recorded `head` in the repo, or `repo` equal to its current name). Fills empty fields only, never changes one. Same commit-on-parent mechanism as upgrades. Machine-dependent, hence separate from the pure upgrade.
+- Old notes: `ai memory update-links` (plumbing), run in a repo, sets `root` on notes from that repo lacking one (recorded `head` in the repo, or `repo` equal to its current name). Fills empty fields only, never changes one. Same commit-on-parent mechanism as upgrades. Machine-dependent, hence separate from the pure upgrade.
 - Line markers in `wake` match on `root`.
 
 ### Tests
@@ -99,7 +99,7 @@ A format bump ships as a minor version (0.8.0), with the upgrade and rollback in
 
 ## Scope of the first release
 
-Format blob and check, named headers, upgrader 1 -> 2, fixtures, a test running 0.7.0 against an upgraded store, `root` on new notes. Next: `ai memory link`, line markers, the "last note in this repo" line.
+Format blob and check, named headers, upgrader 1 -> 2, fixtures, a test running 0.7.0 against an upgraded store, `root` on new notes. Next: `ai memory update-links`, line markers, the "last note in this repo" line.
 
 ## Open
 
