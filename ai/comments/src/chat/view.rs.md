@@ -28,6 +28,7 @@ Chunks
 Budgets
 - The fold at most `FOLD_LINES` lines, the recent turns at most `RECENT` bytes; the newest turn whole, however long. Constants until the config system.
 - Item lines: `render::item_line`, the one renderer the compactor's input uses too (render.rs.md). Fold fallbacks cut words to 512 bytes (`SHORT`); recent turns print message and reply whole; the newest turn and zoom share `LISTING`.
+- The instruction names the four levels, least detail first, with an id of each, so a reader knows what a line covers before zooming it.
 - The instruction says a summary cites the item holding a detail as `[12.3]`, as the compactor's prompt asks.
 
 Zoom (`Branch::zoom`)

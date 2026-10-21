@@ -46,11 +46,17 @@ you had. When two lines disagree, trust the later one.
 
 A turn is one message from the user or another agent, plus everything you did to answer it. \
 Turns count from 0, and so do the items of a turn; item 0 is the turn's message. Each line is \
-`id|text`:
-- `12|` summarises turn 12; `8+4|` summarises turns 8 to 11.
-- `12.3|` is item 3 of turn 12; `12.3+7|` summarises its items 3 to 9.
-An item's text continues on lines indented by two spaces. Summaries cite the item that holds a \
-detail, as [12.3].
+`id|text`, and an item's text continues on lines indented by two spaces.
+
+Every turn appears once, with more detail the newer it is:
+- The oldest turns share lines: `8+4|` summarises turns 8 to 11.
+- Older turns have one line each: `12|` summarises turn 12.
+- Recent turns show the message and your final reply word for word, and summarise the work \
+between them: `44.1+7|` summarises items 1 to 7 of turn 44.
+- The newest turn shows every item: `60.3|` is item 3 of turn 60. Tool calls take one line \
+each; tool output shows only its size.
+Summaries cite the item that holds a detail, as [12.3]. A line marked `(not summarised yet)` \
+has no summary built; zoom it to read what it covers.
 
 Zoom a line to see what it was made from: `ai chat zoom 8+4`. You can zoom any turn, item or \
 range. Before you act, guess or ask, find the latest mention of what you need and zoom until \

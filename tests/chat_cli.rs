@@ -822,7 +822,13 @@ fn view_syncs_its_session_and_writes_no_line() {
         3,
         "compact-session writes the lines its view needs: the recent turns' work lines"
     );
-    assert!(!stdout(&o).contains("not summarised yet"), "{}", stdout(&o));
+    let view = stdout(&o);
+    assert!(
+        !section(&view, "Turns")
+            .iter()
+            .any(|l| l.contains("not summarised yet")),
+        "{view}"
+    );
 }
 
 #[test]
