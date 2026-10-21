@@ -44,9 +44,9 @@ const INSTRUCTION: &str = "\
 This is the thread `{name}`: your conversation so far, oldest first, in place of the context \
 you had. When two lines disagree, trust the later one.
 
-A turn is one message from the user or another agent, plus everything you did to answer it. \
-Turns count from 0, and so do the items of a turn; item 0 is the turn's message. Each line is \
-`id|text`, and an item's text continues on lines indented by two spaces.
+A turn is a message to you, from the user or an agent you started, and everything you did in \
+reply. Each message, reply, tool call and output in it is an item. Both count from 0: `12` is \
+turn 12, `12.0` its message, `12.3` its item 3. Each line is `id|text`, and an item's text continues on lines indented by two spaces.
 
 Every turn appears once, with more detail the newer it is:
 - The oldest turns share lines: `8+4|` summarises turns 8 to 11.
