@@ -1,5 +1,6 @@
 use anyhow::Result;
 use jiff::{civil::DateTime, tz::TimeZone};
+use serde::{Deserialize, Serialize};
 
 use crate::record;
 
@@ -43,7 +44,7 @@ pub struct Place {
     pub branch: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Who {
     pub agent: String,
     pub model: String,

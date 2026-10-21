@@ -136,17 +136,8 @@ pub enum LineKind {
 pub struct Line {
     pub ts: Timestamp,
     pub kind: LineKind,
-    #[serde(with = "WhoRecord")]
     pub who: Who,
     pub text: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "Who")]
-struct WhoRecord {
-    agent: String,
-    model: String,
-    session: String,
 }
 
 /// One line of a thread's `lines.jsonl`: lines fold in order, a written key keeping its first

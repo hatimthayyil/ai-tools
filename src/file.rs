@@ -1,15 +1,17 @@
 use std::{
-    fs::{File, TryLockError},
-    io,
+    fs::{self, File, OpenOptions, TryLockError},
+    io::{self, Write},
     path::Path,
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 
 /// How often [`lock_before`] tries a held lock again.
 const POLL: Duration = Duration::from_millis(50);
+/// The file naming a store's format.
+const FORMAT: &str = "format";
 
 /// A path as the user would type it: fold `$HOME` to `~`.
 pub fn pretty(p: &Path) -> String {
@@ -71,4 +73,37 @@ pub fn lock(p: &Path) -> Result<Lock> {
     let f = File::create(p).at(p)?;
     f.lock().at(p)?;
     Ok(Lock(f))
+}
+
+/// Refuses the `store` store in `dir` unless its format file names `format`; a store without
+/// one is new.
+pub fn check_format(dir: &Path, format: u32, store: &str) -> Result<()> {
+    let p = dir.join(FORMAT);
+    let v = match fs::read(&p) {
+        Ok(v) => v,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).at(&p),
+    };
+    let v: u32 = std::str::from_utf8(&v)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .with_context(|| format!("The {store} store's format file is corrupt."))?;
+    match v {
+        v if v == format => Ok(()),
+        v if v > format => {
+            bail!("This {store} store is format {v}; this ai reads up to {format}. Upgrade ai.")
+        }
+        v => bail!("This {store} store is format {v}, which this ai does not read."),
+    }
+}
+
+/// Makes the store directory `dir` and its format file, naming `format`, before its first write.
+pub fn ensure_format(dir: &Path, format: u32) -> Result<()> {
+    fs::create_dir_all(dir).at(dir)?;
+    let p = dir.join(FORMAT);
+    match OpenOptions::new().write(true).create_new(true).open(&p) {
+        Ok(mut f) => f.write_all(format!("{format}\n").as_bytes()).at(&p),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e).at(&p),
+    }
 }

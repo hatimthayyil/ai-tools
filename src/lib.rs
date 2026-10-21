@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod file;
+pub mod files;
 pub mod git;
 pub mod jsonl;
 pub mod memory;

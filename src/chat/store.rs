@@ -149,21 +149,6 @@ impl FromStr for Mark {
     }
 }
 
-/// Whether `v`, read from a `format` file, is this ai's chat store format.
-fn readable(v: &[u8]) -> Result<()> {
-    let v: u32 = std::str::from_utf8(v)
-        .ok()
-        .and_then(|v| v.trim().parse().ok())
-        .context("The chat store's format file is corrupt.")?;
-    match v {
-        FORMAT => Ok(()),
-        v if v > FORMAT => {
-            bail!("This chat store is format {v}; this ai reads up to {FORMAT}. Upgrade ai.")
-        }
-        v => bail!("This chat store is format {v}, which this ai does not read."),
-    }
-}
-
 /// `$AI_CHAT_DIR`, else `~/.ai/chat`: every repository's store, named by its root commit.
 pub fn base_dir() -> Result<PathBuf> {
     store_dir("AI_CHAT_DIR", "chat")
@@ -192,12 +177,7 @@ impl Chat {
             return Ok(None);
         };
         let root = base.join(&id);
-        let format = root.join("format");
-        match fs::read(&format) {
-            Ok(v) => readable(&v)?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).at(&format),
-        }
+        file::check_format(&root, FORMAT, "chat")?;
         Ok(Some(Chat { repo, id, root }))
     }
 
@@ -212,13 +192,7 @@ impl Chat {
 
     /// Makes the store's directory and format file before its first write.
     fn ensure(root: &Path) -> Result<()> {
-        fs::create_dir_all(root).at(root)?;
-        let p = root.join("format");
-        match OpenOptions::new().write(true).create_new(true).open(&p) {
-            Ok(mut f) => f.write_all(format!("{FORMAT}\n").as_bytes()).at(&p),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-            Err(e) => Err(e).at(&p),
-        }
+        file::ensure_format(root, FORMAT)
     }
 
     pub(super) fn session_lock(&self, harness: &str, session: &str) -> Result<file::Lock> {
