@@ -824,11 +824,10 @@ mod cleanup_tests {
             |_| {},
         )
         .unwrap();
-        fs::write(
-            std::env::var_os("AI_CHILD_PIDFILE").unwrap(),
-            p.pid().to_string(),
-        )
-        .unwrap();
+        let pidfile = PathBuf::from(std::env::var_os("AI_CHILD_PIDFILE").unwrap());
+        let staged = pidfile.with_extension("tmp");
+        fs::write(&staged, p.pid().to_string()).unwrap();
+        fs::rename(&staged, &pidfile).unwrap();
         thread::sleep(Duration::from_secs(60));
     }
 }
