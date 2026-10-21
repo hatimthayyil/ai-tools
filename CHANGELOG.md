@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.13.0 - 2026-10-21
+
+### Bug fixes
+
+- **memory:** the parent-death test reads the pid file only once it is whole
+- **memory:** the call-record test writes its stub claude through a child process
+
+### Features
+
+- **chat:** a fork's report opens its own turn, from the fork's description
+
 ## v0.12.0 - 2026-10-21
 
 ### Breaking changes
