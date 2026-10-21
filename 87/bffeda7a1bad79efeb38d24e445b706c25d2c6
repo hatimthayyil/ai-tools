@@ -1,0 +1,23 @@
+tests/notes.rs
+  s_77b04d9838f161::t_b3752abb3b1c18 263,388,708
+ai/comments/src/notes/store.rs.md
+  s_77b04d9838f161::t_b3752abb3b1c18 10
+src/notes/leaf.rs
+  s_77b04d9838f161::t_b3752abb3b1c18 159,161,185,202,206,293,319,322,325,330-331,333,341,357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "87bffeda7a1bad79efeb38d24e445b706c25d2c6",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
