@@ -1,6 +1,6 @@
 # chat/view.rs
 
-Design: `ai/research/20261014T002322---chat-design.md`, View and Roll-up. Fold: `/hatimthayyil/code/optchat/optchat.md` §3.2 and `20261008T074205---optchat-cache-revision-review.md` (the corrected due rule).
+Design: `ai/research/20261014T002322--chat-design.md`, View and Roll-up. Fold: `/hatimthayyil/code/optchat/optchat.md` §3.2 and `20261008T074205--optchat-cache-revision-review.md` (the corrected due rule).
 
 Branch
 - `Branch`: the path from the root to a session's tip, its turns and their chunks as the roll-up cuts them (`rollup::branch`), and every line of the thread (`Snapshot::all_lines`), loaded once into a map. A session with no item yet uses its graft as tip.

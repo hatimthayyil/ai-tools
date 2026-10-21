@@ -1,6 +1,6 @@
 # LadybugDB as a long-term dependency
 
-Assessment of LadybugDB (Kuzu fork) for `ai`'s storage: code graphs, ontologies, rolled-up summaries, agent memory, multi-agent review. Primary sources: engine checkout `/hatimthayyil/code/ladybug` (HEAD `cf236ad`, 2026-10-12), Rust crate checkout `/hatimthayyil/code/ladybug-rust` (`28aba1c`, 2026-09-28), published crate `lbug-0.21.2`, docs/blog/site/extension repos cloned to `/hatimthayyil/tmp/db-survey/lb-*`, GitHub/crates.io/HN APIs. Date: 2026-10-12. No benchmarks (separate agent). Builds on `20261012T180851---storage-landscape.md`.
+Assessment of LadybugDB (Kuzu fork) for `ai`'s storage: code graphs, ontologies, rolled-up summaries, agent memory, multi-agent review. Primary sources: engine checkout `/hatimthayyil/code/ladybug` (HEAD `cf236ad`, 2026-10-12), Rust crate checkout `/hatimthayyil/code/ladybug-rust` (`28aba1c`, 2026-09-28), published crate `lbug-0.21.2`, docs/blog/site/extension repos cloned to `/hatimthayyil/tmp/db-survey/lb-*`, GitHub/crates.io/HN APIs. Date: 2026-10-12. No benchmarks (separate agent). Builds on `20261012T180851--storage-landscape.md`.
 
 ## Summary
 

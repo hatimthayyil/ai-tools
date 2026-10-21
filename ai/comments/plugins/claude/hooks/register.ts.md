@@ -1,6 +1,6 @@
 # plugins/claude/hooks/register.ts
 
-The Claude Code side of `ai chat` (design: `ai/research/20261014T002322---chat-design.md`; mod findings: `20261014T202206---chat-launch-attach.md`). Claude Code 2.1.300; the mods API is early access.
+The Claude Code side of `ai chat` (design: `ai/research/20261014T002322--chat-design.md`; mod findings: `20261014T202206--chat-launch-attach.md`). Claude Code 2.1.300; the mods API is early access.
 
 - Load per process: `claude --plugin-dir plugins/claude`, or for every session `CLAUDE_CODE_PLUGIN_DIRS=<abs path>` (process environment, or `env` in `~/.claude/settings.json`; never a project's settings). The flake installs it at `$out/share/ai/plugins/claude`; with `nix profile`, `~/.nix-profile/share/ai/plugins/claude`. `ai` is resolved from the session's `PATH`.
 - Plugin name `ai`: the command is `/ai`, the tool `mcp__ai__compress`, the state keys `ai.transcript`, `ai.view` (the view `/ai` built, for the one compaction it queues) and `ai.compress` (the agent asked for a compaction at turn end).

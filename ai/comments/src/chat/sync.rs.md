@@ -1,6 +1,6 @@
 # chat/sync.rs
 
-Design: `ai/research/20261014T002322---chat-design.md`, Threads and sessions, Contract.
+Design: `ai/research/20261014T002322--chat-design.md`, Threads and sessions, Contract.
 
 - `read`: the harness's adapter by name (`claude` only); the harness stays a string so pi and Codex add a match arm, not a type. A transcript not written yet (a session launched and bound before its first entry) reads as empty.
 - One session lock (store.rs) is held through each attach, sync and detach of that session: its owner lookup, the capture of its files and every write. Syncs of one session therefore run one after another and each captures after the last finished, so an older observation never lands after a newer one. A detach landing first turns a sync into `Synced::NotAttached`.

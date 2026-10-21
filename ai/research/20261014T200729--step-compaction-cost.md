@@ -2,7 +2,7 @@
 
 Question: what does the two-tier scheme (LLM step leaves, inner tree per exchange, outer tree over exchanges) cost against exchange-digest leaves and OptChat's per-message leaves, measured on the user's logs?
 
-Counts differ from `20261014T002032---chat-rollup-prior-art.md`. This note:
+Counts differ from `20261014T002032--chat-rollup-prior-art.md`. This note:
 
 - dedups records across files;
 - counts queued prompts as exchange openers;
@@ -10,7 +10,7 @@ Counts differ from `20261014T002032---chat-rollup-prior-art.md`. This note:
 
 ## Method
 
-Script: `ai/research/20261014T200729---step-compaction-cost/stepcost.py`, run as `uv run --no-project python -I stepcost.py main|sub`. Read-only; prints counts and byte sizes only.
+Script: `ai/research/20261014T200729--step-compaction-cost/stepcost.py`, run as `uv run --no-project python -I stepcost.py main|sub`. Read-only; prints counts and byte sizes only.
 
 - **Corpus.**
   - Main: `~/.claude/projects/*/*.jsonl` with entrypoint `cli`: 179 sessions with at least one prompt. SDK probe sessions are excluded.

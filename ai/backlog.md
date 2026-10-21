@@ -34,4 +34,4 @@
 
 ## Notes
 
-- `ai notes` layer 1 merged (design `ai/research/20261013T222521---notes-design.md`). User not yet on board with the model: a topic is a bare directory and only notes (files) carry content, IDs and links, so `linguistics` itself cannot be a note or a link target. Next: make every node a note (Luhmann: any card can have sub-cards; Dendron: `linguistics.syntax` is itself a note), with the derived summary attached to any node that has children and links to any node by ID. Then layer 2 (curator, supersedes, staleness lint).
+- `ai notes` layer 1 merged (design `ai/research/20261013T222521--notes-design.md`). User not yet on board with the model: a topic is a bare directory and only notes (files) carry content, IDs and links, so `linguistics` itself cannot be a note or a link target. Next: make every node a note (Luhmann: any card can have sub-cards; Dendron: `linguistics.syntax` is itself a note), with the derived summary attached to any node that has children and links to any node by ID. Then layer 2 (curator, supersedes, staleness lint).

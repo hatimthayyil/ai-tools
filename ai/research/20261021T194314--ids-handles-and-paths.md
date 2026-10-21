@@ -2,7 +2,7 @@
 
 Author: Claude Code (Claude Opus 5.5)
 
-This is a design for review, and nothing in it is implemented. Facts about today's code are from main `def680a0`. The choice of TypeID comes from `ai/research/20261021T194500---durable-id-alternatives.md` (below, "the id note"). How forks reach a thread comes from `ai/research/20261020T231858---fork-transcripts-in-threads.md` ("the fork note").
+This is a design for review, and nothing in it is implemented. Facts about today's code are from main `def680a0`. The choice of TypeID comes from `ai/research/20261021T194500--durable-id-alternatives.md` (below, "the id note"). How forks reach a thread comes from `ai/research/20261020T231858--fork-transcripts-in-threads.md` ("the fork note").
 
 ## Terms
 

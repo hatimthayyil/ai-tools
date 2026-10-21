@@ -342,8 +342,8 @@ This corpus is the user's own sessions: 158 top-level sessions in `~/.claude/pro
 16. Anthropic, Context editing: https://platform.claude.com/docs/en/build-with-claude/context-editing
 17. Anthropic, "Effective context engineering for AI agents": https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 18. Hu et al., HiAgent, ACL 2025, arXiv 2408.09559: https://arxiv.org/abs/2408.09559
-19. `ai/research/20261008T074205---optchat-cache-revision-review.md`
-20. `ai/research/20261013T222410---notes-prior-art.md` (RAPTOR, MemTree, GraphRAG)
+19. `ai/research/20261008T074205--optchat-cache-revision-review.md`
+20. `ai/research/20261013T222410--notes-prior-art.md` (RAPTOR, MemTree, GraphRAG)
 21. Zhang et al., ACE, arXiv 2510.04618: https://arxiv.org/abs/2510.04618
 22. Sun et al., Context-Folding, arXiv 2510.11967: https://arxiv.org/abs/2510.11967
 23. Wang et al., "Recursively summarizing enables long-term dialogue memory", arXiv 2308.15022: https://arxiv.org/abs/2308.15022

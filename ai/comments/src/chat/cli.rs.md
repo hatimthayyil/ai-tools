@@ -1,6 +1,6 @@
 # chat/cli.rs
 
-Design: `ai/research/20261014T002322---chat-design.md`, Commands and Contract. Caller: `plugins/claude/hooks/register.ts` (register.ts.md).
+Design: `ai/research/20261014T002322--chat-design.md`, Commands and Contract. Caller: `plugins/claude/hooks/register.ts` (register.ts.md).
 
 Porcelain and plumbing
 - Porcelain (`start`, `resume`, `list`, `view`, `attach`, `detach`, `zoom`, `grep`, `build`) is for users and agents: a failure is a sentence on stderr that says what to do, exit 1.

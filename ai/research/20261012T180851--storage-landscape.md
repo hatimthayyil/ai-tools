@@ -1,6 +1,6 @@
 # Storage landscape for `ai`
 
-Survey of embedded stores and prior art for the storage foundation of planned features: code knowledge graphs, per-repo ontologies, per-file summaries rolled up to directories and repos, multi-agent `ai review`. Date: 2026-10-12. Builds on `20261003T104835---memory-db.md` and `20261003T105008---platform-db.md`; their conclusions stand unless stated below. No benchmarks here (separate agent). No code changed.
+Survey of embedded stores and prior art for the storage foundation of planned features: code knowledge graphs, per-repo ontologies, per-file summaries rolled up to directories and repos, multi-agent `ai review`. Date: 2026-10-12. Builds on `20261003T104835--memory-db.md` and `20261003T105008--platform-db.md`; their conclusions stand unless stated below. No benchmarks here (separate agent). No code changed.
 
 Constraints carried over: one local Rust binary, CC0, packaged in nixpkgs; many short-lived processes, parallel agent sessions writing concurrently; no daemon preferred; agents must query in complex ways.
 

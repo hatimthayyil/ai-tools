@@ -1,6 +1,6 @@
 # store.rs
 
-Spec: `ai/research/20261004T194110---ai-chat.md` (storage layout). Bare repo per user (`~/.ai/memory`, `AI_MEMORY_DIR`), all data under `REF`.
+Spec: `ai/research/20261004T194110--ai-chat.md` (storage layout). Bare repo per user (`~/.ai/memory`, `AI_MEMORY_DIR`), all data under `REF`.
 
 - Layout (format 2): `format` at the tree root holds the format number (upgrade/mod.rs.md). Message `i` is its own blob at `log/{i>>8:04x}/{i&255:02x}` (named header, blank line, text verbatim: record.rs.md). Nodes of level `l` live in line segments `tree/<l>/{s>>8:04x}/{s&255:02x}`, segment `s` = nodes `[256s, 256s+256)`: a column row (`ts origin agent model session text`), then one line per node (text flattened), empty line = not built. Messages are variable size (echoes up to 30k, pastes larger), so each gets its own blob: a tail segment of big messages would be rewritten on every append. Nodes are small and read all at once at load (refold), so they are segmented; levels are sparse (free nodes and parallel merges land out of order), hence empty lines rather than a dense prefix.
 - `log_len`: `Snap::count` of `log`: the last entry's number + 1, from two tree reads. Ids are positions and permanent: single machine, append-only.

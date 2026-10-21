@@ -1,6 +1,6 @@
 # Memory at user level
 
-Addendum to `20261003T091838---memory-git-ref.md`. Date: 2026-10-04. Supersedes it where they differ; everything not mentioned here stands as written there.
+Addendum to `20261003T091838--memory-git-ref.md`. Date: 2026-10-04. Supersedes it where they differ; everything not mentioned here stands as written there.
 
 ## Change
 

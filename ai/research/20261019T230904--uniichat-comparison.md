@@ -62,7 +62,7 @@ UniiChat owns the agent loop. Every turn's call is its system prompt, the view, 
 - Branches: rewinds and forks are kept as branches that share lines. UniiChat's import reads Claude Code lines in file order without `parentUuid` (`Import.ts` `line_claude`), so rewound drafts land in the chat as if they happened.
 - Provenance: each line records who wrote it (agent, model, session) and when, so lines can be regenerated; UniiChat's nodes are `{l,i,text,size}`.
 - Byte-exact source copies (`sources/`); UniiChat keeps only its converted messages.
-- Calls: one per turn, chunked at 48 KB, against one per message over 512 B, tool calls and results included. Measured earlier: 5.5 calls per exchange against 17.5 per-message (`20261014T200729---step-compaction-cost.md`).
+- Calls: one per turn, chunked at 48 KB, against one per message over 512 B, tool calls and results included. Measured earlier: 5.5 calls per exchange against 17.5 per-message (`20261014T200729--step-compaction-cost.md`).
 - Citations (`[12.3]`) tell the agent where to zoom; UniiChat's lines carry none below their own id.
 - The user rail keeps the user's latest words verbatim in the view.
 - `grep` over messages, tool calls and lines.

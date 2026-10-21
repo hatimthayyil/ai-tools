@@ -1,6 +1,6 @@
 # chat/model.rs
 
-Design: `ai/research/20261014T002322---chat-design.md`, Data model.
+Design: `ai/research/20261014T002322--chat-design.md`, Data model.
 
 - Harness-neutral and pure. An adapter (`claude.rs`) turns a session into items; the store, roll-up and view see items only.
 - `SourceId` names the entry an item came from. One entry can give several items (a Claude Code tool result with the user's mid-run words appended); the adapter gives each its own entry id.

@@ -105,7 +105,7 @@ the original spec explicitly introduced context to improve summary quality.
 Benchmark quality before replacing it with isolated, context-free summaries.
 
 The prior research already flagged this risk:
-`20261004T172045---shitty-optchat.md`, section 4, reports external warm probes
+`20261004T172045--shitty-optchat.md`, section 4, reports external warm probes
 around 7.3–7.7k input-token equivalents per job and estimates compaction could
 outweigh the master turn. Those are historical API-cost proxies from a
 different implementation, not measurements of this subscription's quota.

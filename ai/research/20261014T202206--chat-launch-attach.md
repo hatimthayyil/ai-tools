@@ -1,6 +1,6 @@
 # ai chat: launching, attaching, continuity, reset
 
-How `ai chat <harness> <thread>` (launch) and `ai chat resume <thread>` (attach from inside) bind a harness session to a thread, keep it bound across `/clear`/`/new`, and reset context with our view. Builds on `20261014T001824---claude-code-sessions-hooks.md` and `20261014T001805---pi-codex-sessions.md`; their findings are not repeated.
+How `ai chat <harness> <thread>` (launch) and `ai chat resume <thread>` (attach from inside) bind a harness session to a thread, keep it bound across `/clear`/`/new`, and reset context with our view. Builds on `20261014T001824--claude-code-sessions-hooks.md` and `20261014T001805--pi-codex-sessions.md`; their findings are not repeated.
 
 Versions: Claude Code 2.1.300 (binary), pi 1.1.0 (installed; local source 0.86.1 at `19451accd`), codex-cli 0.162.1 (local source `a6c5f3a9fa`, 2026-10-05).
 

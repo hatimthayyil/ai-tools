@@ -1,6 +1,6 @@
 # chat/summarise.rs
 
-The summariser: builds the lines `rollup.rs` plans. Design: `ai/research/20261014T002322---chat-design.md`, Roll-up (background compactor) and Contract.
+The summariser: builds the lines `rollup.rs` plans. Design: `ai/research/20261014T002322--chat-design.md`, Roll-up (background compactor) and Contract.
 
 Config (`Chat::config`)
 - From the repository's git config, so global (`~/.gitconfig`) or per repo: `ai.chat.model` (default `memory::claude::model()`: `$AI_MEMORY_MODEL`, else Sonnet, as memory's compactor), `ai.chat.background` (bool, default true). A value that is not a boolean is an error. Memory's knobs are numbers in the memory repo's config; chat's live with the repository the threads are in.

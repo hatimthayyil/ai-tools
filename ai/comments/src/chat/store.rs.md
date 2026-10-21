@@ -1,6 +1,6 @@
 # chat/store.rs
 
-Design: `ai/research/20261014T002322---chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; JSON Lines files: `src/jsonl.rs`.
+Design: `ai/research/20261014T002322--chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; JSON Lines files: `src/jsonl.rs`.
 
 Where
 - The store of a project is `~/.ai/chat/<root commit>/` (`$AI_CHAT_DIR/<root commit>` if set; `base_dir`), found from a directory (`gix::discover`, then memory's `prov::repo_root`, cached as `ai.root`). Every worktree and clone of a project sees the same threads, and they outlive the clone; forks share them too. A repository without commits has no store: `find` is `None`, and the CLI says to commit first. Git never reads it: nothing is committed or pushed.

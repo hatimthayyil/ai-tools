@@ -1,6 +1,6 @@
 # chat/id.rs
 
-Design: `ai/research/20261014T002322---chat-design.md`, Ids.
+Design: `ai/research/20261014T002322--chat-design.md`, Ids.
 
 - Turns, not items, carry the numbers: the normalised `user:ai` history. `t+n` is memory's `id+n` over turns, so the two tools zoom alike, and an agent can write any id itself instead of copying ranges from the view. Item numbers restart in each turn (`t.i`), so an item's id says where it sits.
 - `Turns { first, n }` prints `t` or `t+n`; `Items { turn, first, n }` prints `t.i` or `t.i+n`. `+1` reads back as the bare form. A node is an aligned power of two (`Coord::at`); other ranges are valid ids too (zoom tiles them).

@@ -1,6 +1,6 @@
 # chat/claude.rs
 
-Claude Code transcripts to items. Format: `ai/research/20261014T001824---claude-code-sessions-hooks.md` §1; rules checked read-only with jq on the user's logs (2.1.220 to 2.1.299, 206 transcripts, 132 subagents).
+Claude Code transcripts to items. Format: `ai/research/20261014T001824--claude-code-sessions-hooks.md` §1; rules checked read-only with jq on the user's logs (2.1.220 to 2.1.299, 206 transcripts, 132 subagents).
 
 Reading
 - Only lines with a `uuid` (user, assistant, attachment, system, and any new type that has one) join the chain; uuid-less metadata lines and unparseable lines are skipped. A line without its newline is being written: `read` and `parse` stop before it, so the next read sees it whole.

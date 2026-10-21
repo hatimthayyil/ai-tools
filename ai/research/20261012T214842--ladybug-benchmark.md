@@ -1,6 +1,6 @@
 # LadybugDB vs SQLite vs SurrealDB: measured
 
-Adds LadybugDB (Kuzu fork) to the benchmark in `20261012T185452---db-benchmark.md`. Same machine, toolchain, deterministic dataset (`common/src/lib.rs`, unchanged) and queries; result counts and BM25 top hits match the other two engines on every query. Bench source: `/hatimthayyil/tmp/db-bench` (`bench-ladybug/`; targets and data deleted; raw output in `results/`).
+Adds LadybugDB (Kuzu fork) to the benchmark in `20261012T185452--db-benchmark.md`. Same machine, toolchain, deterministic dataset (`common/src/lib.rs`, unchanged) and queries; result counts and BM25 top hits match the other two engines on every query. Bench source: `/hatimthayyil/tmp/db-bench` (`bench-ladybug/`; targets and data deleted; raw output in `results/`).
 
 ## Summary
 
@@ -19,7 +19,7 @@ Adds LadybugDB (Kuzu fork) to the benchmark in `20261012T185452---db-benchmark.m
 
 | | |
 |---|---|
-| Machine, toolchain, dataset, durability defaults | As in `20261012T185452---db-benchmark.md` (Xeon E-2176M, 12 threads, rustc 1.99.0, release, `strip = true`) |
+| Machine, toolchain, dataset, durability defaults | As in `20261012T185452--db-benchmark.md` (Xeon E-2176M, 12 threads, rustc 1.99.0, release, `strip = true`) |
 | LadybugDB | crate `lbug` **0.21.2** from crates.io (= latest engine release v0.21.2, 2026-10-01; storage version 47), feature `arrow` (arrow 55.2). The local checkouts (`ladybug` v0.21.2-117, `ladybug-rust` with a stale 0.18.0 version field) were not used. |
 | Extensions | fts + vector from the `ladybugdb/extensions` submodule pin `bf74ab6` (v0.21.2). Results below are from the **from-source build with both statically linked**; the prebuilt build gives the same query numbers within noise (it was used first). |
 | Config | `SystemConfig::default()` (buffer pool = 80% of RAM, all cores, compression, checksums, auto-checkpoint) unless noted. `CALL var_length_extend_max_depth=1000` (default cap 30; the core-symbol caller set needs depth 31). |

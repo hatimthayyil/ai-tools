@@ -1,6 +1,6 @@
 # chat/rollup.rs
 
-Design: `ai/research/20261014T002322---chat-design.md`, Roll-up. Pure: what lines a thread has and what each is made from; summarise.rs builds them. Sizes from `20261014T200729---step-compaction-cost.md`; prompt points from `20261014T002032---chat-rollup-prior-art.md` and OptChat's "Compactions" (`/hatimthayyil/code/optchat/optchat.md`).
+Design: `ai/research/20261014T002322--chat-design.md`, Roll-up. Pure: what lines a thread has and what each is made from; summarise.rs builds them. Sizes from `20261014T200729--step-compaction-cost.md`; prompt points from `20261014T002032--chat-rollup-prior-art.md` and OptChat's "Compactions" (`/hatimthayyil/code/optchat/optchat.md`).
 
 Rendering
 - `render`: each item's `render::item_line` and a newline, the line the view prints (render.rs.md): `t.i|kind: text`, the id from the item's place (model.rs.md), the same on every branch through it, so each item renders once. The prompt asks each finding to cite the item holding its detail as `[t.i]`, so a line points where to zoom. Memory's compactor hides ids because the model copied them; here copying them is the point.

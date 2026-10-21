@@ -1,6 +1,6 @@
 # git.rs
 
-Git plumbing of `ai memory` (`memory/store.rs`): a store is a tree of blobs under one ref. Design: `ai/research/20261003T091838---memory-git-ref.md`, versioning `20261013T224252---record-versioning.md`.
+Git plumbing of `ai memory` (`memory/store.rs`): a store is a tree of blobs under one ref. Design: `ai/research/20261003T091838--memory-git-ref.md`, versioning `20261013T224252--record-versioning.md`.
 
 - `Ref`: one ref in one repository. `what` names the store in messages ("memory"); `format` is the format this ai writes. The caller sets the committer fallback on the repository first (`committer_or_set_fallback`).
 - `Changes`: blobs to write by path.
