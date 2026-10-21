@@ -1,0 +1,101 @@
+ai/research/20261007T064116--ai-chat-subscription-usage-review.md
+  s_77b04d9838f161::t_2740b722004455 1-214
+ai/research/20261012T210539--ladybug-assessment.md
+  s_77b04d9838f161::t_2740b722004455 1-240
+ai/comments/src/chat/id.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/research/20261012T214842--ladybug-benchmark.md
+  s_77b04d9838f161::t_2740b722004455 1-210
+ai/research/20261008T074205--optchat-cache-revision-review.md
+  s_77b04d9838f161::t_2740b722004455 1-48
+ai/research/20261013T222521--notes-design.md
+  s_77b04d9838f161::t_2740b722004455 1-66
+ai/comments/src/chat/view.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/research/20261017T105936--ai-chat-pi-blackhole-comparison/ai-chat-source-notes.md
+  s_77b04d9838f161::t_2740b722004455 1-72
+ai/research/20261006T223048--ai-chat-tui-dx.md
+  s_77b04d9838f161::t_2740b722004455 1-65
+ai/comments/src/memory/store.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/comments/src/git.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/research/20261004T194110--ai-chat.md
+  s_77b04d9838f161::t_2740b722004455 1-74
+ai/research/20261004T172045--shitty-optchat.md
+  s_77b04d9838f161::t_2740b722004455 1-249
+ai/research/20261014T200729--step-compaction-cost.md
+  s_77b04d9838f161::t_2740b722004455 1-181
+ai/comments/src/chat/mod.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/research/20261014T002322--chat-design.md
+  s_77b04d9838f161::t_2740b722004455 1-154
+ai/research/20261012T185452--db-benchmark.md
+  s_77b04d9838f161::t_2740b722004455 1-170
+ai/research/20261008T074205--optchat-cache-revision-review/local.md
+  s_77b04d9838f161::t_2740b722004455 1-63
+ai/comments/src/record.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/backlog.md
+  s_77b04d9838f161::t_2740b722004455 37
+ai/research/20261003T103840--attribution.md
+  s_77b04d9838f161::t_2740b722004455 1-240
+ai/research/20261012T180851--storage-landscape.md
+  s_77b04d9838f161::t_2740b722004455 1-217
+ai/comments/src/chat/model.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/research/20261016T212002--chat-review/architecture.md
+  s_77b04d9838f161::t_2740b722004455 1-196
+ai/comments/src/chat/claude.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/comments/src/chat/summarise.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/comments/src/chat/prompts/compact.txt.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/comments/src/memory/claude.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/comments/src/chat/rollup.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/comments/src/chat/sync.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/comments/plugins/claude/hooks/register.ts.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/research/20261003T105008--platform-db.md
+  s_77b04d9838f161::t_2740b722004455 1-239
+ai/research/20261004T152738--memory-user-level.md
+  s_77b04d9838f161::t_2740b722004455 1-41
+ai/research/20261014T202206--chat-launch-attach.md
+  s_77b04d9838f161::t_2740b722004455 1-193
+ai/comments/src/chat/store.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+ai/research/20261017T105936--ai-chat-pi-blackhole-comparison.md
+  s_77b04d9838f161::t_2740b722004455 1-35
+ai/research/20261021T194314--ids-handles-and-paths.md
+  s_77b04d9838f161::t_2740b722004455 1-120
+ai/research/20261003T104835--memory-db.md
+  s_77b04d9838f161::t_2740b722004455 1-209
+ai/research/20261014T002032--chat-rollup-prior-art.md
+  s_77b04d9838f161::t_2740b722004455 1-351
+ai/research/20261019T230904--uniichat-comparison.md
+  s_77b04d9838f161::t_2740b722004455 1-79
+ai/research/20261016T212002--chat-review.md
+  s_77b04d9838f161::t_2740b722004455 1-86
+ai/comments/src/chat/cli.rs.md
+  s_77b04d9838f161::t_2740b722004455 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e37c1f4c0079fc8d47f98b1de55197e4849dd52d",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
