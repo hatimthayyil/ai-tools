@@ -1,4 +1,5 @@
 pub mod store;
+pub mod summarise;
 mod tree;
 
 pub use store::{Store, Summary};
