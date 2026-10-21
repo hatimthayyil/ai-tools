@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 
 use crate::{
+    git::hash,
     memory::{Backend, Block, NODE, TRIES, flat},
     notes::{leaf::Front, store::Node, topic::Topic},
 };
@@ -61,15 +62,6 @@ pub fn input(n: &Node) -> Option<String> {
         return None;
     }
     Some(format!("Topic: {}\n{}", n.topic.name(), lines.join("\n")))
-}
-
-pub fn hash(input: &str) -> Result<String> {
-    let id = gix::objs::compute_hash(
-        gix::hash::Kind::Sha1,
-        gix::objs::Kind::Blob,
-        input.as_bytes(),
-    )?;
-    Ok(id.to_string())
 }
 
 /// The summary of `n`'s one subtopic, when that is all `n` holds: `n` takes it as its own.

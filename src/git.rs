@@ -22,6 +22,16 @@ use crate::file::AtPath;
 /// The blob at a store's tree root naming its format.
 pub const FORMAT: &str = "format";
 
+/// The sha1 blob id of `input`: the id git gives a file holding it.
+pub fn hash(input: &str) -> Result<String> {
+    let id = gix::objs::compute_hash(
+        gix::hash::Kind::Sha1,
+        gix::objs::Kind::Blob,
+        input.as_bytes(),
+    )?;
+    Ok(id.to_string())
+}
+
 /// Entry `n` under `dir`, fanned out 256 per tree.
 pub fn fan_path(dir: &str, n: u64) -> String {
     format!("{dir}/{:04x}/{:02x}", n >> 8, n & 255)

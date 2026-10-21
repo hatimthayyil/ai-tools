@@ -13,6 +13,7 @@ use tracing::{error, info, info_span, warn};
 
 use crate::{
     file::pretty,
+    git::hash,
     memory::{
         Backend, CALLS, ClaudeCode, JOBS, MakeBackend, PLACEHOLDER, Pattern, broken_pipe, claude,
         excerpt, log, plural, spawn_summariser, store_dir,
@@ -20,7 +21,7 @@ use crate::{
     notes::{
         leaf::{Confidence, Front, Leaf, check_body, check_title, is_id, new_id},
         store::{ME, Node, SUMMARY, Store},
-        summary::{Job, Summary, due, hash, input, only_child, summarise},
+        summary::{Job, Summary, due, input, only_child, summarise},
         topic::Topic,
     },
 };
