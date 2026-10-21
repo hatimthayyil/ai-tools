@@ -305,10 +305,7 @@ fn kinds(v: &Value) -> Vec<Kind> {
             .filter_map(assistant)
             .collect(),
         Some("user") => user(v),
-        Some("attachment") => queued(&v["attachment"])
-            .map(Kind::User)
-            .into_iter()
-            .collect(),
+        Some("attachment") => queued(&v["attachment"]).into_iter().collect(),
         Some("system") if v["subtype"] == "compact_boundary" => {
             vec![Kind::Marker(Marker::Compaction)]
         }
@@ -376,13 +373,14 @@ fn user(v: &Value) -> Vec<Kind> {
     out
 }
 
-/// A message from another agent: a peer's report or hand-back (its body, from its name), or
-/// the coordinator's message to a subagent.
+/// A message from another agent: a peer's report or hand-back (its body, from its name), a
+/// fork's report, or the coordinator's message to a subagent.
 fn work(v: &Value) -> Option<Kind> {
     let origin = &v["origin"];
     let from = match origin["kind"].as_str()? {
         "peer" => origin["name"].as_str().or(origin["from"].as_str())?,
         "coordinator" => "coordinator",
+        "task-notification" => return report(v["message"]["content"].as_str()?),
         _ => return None,
     };
     let text = match origin["body"].as_str() {
@@ -403,11 +401,42 @@ fn prompt(v: &Value, words: &str) -> bool {
         || (v["isSidechain"] == true && v["parentUuid"].is_null())
 }
 
-/// A message the user sent while the agent ran.
-fn queued(a: &Value) -> Option<String> {
-    let human = matches!(a["origin"]["kind"].as_str(), None | Some("human"));
-    (a["type"] == "queued_command" && a["commandMode"] == "prompt" && human)
-        .then(|| text(&a["prompt"]))
+/// A message that arrived while the agent ran: one the user sent, or a fork's report.
+fn queued(a: &Value) -> Option<Kind> {
+    if a["type"] != "queued_command" {
+        return None;
+    }
+    match a["commandMode"].as_str()? {
+        "prompt" if matches!(a["origin"]["kind"].as_str(), None | Some("human")) => {
+            Some(Kind::User(text(&a["prompt"])))
+        }
+        "task-notification" => report(a["prompt"].as_str()?),
+        _ => None,
+    }
+}
+
+/// A fork's report from a task notification, `Agent "<description>" <outcome>`: its result,
+/// after the outcome unless it finished. Other tasks' notifications make none, and so does
+/// one whose report came as a hand-back.
+fn report(s: &str) -> Option<Kind> {
+    let summary = unescape(tag(s, "summary")?);
+    let rest = summary.strip_prefix("Agent \"")?;
+    let end = ["\" finished", "\" failed", "\" was ", "\" is "]
+        .iter()
+        .filter_map(|m| rest.find(m))
+        .min()?;
+    let result = tag(s, "result").map(unescape).unwrap_or_default();
+    if result.contains("(its SubagentHandback call)") {
+        return None;
+    }
+    let text = match &rest[end + 2..] {
+        "finished" => result,
+        outcome => format!("{outcome}\n\n{result}").trim_end().to_string(),
+    };
+    Some(Kind::Work {
+        from: rest[..end].into(),
+        text,
+    })
 }
 
 /// A prompt command as the user typed it: `/name args`.
@@ -415,14 +444,23 @@ fn command(s: &str) -> Option<String> {
     if !s.starts_with("<command-message>") {
         return None;
     }
-    let tag = |t: &str| {
-        let open = format!("<{t}>");
-        let from = s.find(&open)? + open.len();
-        Some(&s[from..from + s[from..].find(&format!("</{t}>"))?])
-    };
-    let name = tag("command-name")?;
-    let args = tag("command-args").unwrap_or_default();
+    let name = tag(s, "command-name")?;
+    let args = tag(s, "command-args").unwrap_or_default();
     Some(format!("{name} {args}").trim_end().to_string())
+}
+
+/// The text of the first `<t>` element in `s`.
+fn tag<'a>(s: &'a str, t: &str) -> Option<&'a str> {
+    let open = format!("<{t}>");
+    let from = s.find(&open)? + open.len();
+    Some(&s[from..from + s[from..].find(&format!("</{t}>"))?])
+}
+
+/// Text a task notification escaped.
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 /// The text of a string or of content blocks; an image is `[image]`.
@@ -732,6 +770,7 @@ mod tests {
             "interject.jsonl",
             "interject-inline.jsonl",
             "subagent.jsonl",
+            "report.jsonl",
         ] {
             let text = fs::read_to_string(fixture(name)).unwrap();
             let all = parse(SESSION, &text);
@@ -757,7 +796,7 @@ mod tests {
         assert_eq!(
             shape(&items)[3..],
             ["a2<-r1 text", "w1<-a2 work", "a3<-w1 text"],
-            "a hand-back opens a turn; a task notification is dropped"
+            "a hand-back opens a turn; its notification is dropped"
         );
         assert_eq!(
             items[4].kind,
@@ -814,6 +853,53 @@ mod tests {
             subagents(&fixture("plain.jsonl"), SESSION)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_fork_report_opens_a_turn_from_its_description() {
+        let items = load("report.jsonl");
+        assert_eq!(
+            shape(&items),
+            [
+                "u1<- user",
+                "a1<-u1 call",
+                "r1<-a1 result",
+                "a2<-r1 text",
+                "t1<-a2 work",
+                "a3<-t1 text",
+                "u2<-a3 user",
+                "a4<-u2 call",
+                "q1<-a4 work",
+                "r2<-q1 result",
+                "a5<-r2 text",
+            ],
+            "a hand-back's notification and other tasks' make no item"
+        );
+        assert_eq!(
+            items[4].kind,
+            Kind::Work {
+                from: "Fix the parser".into(),
+                text: "Fixed `parse(<id>)` & added a test.".into()
+            }
+        );
+        assert_eq!(
+            items[8].kind,
+            Kind::Work {
+                from: "Write the docs".into(),
+                text: "failed: Agent terminated early due to an API error: rate limit\n\n\
+                       Halfway through README."
+                    .into()
+            }
+        );
+        assert_eq!(
+            steps(items),
+            [
+                vec![vec!["u1"], vec!["a1", "r1"], vec!["a2"]],
+                vec![vec!["t1"], vec!["a3"]],
+                vec![vec!["u2"], vec!["a4"]],
+                vec![vec!["q1"], vec!["r2"], vec!["a5"]],
+            ]
         );
     }
 

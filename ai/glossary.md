@@ -37,7 +37,7 @@
 - `step`: an assistant text, if any, and the tool calls and results after it, up to the next assistant text.
 - `turn`: a user message or work item and the steps that answer it, up to the next one on the branch; closed once one follows. Codex uses the word the same way (thread, turn, item). Stored line records keep the kind name `exchange`.
 - `human prompt`: a user entry that opens a turn: one the user typed or sent (mid-run included) or a subagent's task. Tool results, hook context, `isMeta` entries, local commands and their output, task notifications are not.
-- `work`: an item that is a message from another agent, with its sender: a subagent's hand-back, a peer's report, a coordinator's instruction. It opens a turn (OptChat's name).
+- `work`: an item that is a message from another agent, with its sender: a subagent's hand-back, a fork's report (from its description), a peer's report, a coordinator's instruction. It opens a turn (OptChat's name).
 - `thread`: a named, repo-local `ai chat` conversation: a directory `threads/<name>` of the chat store in the repository's common git dir (`ai/chat/`), so its worktrees share it. Holds items, session tracks, subagents and lines as append-only JSON Lines, and copies of its sessions' files; format 3.
 - `sequence number`: an item's position in its thread, from 0, permanent. Parents and line keys are sequence numbers. A subagent's items are numbered apart, beside the main tree.
 - `binding`: a harness session's record in a thread (`sessions/<harness>/<session>`): transcript path, graft, tip, attach and detach times. Attached until detached; a session is attached to at most one thread of a repository.
