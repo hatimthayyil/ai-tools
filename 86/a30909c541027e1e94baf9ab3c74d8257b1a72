@@ -1,0 +1,16 @@
+ai/comments/src/chat/dsh.rs.md
+  h_3b956d4cad68d1 16,20-21
+src/chat/dsh.rs
+  h_3b956d4cad68d1 2,288-289,366-369,409,420-422,426-459,461-472,604-640,1045-1193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "86a30909c541027e1e94baf9ab3c74d8257b1a72",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
