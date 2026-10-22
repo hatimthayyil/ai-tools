@@ -5,6 +5,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
+use ai_tools::project::Project;
 use tempfile::TempDir;
 
 const ISOLATE: [&str; 6] = [
@@ -16,7 +17,8 @@ const ISOLATE: [&str; 6] = [
     "GIT_COMMITTER_NAME",
 ];
 
-/// A committed git repository of a few files and a fake `claude`, in a temporary directory.
+/// A committed git repository of a few files, made a project, and a fake `claude`, in a
+/// temporary directory.
 /// The fake answers each request with `summary of <path>`, logging the path to `out/asked`,
 /// and fails a path holding `bad`.
 struct Sandbox {
@@ -38,6 +40,7 @@ impl Sandbox {
         s.write(".gitignore", "target/\n");
         s.write("target/x.rs", "fn x() {}\n");
         s.write("logo.png", "\0\x01binary");
+        Project::init(&s.repo()).unwrap();
         gix::init(s.repo()).unwrap();
         let commit = Command::new("git")
             .args([
@@ -167,7 +170,7 @@ fn a_build_summarises_files_then_directories_and_view_prints_them() {
     let s = Sandbox::new();
     assert_eq!(
         ok(&s.ai(&["build"])),
-        "Wrote 6 summaries in 6 requests to the model, $0.06.\n"
+        "Wrote 7 summaries in 7 requests to the model, $0.07.\n"
     );
     let order = fs::read_to_string(s.root.join("out/asked")).unwrap();
     let at = |p: &str| order.lines().position(|l| l == p).unwrap();
@@ -179,6 +182,7 @@ fn a_build_summarises_files_then_directories_and_view_prints_them() {
             ".",
             ".gitignore",
             "README.md",
+            "ai.toml",
             "src",
             "src/a.rs",
             "src/b.rs"
@@ -190,9 +194,9 @@ fn a_build_summarises_files_then_directories_and_view_prints_them() {
             .unwrap()
             .lines()
             .count(),
-        6
+        7
     );
-    assert_eq!(fs::read_dir(store.join("calls")).unwrap().count(), 6);
+    assert_eq!(fs::read_dir(store.join("calls")).unwrap().count(), 7);
     assert_eq!(ok(&s.ai(&["view"])), "summary of .\n");
     assert_eq!(ok(&s.ai(&["view", "src/a.rs"])), "summary of src/a.rs\n");
     let src = s.repo().join("src");
@@ -253,7 +257,7 @@ fn a_failed_call_stops_the_build_and_keeps_what_was_written() {
     );
     assert!(
         e.ends_with(
-            "The 4 summaries written so far are kept; the next ai files build goes on from them.\n"
+            "The 5 summaries written so far are kept; the next ai files build goes on from them.\n"
         ),
         "{e}"
     );
@@ -262,6 +266,7 @@ fn a_failed_call_stops_the_build_and_keeps_what_was_written() {
         [
             ".gitignore",
             "README.md",
+            "ai.toml",
             "src/a.rs",
             "src/b.rs",
             "src/bad.rs"
@@ -276,11 +281,12 @@ fn a_failed_call_stops_the_build_and_keeps_what_was_written() {
 }
 
 #[test]
-fn outside_a_repository_it_says_where_to_run() {
+fn outside_a_project_it_says_how_to_make_one() {
     let s = Sandbox::new();
     let e = fails(&s.ai_in(&s.root.join("out"), &["build"]));
     assert_eq!(
         e,
-        "Not in a git repository. Run this inside the project to summarise.\n"
+        "Not in a project: no ai.toml here or above. Run `ai init` in the project's top \
+         directory.\n"
     );
 }

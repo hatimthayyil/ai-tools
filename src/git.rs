@@ -1,23 +1,18 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
-    path::Path,
     rc::Rc,
-    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use gix::{
     ObjectId,
-    lock::acquire::Fail,
     objs::tree::EntryKind,
     refs::{
         Target,
         transaction::{PreviousValue, RefEdit},
     },
 };
-
-use crate::file::AtPath;
 
 /// The blob at a store's tree root naming its format.
 pub const FORMAT: &str = "format";
@@ -35,21 +30,6 @@ pub fn hash(input: &str) -> Result<String> {
 /// Entry `n` under `dir`, fanned out 256 per tree.
 pub fn fan_path(dir: &str, n: u64) -> String {
     format!("{dir}/{:04x}/{:02x}", n >> 8, n & 255)
-}
-
-/// Applies `edit` to the git config file `p` under its lock.
-pub fn edit_config<R>(
-    p: &Path,
-    edit: impl FnOnce(&mut gix::config::File) -> Result<R>,
-) -> Result<R> {
-    let wait = Fail::AfterDurationWithBackoff(Duration::from_secs(3));
-    let mut lock = gix::lock::File::acquire_to_update_resource(p, wait, None)?;
-    let mut file =
-        gix::config::File::from_path_no_includes(p.to_path_buf(), gix::config::Source::Local)?;
-    let r = edit(&mut file)?;
-    file.write_to(&mut lock).at(p)?;
-    lock.commit().map_err(|e| e.error).at(p)?;
-    Ok(r)
 }
 
 /// New blobs by path.

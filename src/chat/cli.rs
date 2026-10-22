@@ -39,8 +39,8 @@ pub const WAIT: Duration = Duration::from_secs(60);
 #[derive(Parser, Debug)]
 #[command(
     name = "chat",
-    about = "Named conversations that span agent sessions, kept in this repository.",
-    after_help = "Threads live in ~/.ai/chat/<root commit>, or under $AI_CHAT_DIR if set."
+    about = "Named conversations that span agent sessions, kept in this project.",
+    after_help = "Threads live in ~/.ai/chat/<project id>, or under $AI_CHAT_DIR if set."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -66,7 +66,7 @@ enum Command {
         #[arg(last = true, help = "arguments for claude, after --")]
         args: Vec<String>,
     },
-    #[command(about = "list this repository's threads and their sessions.")]
+    #[command(about = "list this project's threads and their sessions.")]
     List {
         #[command(flatten)]
         session: Session,
@@ -212,7 +212,7 @@ pub struct Session {
 }
 
 /// What a thread argument defaults to: [`pick`]'s order.
-pub const THREAD_HELP: &str = "the thread [default: the one this session is attached to, else the repository's only thread, else one you pick on a terminal]";
+pub const THREAD_HELP: &str = "the thread [default: the one this session is attached to, else the project's only thread, else one you pick on a terminal]";
 
 /// The thread a command reads, by `-t`, as [`pick`] resolves it.
 #[derive(Args, Debug)]
@@ -326,17 +326,6 @@ fn not_attached() -> Result<ExitCode> {
     Ok(ExitCode::from(NOT_ATTACHED))
 }
 
-/// The threads of the repository at `cwd`.
-fn find(cwd: &Path) -> Result<Chat> {
-    Chat::find(cwd)?.with_context(|| match gix::discover(cwd) {
-        Ok(_) => {
-            "This repository has no commits yet. Its threads are kept under its first \
-                  commit; commit once, then retry."
-        }
-        Err(_) => "Not in a git repository. Run this inside the repository that holds the thread.",
-    })
-}
-
 /// The thread `name`, else the one session `c` is attached to, else [`choose`]'s; with the
 /// session when it is attached to that thread. `usage` shows how to name a thread.
 fn pick(
@@ -345,7 +334,7 @@ fn pick(
     c: Option<Current>,
     usage: &str,
 ) -> Result<(Chat, Thread, Option<Current>)> {
-    let chat = find(cwd)?;
+    let chat = Chat::open(cwd)?;
     let attached = match &c {
         Some(c) => chat.attached(&c.harness, &c.session)?.map(|(a, _)| a),
         None => None,
@@ -354,7 +343,7 @@ fn pick(
         (Some(name), attached) => {
             let thread = chat.thread(&name)?;
             if !thread.exists()? {
-                bail!("No thread {name} in this repository. List the threads: ai chat list");
+                bail!("No thread {name} in this project. List the threads: ai chat list");
             }
             let c = c.filter(|_| attached.is_some_and(|a| a.name() == name));
             Ok((chat, thread, c))
@@ -367,16 +356,16 @@ fn pick(
     }
 }
 
-/// The repository's only thread, else one picked on a terminal, newest first (Esc cancels);
+/// The project's only thread, else one picked on a terminal, newest first (Esc cancels);
 /// else an error listing them, newest first. `session`: the caller is an agent session
 /// attached to none.
 fn choose(chat: &Chat, session: bool, usage: &str) -> Result<Thread> {
     let mut threads = chat.threads()?;
     match threads.len() {
         0 if session => bail!(
-            "This session is not attached to a thread, and this repository has none. Attach it to a new one: ai chat attach <name>"
+            "This session is not attached to a thread, and this project has none. Attach it to a new one: ai chat attach <name>"
         ),
-        0 => bail!("No threads in this repository. Start one: ai chat start <name>"),
+        0 => bail!("No threads in this project. Start one: ai chat start <name>"),
         1 => return Ok(threads.remove(0)),
         _ => {}
     }
@@ -400,7 +389,7 @@ fn choose(chat: &Chat, session: bool, usage: &str) -> Result<Thread> {
         ),
         false => format!("Name a thread: {usage}."),
     };
-    msg += " This repository's threads, newest first:";
+    msg += " This project's threads, newest first:";
     for r in rows {
         msg += &format!("\n  {r}");
     }
@@ -506,7 +495,7 @@ fn failures(snap: &Snapshot, failed: &[(Key, String)]) -> Result<Vec<String>> {
 
 /// Starts the thread's background summariser, unless `ai.toml` sets `chat.background` false.
 fn start_summariser(cwd: &Path, thread: &str) -> Result<()> {
-    let chat = find(cwd)?;
+    let chat = Chat::open(cwd)?;
     chat.spawn_summariser(&chat.thread(thread)?)?;
     Ok(())
 }
@@ -523,7 +512,7 @@ fn exec_claude(dir: &Path, args: &[&str]) -> Result<ExitCode> {
 /// A new Claude Code session attached to `name`, bound with its future transcript, once the
 /// lines its view needs are written.
 fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
-    let chat = find(cwd)?;
+    let chat = Chat::open(cwd)?;
     check_name(name)?;
     let t = chat.thread(name)?;
     if t.exists()? {
@@ -546,10 +535,10 @@ fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
 /// The thread's newest Claude Code session, resumed attached in the directory it ran in when
 /// it can be; else a new one.
 fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
-    let chat = find(cwd)?;
+    let chat = Chat::open(cwd)?;
     let t = chat.thread(name)?;
     if !t.exists()? {
-        bail!("No thread {name} in this repository. Start one: ai chat start {name}");
+        bail!("No thread {name} in this project. Start one: ai chat start {name}");
     }
     let newest = t
         .snapshot()?
@@ -568,7 +557,7 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
                     return exec_claude(&dir, &argv);
                 }
                 Some(dir) => format!(
-                    "session {} ran in {}, outside this repository",
+                    "session {} ran in {}, outside this project",
                     b.session,
                     file::pretty(&dir)
                 ),
@@ -584,11 +573,11 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
 
 /// Every thread: its turns, newest activity and branches; under it, its sessions.
 fn list(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
-    let threads = find(cwd)?.list()?;
+    let threads = Chat::open(cwd)?.list()?;
     if threads.is_empty() {
         writeln!(
             out,
-            "No threads in this repository. Start one: ai chat start <name>"
+            "No threads in this project. Start one: ai chat start <name>"
         )?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -623,7 +612,7 @@ fn attach(cwd: &Path, out: &mut dyn Write, name: &str, s: Session) -> Result<Exi
     let Some(c) = s.current() else {
         bail!("No session: run this inside an agent session, or pass --session.");
     };
-    let a = find(cwd)?.attach(name, &c.harness, &c.session, c.transcript(cwd).as_deref())?;
+    let a = Chat::open(cwd)?.attach(name, &c.harness, &c.session, c.transcript(cwd).as_deref())?;
     let mut msg = format!("Attached to {}", a.thread);
     if a.created {
         msg += ", a new thread";
@@ -639,7 +628,7 @@ fn detach(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
     let Some(c) = s.current() else {
         bail!("No session: run this inside an agent session, or pass --session.");
     };
-    match find(cwd)?.detach(&c.harness, &c.session)? {
+    match Chat::open(cwd)?.detach(&c.harness, &c.session)? {
         Some(t) => writeln!(out, "Detached from {t}.")?,
         None => bail!("This session is not attached to a thread."),
     }
@@ -662,7 +651,7 @@ fn sync_session(cwd: &Path, s: Session) -> Result<ExitCode> {
 }
 
 /// Session `s`, synced, with its threads and the thread it is attached to; `None` outside an
-/// agent session or a repository with commits, or for an unattached session.
+/// agent session or a project, or for an unattached session.
 fn synced(cwd: &Path, s: Session) -> Result<Option<(Chat, Thread, Current)>> {
     let (Some(c), Some(chat)) = (s.current(), Chat::find(cwd)?) else {
         return Ok(None);
@@ -699,7 +688,7 @@ fn latest(chat: &Chat, t: &Thread, c: Option<&Current>) -> Result<Snapshot> {
 /// The thread view `ai view` prints after the memory, with the thread's name and state:
 /// [`pick`]'s thread, of the session's branch (synced first) when it is attached there, else of
 /// the newest; with `at` (a state it gave), of that state, unsynced. Unnamed, an agent session
-/// reads only the thread it is attached to, and outside a repository with threads there is
+/// reads only the thread it is attached to, and outside a project with threads there is
 /// none. `None` too while the branch holds no item. It writes no line.
 pub fn thread_view(
     cwd: &Path,

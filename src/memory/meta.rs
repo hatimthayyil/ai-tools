@@ -9,7 +9,7 @@ use crate::memory::{record::Message, store::Snapshot, tree::Coord};
 pub enum Field {
     Origin,
     Repo,
-    Root,
+    Project,
     Head,
     Branch,
     Agent,
@@ -23,7 +23,7 @@ impl Field {
         match self {
             Field::Origin => "origin",
             Field::Repo => "repo",
-            Field::Root => "root",
+            Field::Project => "project",
             Field::Head => "head",
             Field::Branch => "branch",
             Field::Agent => "agent",
@@ -37,7 +37,7 @@ impl Field {
         match self {
             Field::Origin => &m.origin,
             Field::Repo => &m.place.repo,
-            Field::Root => &m.place.root,
+            Field::Project => &m.place.project,
             Field::Head => &m.place.head,
             Field::Branch => &m.place.branch,
             Field::Agent => &m.who.agent,

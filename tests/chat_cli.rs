@@ -12,6 +12,7 @@ use std::{
 use ai_tools::{
     chat::{Chat, Key, LineKind, NOT_ATTACHED, Tree, claude, turns},
     memory::Who,
+    project::Project,
 };
 use regex::Regex;
 use serde_json::{Value, json};
@@ -27,8 +28,8 @@ const ISOLATE: [&str; 7] = [
     "GIT_COMMITTER_NAME",
 ];
 
-/// A git repository, a home whose `ai.toml` switches the background summariser off, a Claude
-/// Code config dir and a fake `claude`, in a temporary directory.
+/// A project, a home whose `ai.toml` switches the background summariser off, a Claude Code
+/// config dir and a fake `claude`, in a temporary directory.
 struct Sandbox {
     _tmp: TempDir,
     root: PathBuf,
@@ -52,25 +53,10 @@ impl Sandbox {
         s
     }
 
-    /// A git repository at `dir`.
+    /// A project at `dir`.
     fn init(&self, dir: &Path) {
-        gix::init(dir).unwrap();
-        let root = Command::new("git")
-            .args([
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(["commit", "-q", "--allow-empty", "--no-verify", "-m"])
-            .arg(dir)
-            .current_dir(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .status()
-            .unwrap();
-        assert!(root.success());
+        fs::create_dir_all(dir).unwrap();
+        Project::init(dir).unwrap();
     }
 
     fn repo(&self) -> PathBuf {
@@ -438,8 +424,8 @@ fn plumbing_for_an_unattached_session_exits_3_silently() {
 #[test]
 fn porcelain_without_a_thread_says_what_to_do() {
     let s = Sandbox::new();
-    let attach = "This session is not attached to a thread, and this repository has none. Attach it to a new one: ai chat attach <name>\n";
-    let start = "No threads in this repository. Start one: ai chat start <name>\n";
+    let attach = "This session is not attached to a thread, and this project has none. Attach it to a new one: ai chat attach <name>\n";
+    let start = "No threads in this project. Start one: ai chat start <name>\n";
     for cmd in [&["view"][..], &["zoom", "0"], &["grep", "x"], &["build"]] {
         fails(s.ai_in("s-1", cmd), attach);
         fails(s.ai(cmd), start);
@@ -450,11 +436,11 @@ fn porcelain_without_a_thread_says_what_to_do() {
     );
     fails(
         s.ai(&["view", "dev"]),
-        "No thread dev in this repository. List the threads: ai chat list\n",
+        "No thread dev in this project. List the threads: ai chat list\n",
     );
     fails(
         s.outside(&["view", "dev"]),
-        "Not in a git repository. Run this inside the repository that holds the thread.\n",
+        "Not in a project: no ai.toml here or above. Run `ai init` in the project's top directory.\n",
     );
 }
 
@@ -478,7 +464,7 @@ fn a_thread_is_named_else_attached_else_the_only_one_else_listed() {
         s.ai_in("s-3", &["attach", "other"]),
         "Attached to other, a new thread.\n",
     );
-    let rows = "This repository's threads, newest first:\n  other  3 turns  2026-10-14 10:00\n  dev  2 turns  2026-10-14 10:00\n";
+    let rows = "This project's threads, newest first:\n  other  3 turns  2026-10-14 10:00\n  dev  2 turns  2026-10-14 10:00\n";
     fails(
         s.ai(&["view"]),
         &format!("Name a thread: ai chat view <name>. {rows}"),
@@ -594,7 +580,7 @@ fn attach_sync_and_detach() {
     assert!(stderr(&o).contains("is not a thread name"));
     let o = s.outside(&["attach", "dev", "--session", "s-1"]);
     assert_eq!(code(&o), 1);
-    assert!(stderr(&o).starts_with("Not in a git repository"));
+    assert!(stderr(&o).starts_with("Not in a project"));
 }
 
 #[test]
@@ -666,7 +652,7 @@ fn list_shows_this_repositorys_threads_newest_first_and_their_sessions() {
     let s = Sandbox::new();
     ok(
         s.ai(&["list"]),
-        "No threads in this repository. Start one: ai chat start <name>\n",
+        "No threads in this project. Start one: ai chat start <name>\n",
     );
     s.transcript("s-1", &fixture("rewind.jsonl"));
     ok(
@@ -899,7 +885,7 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     );
     fails(
         s.top(None, &["view"]),
-        "Name a thread: ai view <name>. This repository's threads, newest first:\n  other  3 turns  2026-10-14 10:00\n  dev  2 turns  2026-10-14 10:00\n",
+        "Name a thread: ai view <name>. This project's threads, newest first:\n  other  3 turns  2026-10-14 10:00\n  dev  2 turns  2026-10-14 10:00\n",
     );
 
     let usage = fs::read_to_string(s.root.join("home/.ai/memory/usage.jsonl")).unwrap();
@@ -1135,7 +1121,7 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
     let s = Sandbox::new();
     fails(
         s.ai(&["resume", "dev"]),
-        "No thread dev in this repository. Start one: ai chat start dev\n",
+        "No thread dev in this project. Start one: ai chat start dev\n",
     );
     s.transcript("s-1", &ran_in(&fixture("plain.jsonl"), &s.repo()));
     let newest = s.transcript("s-2", &ran_in(&talk(1, |_| "later".into()), &s.repo()));
@@ -1175,7 +1161,7 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
     assert_eq!(
         stderr(&o),
         format!(
-            "Cannot resume dev: session s-2 ran in {}, outside this repository. Starting a new session.\n",
+            "Cannot resume dev: session s-2 ran in {}, outside this project. Starting a new session.\n",
             away.display()
         )
     );
@@ -1485,12 +1471,18 @@ fn a_failed_line_stops_compaction_and_start() {
 }
 
 #[test]
-fn a_repository_without_commits_has_no_threads() {
+fn an_ai_toml_without_an_id_has_no_threads() {
     let s = Sandbox::new();
-    let empty = s.root.join("empty");
-    gix::init(&empty).unwrap();
-    let out = s.ai_at(&empty, "s-1", &["attach", "dev"]);
+    let bare = s.root.join("bare");
+    fs::create_dir(&bare).unwrap();
+    fs::write(bare.join("ai.toml"), "[chat]\nmodel = \"haiku\"\n").unwrap();
+    let out = s.ai_at(&bare, "s-1", &["attach", "dev"]);
     assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("no commits yet"), "{err}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "{0}/ai.toml has no project id. Run `ai init` in {0}.\n",
+            bare.display()
+        )
+    );
 }

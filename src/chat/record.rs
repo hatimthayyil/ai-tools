@@ -72,7 +72,7 @@ pub(super) struct Track {
     pub tip: Option<u64>,
 }
 
-/// An attachment change: one line of the repository's `sessions.jsonl`, the last per session
+/// An attachment change: one line of the project's `sessions.jsonl`, the last per session
 /// holding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Event {

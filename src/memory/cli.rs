@@ -34,6 +34,7 @@ use crate::{
         zoom::zoom,
     },
     page,
+    project::Project,
 };
 
 const TEMPLATE: &str = "\
@@ -311,7 +312,7 @@ impl Cli {
         let cwd = std::env::current_dir().ok();
         let mut place = cwd.as_deref().map(prov::place).unwrap_or_default();
         if let (Command::Note { .. }, Some(cwd)) = (&command, &cwd) {
-            place.root = prov::root(cwd);
+            place.project = Project::find(cwd)?.map(|p| p.id).unwrap_or_default();
         }
         let mut who = prov::env_who();
         let (cmd, mut args) = command.typed();
@@ -646,7 +647,7 @@ fn show(s: &Snapshot, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
                 ("kind", m.kind.name().into()),
                 ("origin", m.origin),
                 ("repo", p.repo),
-                ("root", p.root),
+                ("project", p.project),
                 ("head", p.head),
                 ("branch", p.branch),
                 ("agent", w.agent),

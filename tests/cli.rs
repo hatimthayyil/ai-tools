@@ -266,6 +266,12 @@ fn provenance_comes_from_the_cwd_and_env() {
         &["remote", "add", "origin", "git@github.com:acme/widget.git"],
     );
     let head = s.git(&work, &["rev-parse", "--short=12", "HEAD"]);
+    let project = "project_01h455vb4pex5vsknk084sn02q";
+    fs::write(
+        work.join("ai.toml"),
+        format!("[project]\nid = \"{project}\"\n"),
+    )
+    .unwrap();
 
     let r = s
         .cmd(&sub, Some(&s.store()))
@@ -320,15 +326,9 @@ fn provenance_comes_from_the_cwd_and_env() {
         ),
         ("pi", "", "s2")
     );
-    let root = s.git(&work, &["rev-list", "--max-parents=0", "HEAD"]);
     assert_eq!(
-        (a.place.root.as_str(), b.place.root.as_str()),
-        (root.as_str(), "")
-    );
-    assert_eq!(
-        s.git(&work, &["config", "ai.root"]),
-        root,
-        "cached per clone"
+        (a.place.project.as_str(), b.place.project.as_str()),
+        (project, "")
     );
     assert!(a.ts.len() == 16 && a.ts.ends_with('Z') && a.ts <= b.ts);
 
@@ -344,7 +344,7 @@ fn provenance_comes_from_the_cwd_and_env() {
         "kind    note\n".into(),
         format!("origin  {}\n", a.origin),
         "repo    acme/widget\n".into(),
-        format!("root    {root}\n"),
+        format!("project {project}\n"),
         format!("head    {head}\n"),
         "branch  trunk\n".into(),
         "agent   claude-code\n".into(),
@@ -440,12 +440,17 @@ fn listing(root: &Path, skip: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
 }
 
 #[test]
-fn nothing_is_written_outside_the_store_but_the_root_cache() {
+fn nothing_is_written_outside_the_store() {
     let s = Sandbox::new();
     let work = s.path().join("work");
     fs::create_dir(&work).unwrap();
     s.git(&work, &["init", "-q"]);
     s.git(&work, &["commit", "-q", "--allow-empty", "-m", "c"]);
+    fs::write(
+        work.join("ai.toml"),
+        "[project]\nid = \"project_01h455vb4pex5vsknk084sn02q\"\n",
+    )
+    .unwrap();
     let seed = s.path().join("seed.txt");
     fs::write(&seed, "2020-01-01 an imported memory\n").unwrap();
     let before = listing(s.path(), &s.store());
@@ -468,18 +473,7 @@ fn nothing_is_written_outside_the_store_but_the_root_cache() {
             text(&r.stderr)
         );
     }
-    let cached = [work.join(".git"), work.join(".git/config")];
-    let outside = |mut l: BTreeMap<PathBuf, _>| {
-        l.retain(|p, _| !cached.contains(p));
-        l
-    };
-    assert_eq!(outside(listing(s.path(), &d)), outside(before));
-    let root = s.git(&work, &["rev-list", "--max-parents=0", "HEAD"]);
-    assert_eq!(
-        s.git(&work, &["config", "ai.root"]),
-        root,
-        "a note caches its repo's root"
-    );
+    assert_eq!(listing(s.path(), &d), before);
     let mut top: Vec<_> = fs::read_dir(&d)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -954,28 +948,6 @@ fn a_newer_format_is_refused_before_any_write() {
         );
     }
     assert_eq!(s.store_git(&["rev-parse", REF]), commit);
-}
-
-#[test]
-fn the_root_is_the_default_branchs_first_commit() {
-    let s = Sandbox::new();
-    assert!(s.ai(&["init"]).status.success());
-    let work = s.path().join("work");
-    fs::create_dir(&work).unwrap();
-    s.git(&work, &["init", "-q", "-b", "main"]);
-    s.git(&work, &["commit", "-q", "--allow-empty", "-m", "first"]);
-    let root = s.git(&work, &["rev-parse", "HEAD"]);
-    s.git(&work, &["commit", "-q", "--allow-empty", "-m", "second"]);
-    s.git(&work, &["checkout", "-q", "--orphan", "side"]);
-    s.git(&work, &["commit", "-q", "--allow-empty", "-m", "unrelated"]);
-    let r = s
-        .cmd(&work, Some(&s.store()))
-        .args(["note", "on a side branch"])
-        .output()
-        .unwrap();
-    assert!(r.status.success(), "{}", text(&r.stderr));
-    assert_eq!(s.memories()[0].place.root, root);
-    assert_eq!(s.memories()[0].place.branch, "side");
 }
 
 /// A fake `claude` writing summaries: a scope line, a blank line, a gist.

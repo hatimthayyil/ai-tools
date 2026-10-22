@@ -4,15 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gix::{ObjectId, bstr::ByteSlice};
+use gix::bstr::ByteSlice;
 
 use crate::{
     chat::claude,
-    git::edit_config,
     memory::record::{Place, Who},
 };
-
-const ROOT: &str = "ai.root";
 
 const CODEX: [&str; 3] = [
     "CODEX_THREAD_ID",
@@ -27,7 +24,7 @@ pub fn place(cwd: &Path) -> Place {
     };
     Place {
         repo: identity(&repo).unwrap_or_default(),
-        root: String::new(),
+        project: String::new(),
         head: repo
             .head_id()
             .map(|id| id.to_hex_with_len(12).to_string())
@@ -39,51 +36,6 @@ pub fn place(cwd: &Path) -> Place {
             .map(|n| n.shorten().to_string())
             .unwrap_or_default(),
     }
-}
-
-/// The root commit of the default branch of the git repository at `cwd`, cached in its
-/// config as `ai.root`; empty outside a repository or before its first commit.
-pub fn root(cwd: &Path) -> String {
-    gix::discover(cwd)
-        .ok()
-        .and_then(|repo| repo_root(&repo))
-        .unwrap_or_default()
-}
-
-/// The root commit of `repo`'s default branch, cached in its config as `ai.root`; `None`
-/// before its first commit.
-pub fn repo_root(repo: &gix::Repository) -> Option<String> {
-    if let Some(r) = repo.config_snapshot().string(ROOT) {
-        return Some(r.to_string());
-    }
-    let r = first_commit(repo)?.to_string();
-    let _ = edit_config(&repo.common_dir().join("config"), |f| {
-        f.set_raw_value_by("ai", None, "root", r.as_str())?;
-        Ok(())
-    });
-    Some(r)
-}
-
-/// The oldest root commit (by commit time, then id) reachable from `origin/HEAD`, else
-/// `main`, `master` or `HEAD`.
-fn first_commit(repo: &gix::Repository) -> Option<ObjectId> {
-    let tip = [
-        "refs/remotes/origin/HEAD",
-        "refs/heads/main",
-        "refs/heads/master",
-    ]
-    .into_iter()
-    .find_map(|r| repo.find_reference(r).ok()?.peel_to_id().ok())
-    .or_else(|| repo.head_id().ok())?
-    .detach();
-    repo.rev_walk([tip])
-        .all()
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|c| c.parent_ids.is_empty())
-        .filter_map(|c| Some((repo.find_commit(c.id).ok()?.time().ok()?.seconds, c.id)))
-        .min()
-        .map(|(_, id)| id)
 }
 
 fn identity(repo: &gix::Repository) -> Option<String> {

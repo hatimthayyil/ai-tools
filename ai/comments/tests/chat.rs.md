@@ -1,10 +1,10 @@
 # tests/chat.rs
 
-The thread store and sync against real git repositories in temporary directories (`gix::init`; the `git` CLI only to make a worktree), with the Claude Code fixtures of `tests/fixtures/claude` as transcripts. `Repo::state` is every file of a thread, to check that nothing was written.
+The thread store and sync against real git repositories in temporary directories (`gix::init`, made projects by `Project::init` with `ai.toml` committed; the `git` CLI to commit and make a worktree), with the Claude Code fixtures of `tests/fixtures/claude` as transcripts. `Repo::state` is every file of a thread, to check that nothing was written.
 
 - `relabel`: fixtures reuse entry ids (`u1`, `a1`) across files; Claude Code uuids are unique, and the store dedupes by harness and entry id, so a test putting two fixtures on one thread prefixes one's ids.
 - Attach then sync on a growing file: items, sources and kinds equal the adapter's; no write when nothing is new; the `format` file, one attachment event, one row per item.
-- Not attached: outside a repository, no thread, another session, after detach (no write); a bad session id is refused.
+- Not attached: outside a project, no thread, another session, after detach (no write); a bad session id is refused.
 - Graft: a second session's root hangs on the first's newest item; tips, session tips, paths and `list`.
 - Fork: the same entries under another session id add nothing; new entries hang on the copies.
 - Detach and re-attach: the graft and transcript path are kept; re-attach catches up.

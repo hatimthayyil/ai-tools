@@ -1,0 +1,9 @@
+# project.rs
+
+The project at a directory, for chat and files. Design: the Projects section of `ai/research/20261021T194314--ids-handles-and-paths.md`; ids: `20261021T194500--durable-id-alternatives.md`.
+
+- A project is the directory of the nearest `ai.toml` at or above a directory, never the user's (`config::project_file`). A git repository is not needed, and nothing of `ai` goes in a repository's `.git`.
+- `[project] id`: a TypeID of type `project` (`mti`, the UUID in Crockford base-32), minted as UUIDv7 by `ai init`. An id of another type or not a TypeID fails, naming the file. A committed `ai.toml` makes every clone and worktree the same project.
+- `[project] name`: the project's slug, else the directory's name.
+- `find` is `None` without a project file or with one holding no id: chat's hook sync then does nothing. `require` is the CLI's: the error says to run `ai init`, naming the file when it lacks only the id.
+- `init` mints into the given directory's `ai.toml`, the cwd's from the CLI, so a subdirectory of a project becomes a project of its own. With an id there it changes nothing and prints it again. It refuses the user's own file. `toml_edit` keeps the file's comments, order and formatting; `[project]` is added as a table at the end, or the id appended to the table there. The file is parsed with `config::read` first, so a bad file is reported before anything is written, and written by rename (`NamedTempFile::persist`).

@@ -150,43 +150,49 @@ impl FromStr for Mark {
     }
 }
 
-/// `$AI_CHAT_DIR`, else `~/.ai/chat`: every repository's store, named by its root commit.
+/// `$AI_CHAT_DIR`, else `~/.ai/chat`: every project's store, named by its id.
 pub fn base_dir() -> Result<PathBuf> {
     store_dir("AI_CHAT_DIR", "chat")
 }
 
-/// The threads of one project: `<base>/<root commit>`, shared by its worktrees and clones.
+/// The threads of one project: `<base>/<project id>`, shared by every copy of the project.
 pub struct Chat {
-    repo: gix::Repository,
-    id: String,
+    project: Project,
     root: PathBuf,
     cwd: PathBuf,
 }
 
 impl Chat {
-    /// The threads of the repository at or above `dir`, in [`base_dir`]; `None` outside a
-    /// repository or before its first commit. A store of another format is refused.
+    /// The threads of the project at or above `dir`, in [`base_dir`]; `None` outside a project.
+    /// A store of another format is refused.
     pub fn find(dir: &Path) -> Result<Option<Chat>> {
         Chat::find_in(&base_dir()?, dir)
     }
 
     /// [`Chat::find`] with the stores in `base`.
     pub fn find_in(base: &Path, dir: &Path) -> Result<Option<Chat>> {
-        let Some(Project { repo, id }) = Project::find(dir) else {
-            return Ok(None);
-        };
-        let root = base.join(&id);
-        file::check_format(&root, FORMAT, "chat")?;
-        Ok(Some(Chat {
-            repo,
-            id,
-            root,
-            cwd: dir.to_path_buf(),
-        }))
+        Project::find(dir)?
+            .map(|p| Chat::of(base, p, dir))
+            .transpose()
     }
 
-    pub(super) fn repo(&self) -> &gix::Repository {
-        &self.repo
+    /// [`Chat::find`], else an error saying how to make the project.
+    pub fn open(dir: &Path) -> Result<Chat> {
+        Chat::of(&base_dir()?, Project::require(dir)?, dir)
+    }
+
+    fn of(base: &Path, project: Project, cwd: &Path) -> Result<Chat> {
+        let root = base.join(&project.id);
+        file::check_format(&root, FORMAT, "chat")?;
+        Ok(Chat {
+            project,
+            root,
+            cwd: cwd.to_path_buf(),
+        })
+    }
+
+    pub(super) fn project(&self) -> &Project {
+        &self.project
     }
 
     /// The directory it was found from.
@@ -310,10 +316,10 @@ impl Chat {
         Ok(list)
     }
 
-    /// Whether `dir` lies in this project: an existing directory whose repository has this
-    /// store's root commit, a worktree or clone of this one.
+    /// Whether `dir` lies in this project: an existing directory whose project has this store's
+    /// id, this copy of the project or another.
     pub fn holds(&self, dir: &Path) -> bool {
-        Project::find(dir).is_some_and(|p| p.id == self.id)
+        Project::find(dir).is_ok_and(|p| p.is_some_and(|p| p.id == self.project.id))
     }
 }
 

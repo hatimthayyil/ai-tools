@@ -36,7 +36,7 @@ fn message(b: &[u8]) -> Result<Message> {
         origin: value(origin),
         place: Place {
             repo: value(repo),
-            root: String::new(),
+            project: String::new(),
             head: value(hd),
             branch: value(branch),
         },

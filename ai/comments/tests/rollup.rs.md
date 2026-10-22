@@ -1,6 +1,6 @@
 # tests/rollup.rs
 
-The roll-up compactor against real threads in temporary git repositories, with a fake backend.
+The roll-up compactor against real threads in temporary projects (`Project::init`, no git), with a fake backend.
 
 - `Script` writes a Claude Code transcript entry by entry (one item each, so an entry's index is its sequence number); `at` hangs the next entry on an earlier one (a rewind). `turn` is a prompt and a 600-byte reply (never a free line); `steps(n)` n steps of a text, a Read and a 10 KB output (about 4.2 KB rendered), so 14 steps exceed the 48 KB input.
 - The fake answers each call with a 300-byte line `<verb> #first..#last` from the item numbers in its `<input>`, so a line shows what it covers and two never join free; it records every task, can sleep, fail on a predicate, and records `stop`.

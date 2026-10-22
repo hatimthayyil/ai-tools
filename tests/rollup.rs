@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::PathBuf,
-    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -17,6 +16,7 @@ use ai_tools::{
         rebuild, rewrite, rollup, summarise,
     },
     memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage},
+    project::Project,
 };
 use anyhow::{Result, bail};
 use indicatif::ProgressBar;
@@ -103,6 +103,7 @@ impl Script {
     }
 }
 
+/// A project, not a git repository, in a temporary directory.
 struct Repo {
     dir: TempDir,
 }
@@ -110,19 +111,9 @@ struct Repo {
 impl Repo {
     fn new() -> Repo {
         let dir = TempDir::new().unwrap();
-        gix::init(dir.path().join("repo")).unwrap();
         let r = Repo { dir };
-        r.git(&[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "root",
-        ]);
+        fs::create_dir(r.path()).unwrap();
+        Project::init(&r.path()).unwrap();
         r
     }
 
@@ -146,21 +137,6 @@ impl Repo {
         let chat = self.chat();
         chat.attach("t", "claude", "s1", Some(&p)).unwrap();
         chat.thread("t").unwrap()
-    }
-
-    fn git(&self, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(self.path())
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
     }
 }
 
@@ -1047,7 +1023,12 @@ fn failed_lines_stay_unbuilt_and_a_failing_model_stops_the_summariser() {
 fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     let r = Repo::new();
     let toml = r.path().join("ai.toml");
-    fs::write(&toml, "[chat]\nmodel = \"haiku\"\nbackground = false\n").unwrap();
+    let project = fs::read_to_string(&toml).unwrap();
+    fs::write(
+        &toml,
+        format!("{project}\n[chat]\nmodel = \"haiku\"\nbackground = false\n"),
+    )
+    .unwrap();
     let sub = r.path().join("src");
     fs::create_dir(&sub).unwrap();
     let chat = Chat::find_in(&r.base(), &sub).unwrap().unwrap();
@@ -1060,8 +1041,12 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
         !chat.spawn_summariser(&t).unwrap(),
         "switched off: nothing starts"
     );
-    fs::write(&toml, "[chat]\nbackground = \"maybe\"\n").unwrap();
-    let err = format!("{:#}", r.chat().config().unwrap_err());
+    fs::write(
+        &toml,
+        format!("{project}\n[chat]\nbackground = \"maybe\"\n"),
+    )
+    .unwrap();
+    let err = format!("{:#}", chat.config().unwrap_err());
     assert!(
         err.contains("ai.toml: ") && err.contains("background = \"maybe\""),
         "{err}"

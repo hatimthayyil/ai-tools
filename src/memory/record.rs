@@ -39,7 +39,7 @@ impl Kind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Place {
     pub repo: String,
-    pub root: String,
+    pub project: String,
     pub head: String,
     pub branch: String,
 }
@@ -107,7 +107,7 @@ impl Message {
             "ts" => &mut self.ts,
             "origin" => &mut self.origin,
             "repo" => &mut p.repo,
-            "root" => &mut p.root,
+            "project" => &mut p.project,
             "head" => &mut p.head,
             "branch" => &mut p.branch,
             "agent" => &mut w.agent,
@@ -125,7 +125,7 @@ impl Message {
             ("kind", self.kind.name()),
             ("origin", &self.origin),
             ("repo", &p.repo),
-            ("root", &p.root),
+            ("project", &p.project),
             ("head", &p.head),
             ("branch", &p.branch),
             ("agent", &w.agent),
@@ -255,7 +255,7 @@ mod tests {
             origin: "7KQ2ZD".into(),
             place: Place {
                 repo: "acme/widget".into(),
-                root: String::new(),
+                project: String::new(),
                 head: "0123456789ab".into(),
                 branch: "feature/a b".into(),
             },
@@ -281,7 +281,7 @@ mod tests {
         let back = Message::decode(&b).unwrap();
         assert_eq!(back.place.branch, "feature/a_b");
         assert_eq!(
-            (back.who.model.as_str(), back.place.root.as_str()),
+            (back.who.model.as_str(), back.place.project.as_str()),
             ("", "")
         );
         assert_eq!(back.text, m.text);

@@ -83,7 +83,7 @@ ts      20261013T230303Z
 kind    note
 origin  2RP35K
 repo    acme/widget
-root    -
+project -
 head    0e553b08ba84
 branch  main
 agent   claude-code

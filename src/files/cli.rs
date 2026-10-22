@@ -29,7 +29,7 @@ use crate::{
     about = "Summaries of a project's files, rolled up its directory tree.",
     after_help = "A directory is summarised from its children's summaries. What git ignores and \
                   files that are not text are left out. Summaries live in \
-                  ~/.ai/files/<root commit>, or under $AI_FILES_DIR if set."
+                  ~/.ai/files/<project id>, or under $AI_FILES_DIR if set."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -74,21 +74,11 @@ impl Cli {
     }
 }
 
-/// The work tree of the project at or above `cwd`, and its summaries.
+/// The directory of the project at or above `cwd`, and its summaries.
 fn open(cwd: &Path) -> Result<(PathBuf, Store)> {
-    let p = Project::find(cwd).with_context(|| match gix::discover(cwd) {
-        Ok(_) => {
-            "This repository has no commits yet. Its summaries are kept under its first \
-             commit; commit once, then retry."
-        }
-        Err(_) => "Not in a git repository. Run this inside the project to summarise.",
-    })?;
-    let root = p
-        .repo
-        .workdir()
-        .context("This repository has no work tree to summarise.")?
-        .to_path_buf();
-    Ok((root, Store::open(&base_dir()?.join(&p.id))?))
+    let p = Project::require(cwd)?;
+    let store = Store::open(&base_dir()?.join(&p.id))?;
+    Ok((p.dir, store))
 }
 
 /// Summarises every node of the project at `root` whose hash has no summary, deepest first, up

@@ -3,7 +3,7 @@
 Design: `ai/research/20261014T002322--chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; JSON Lines files: `src/jsonl.rs`.
 
 Where
-- The store of a project is `~/.ai/chat/<root commit>/` (`$AI_CHAT_DIR/<root commit>` if set; `base_dir`), found from a directory (`gix::discover`, then memory's `prov::repo_root`, cached as `ai.root`). Every worktree and clone of a project sees the same threads, and they outlive the clone; forks share them too. A repository without commits has no store: `find` is `None`, and the CLI says to commit first. Git never reads it: nothing is committed or pushed.
+- The store of a project is `~/.ai/chat/<project id>/` (`$AI_CHAT_DIR/<project id>` if set; `base_dir`), found from a directory by `Project::find`. Every clone and worktree holding the committed `ai.toml` sees the same threads, and they outlive the clone. Outside a project, or in one whose `ai.toml` has no id, `find` is `None` (a hook's sync then does nothing), and `open`, the CLI's, fails saying to run `ai init`.
 
 - Thread names: letters, digits, `-`, `_`, starting with a letter or digit: a safe directory and lock file name. Harness, session and agent ids become path names: letters, digits, `.`, `_`, `-`, not starting with `.` (record.rs, `check_id`).
 
@@ -42,4 +42,4 @@ Lines
 - `drop_lines` appends `clear`, `drop_keys` a `drop` of the keys built (`build --rebuild`, `build <id>`).
 
 Queries
-- `Chat::list`: per thread its newest item (harness, session, time) and tips; its turns on the newest branch, counted from the heads and kind tags alone (`count_turns`, `record::Tag`: no item content is decoded and no tree is built; a unit test checks it against `model::turns`) and its sessions, each with the time of its newest item (else of its attaching), newest first. `Chat::holds(dir)`: `dir` is in this project (its repository has the same root commit). `Snapshot::tree` and `model::Tree::path`/`branch` give the item tree and the path to a tip; `Snapshot::tip(harness, session)` the newest tip of a session; `Snapshot::line`/`lines` lines by key and by level.
+- `Chat::list`: per thread its newest item (harness, session, time) and tips; its turns on the newest branch, counted from the heads and kind tags alone (`count_turns`, `record::Tag`: no item content is decoded and no tree is built; a unit test checks it against `model::turns`) and its sessions, each with the time of its newest item (else of its attaching), newest first. `Chat::holds(dir)`: `dir` is in this project (its project has the same id). `Snapshot::tree` and `model::Tree::path`/`branch` give the item tree and the path to a tip; `Snapshot::tip(harness, session)` the newest tip of a session; `Snapshot::line`/`lines` lines by key and by level.

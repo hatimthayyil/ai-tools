@@ -9,6 +9,7 @@ use std::{
 use ai_tools::{
     chat::{Chat, Item, Key, Kind, LineKind, Synced, Tree, claude, read, sync, sync_in},
     memory::Who,
+    project::Project,
 };
 use tempfile::TempDir;
 
@@ -78,9 +79,11 @@ fn git_in(dir: &Path, args: &[&str], input: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// A git repository in a temporary directory, with transcripts beside it.
+/// A git repository in a temporary directory whose committed `ai.toml` makes it a project, with
+/// transcripts beside it.
 struct Repo {
     dir: TempDir,
+    id: String,
 }
 
 impl Repo {
@@ -88,8 +91,10 @@ impl Repo {
         let dir = TempDir::new().unwrap();
         let repo = dir.path().join("repo");
         gix::init(&repo).unwrap();
-        git(&repo, &["commit", "-q", "--allow-empty", "-m", "root"]);
-        Repo { dir }
+        let id = Project::init(&repo).unwrap().id;
+        git(&repo, &["add", "ai.toml"]);
+        git(&repo, &["commit", "-q", "-m", "root"]);
+        Repo { dir, id }
     }
 
     fn path(&self) -> PathBuf {
@@ -133,10 +138,9 @@ impl Repo {
         })
     }
 
-    /// The chat store of the repository.
+    /// The chat store of the project.
     fn store(&self) -> PathBuf {
-        let root = git(&self.path(), &["rev-list", "--max-parents=0", "HEAD"]);
-        self.base().join(root.trim())
+        self.base().join(&self.id)
     }
 }
 

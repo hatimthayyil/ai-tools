@@ -90,11 +90,9 @@ impl Chat {
         if !self.config()?.background() {
             return Ok(false);
         }
-        let repo = self.repo();
-        let cwd = repo.workdir().unwrap_or(repo.git_dir());
         log::spawn(&thread.log_path()?, |c| {
             c.args(["chat", "build", "-t", thread.name(), "--background"])
-                .current_dir(cwd)
+                .current_dir(&self.project().dir)
         })?;
         Ok(true)
     }

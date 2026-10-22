@@ -21,12 +21,12 @@
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes); off a terminal, in parts newest first.
 - `snapshot`: the memory as of one commit; every command reads one.
 - `knob`: a memory size set under `[memory]` in `ai.toml`, shown by `ai memory config`: `view-lines`, `entry-chars`.
-- `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[memory]`): the user's in `~/.ai`, and the project's, the nearest one at or above the cwd, whose keys win.
+- `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[memory]`): the user's in `~/.ai`, and the project's, the nearest one at or above the cwd (never the user's), whose keys win. A project's also holds `[project]`: its `id` and `name`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.
 - `format`: the store's format number, the `format` blob at the tree root (absent: 1). This ai reads and writes only its own (`FORMAT`); it refuses a newer store and upgrades an older one.
 - `upgrade`: the pure, automatic rewrite of an older-format store to `FORMAT`, one commit `upgrade format N -> M` on the old head under the compactor's lock; the old head is the rollback.
-- `root`: a note's repo identity: the first commit of the repo's default branch, cached per clone as `ai.root` in its git config.
+- `project`: the directory of the nearest `ai.toml` at or above the cwd, never the user's; its id, a TypeID `project_<UUIDv7>`, is minted once by `ai init`. Chat's and files' stores are named by it, and a note records it.
 - `notes`: the store `ai notes` manages: a global knowledge base agents consult deliberately, never loaded at session start. A non-bare repo of Markdown files at `~/.ai/notes` (override `AI_NOTES_DIR`), one commit per change.
 - `topic`: a directory of the notes, named by its slug path with dots (`linguistics.syntax`); repo knowledge goes under `projects.<repo>`.
 - `leaf`: one note of the notes: one claim, titled (`# <title>`, ≤ 80 characters, the claim in a few words), body ≤ 1024 bytes, file `<id>--<slug of title>.md`; the id is its UTC Denote timestamp, permanent. Frontmatter: `source`, `confidence` (`verified | reported | speculative | assessment`), `checked`, `decay`, `links`, `supersedes`, `invalid_at`.

@@ -12,7 +12,7 @@ use crate::chat::{
 /// The outcome of [`sync`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Synced {
-    /// The session is attached to no thread of the repository, or there is no repository.
+    /// The session is attached to no thread of the project, or there is no project.
     NotAttached,
     Attached {
         thread: String,
@@ -60,7 +60,7 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
 }
 
 /// Ingests the new entries of an attached session; a session attached to no thread of the
-/// repository at `dir` is [`Synced::NotAttached`].
+/// project at `dir` is [`Synced::NotAttached`].
 pub fn sync(dir: &Path, harness: &str, session: &str, transcript: Option<&Path>) -> Result<Synced> {
     sync_in(&base_dir()?, dir, harness, session, transcript)
 }
@@ -261,28 +261,12 @@ mod tests {
 
     use super::*;
 
-    /// A git repository at `dir` with one commit.
+    /// A project at `dir`.
     fn init(dir: &Path) {
-        gix::init(dir).unwrap();
-        let ok = std::process::Command::new("git")
-            .args([
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(["commit", "-q", "--allow-empty", "--no-verify", "-m", "root"])
-            .current_dir(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .unwrap();
-        assert!(ok.success());
+        crate::project::Project::init(dir).unwrap();
     }
 
-    /// The chat store of the repository at `dir`, kept inside it.
+    /// The chat store of the project at `dir`, kept inside it.
     fn open(dir: &Path) -> Chat {
         Chat::find_in(&dir.join(".chat"), dir).unwrap().unwrap()
     }
