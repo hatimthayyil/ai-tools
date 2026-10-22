@@ -1,0 +1,18 @@
+ai/comments/src/chat/cli.rs.md
+  h_3b956d4cad68d1 14,28
+src/chat/cli.rs
+  h_3b956d4cad68d1 27,252-257,262-265,701-725
+tests/chat_cli.rs
+  h_3b956d4cad68d1 405-415,752-831,1006-1013,1015,1018-1025
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0f48e7b812d8af334ba65a41551c6f9e4b86769b",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
