@@ -1,0 +1,16 @@
+ai/comments/src/memory/pi.rs.md
+  h_3b956d4cad68d1 1-10
+src/memory/pi.rs
+  h_3b956d4cad68d1 18-19,22-23,72-136,138,155,182-187,195-196,203,215,233,285-291,405,531-651
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2f4c9194e13d513c82ceb4402c50f3a976f3bf1b",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
