@@ -1,0 +1,46 @@
+README.md
+  h_3b956d4cad68d1 110-113,123
+ai/comments/src/chat/summarise.rs.md
+  h_3b956d4cad68d1 6-7
+ai/comments/src/config.rs.md
+  h_3b956d4cad68d1 3,10
+ai/comments/src/memory/mod.rs.md
+  h_3b956d4cad68d1 3-8
+src/chat/cli.rs
+  h_3b956d4cad68d1 160
+src/chat/summarise.rs
+  h_3b956d4cad68d1 16,26,56-57,59-63
+src/config.rs
+  h_3b956d4cad68d1 7,52-94,102,123,156,164
+src/files/cli.rs
+  h_3b956d4cad68d1 14,22,104-107,117
+src/memory/cli.rs
+  h_3b956d4cad68d1 14,18,20,225-226,239-242,244-245,256-261,301,304-305,560-561
+src/memory/mod.rs
+  h_3b956d4cad68d1 22-27,45-124
+src/notes/cli.rs
+  h_3b956d4cad68d1 9,14,18-19,103-104,110-113,115-116,123-128,132-134,449-450
+tests/chat_cli.rs
+  h_3b956d4cad68d1 1857
+tests/config.rs
+  h_3b956d4cad68d1 4-5,50-55,71,77,82-87,103,105-110,116
+tests/memory.rs
+  h_3b956d4cad68d1 53,1241
+tests/notes.rs
+  h_3b956d4cad68d1 108
+tests/project.rs
+  h_3b956d4cad68d1 83,108-112,142,146
+tests/rollup.rs
+  h_3b956d4cad68d1 1029,1036-1038
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "115c6aa017beef17041f925e3818656a7a2c7577",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
