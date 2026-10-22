@@ -1,0 +1,26 @@
+ai/comments/src/chat/summarise.rs.md
+  h_3b956d4cad68d1 42-43
+ai/comments/src/memory/compact.rs.md
+  h_3b956d4cad68d1 16-17
+src/chat/summarise.rs
+  h_3b956d4cad68d1 26,50-88,646,657,659,733-753
+src/files/summarise.rs
+  h_3b956d4cad68d1 132
+src/memory/compact.rs
+  h_3b956d4cad68d1 147-160,169,181-183,185-188,195,201,218-227,231,235-239,242-246
+src/memory/mod.rs
+  h_3b956d4cad68d1 32-33
+tests/rollup.rs
+  h_3b956d4cad68d1 151-159,168-179,185,236-240,248-252,259-272,275-284,1107-1153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9b815be438f9ac94c0bac3f7604eb260bcf80fa5",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
