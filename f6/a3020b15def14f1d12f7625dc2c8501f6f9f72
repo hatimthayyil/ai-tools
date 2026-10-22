@@ -1,0 +1,16 @@
+ai/backlog.md
+  h_3b956d4cad68d1 14-16,37-40
+ai/research/20261021T194314--ids-handles-and-paths.md
+  h_3b956d4cad68d1 5,25-26,28,149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6a3020b15def14f1d12f7625dc2c8501f6f9f72",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
