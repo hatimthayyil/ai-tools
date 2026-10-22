@@ -1,0 +1,26 @@
+ai/comments/plugins/dsh/index.js.md
+  h_3b956d4cad68d1 1-15
+plugins/dsh/cordis.patch.yml
+  h_3b956d4cad68d1 1-9
+plugins/dsh/engine.js
+  h_3b956d4cad68d1 1-29
+plugins/dsh/index.js
+  h_3b956d4cad68d1 1-122
+plugins/dsh/package.json
+  h_3b956d4cad68d1 1-19
+plugins/dsh/state.js
+  h_3b956d4cad68d1 1-40
+plugins/dsh/test/plugin.test.js
+  h_3b956d4cad68d1 1-203
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "453be345eb8efea71ca64a36c5a1fe3ed15ba5d3",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
