@@ -1,5 +1,82 @@
 # Changelog
 
+## v0.14.0 - 2026-10-22
+
+### Upgrading
+
+From 0.13, do these once, before any `ai` command of this release runs. Close agent sessions first, so no hook runs `ai` halfway through. Where `$AI_MEMORY_DIR` or `$AI_CHAT_DIR` is set, use it in place of `~/.ai/memory` or `~/.ai/chat`.
+
+1. **Copy memory's origin.** The memory store's id moves from the store's git config to a plain file:
+
+   ```sh
+   git --git-dir ~/.ai/memory config ai.memory.origin > ~/.ai/memory/origin
+   ```
+
+   Every memory note records this id. Without the file, the store mints a new id when it next opens, and every later note looks as if it came from another store.
+
+2. **Move settings to `ai.toml`.** `ai` no longer reads git config. Yours go in `~/.ai/ai.toml`; a project's `ai.toml` overrides them key by key.
+
+   | Old git config key | Where it was set | `ai.toml` |
+   |---|---|---|
+   | `ai.chat.model` | the repo | `model` in `[chat]` |
+   | `ai.chat.background` | the repo | `background` in `[chat]` |
+   | `ai.memory.viewLines` | the memory store | `view-lines` in `[memory]` |
+   | `ai.memory.entryChars` | the memory store | `entry-chars` in `[memory]` |
+
+   For example:
+
+   ```toml
+   [chat]
+   background = false
+
+   [memory]
+   view-lines = 96
+   ```
+
+   `ai memory config` only prints the sizes now; edit `ai.toml` to change them.
+
+3. **Make each project.** Chat and `ai files` now need a project: the directory of the nearest `ai.toml`, holding an id that `ai init` mints. In each repository where you used `ai chat`, at its top directory:
+
+   ```sh
+   old=$(git config ai.root)
+   new=$(ai init)
+   mv ~/.ai/chat/"$old" ~/.ai/chat/"$new"
+   ```
+
+   Commit the `ai.toml` that `ai init` writes, so every clone shares the id. On another machine, pull it first; the same three lines then move that machine's store. Where `git config ai.root` prints nothing, that repository has no chat to move, and `ai init` alone is enough.
+
+4. **Remove the old keys.** Nothing reads them now:
+
+   ```sh
+   git config --remove-section ai.chat
+   git config --unset ai.root
+   git --git-dir ~/.ai/memory config --remove-section ai.memory
+   ```
+
+   Run the first two in each repository; each fails harmlessly where nothing is set.
+
+### Breaking changes
+
+- **notes:** name notes `<id>--<slug>.md`, as Denote does
+- read settings from ai.toml instead of git config
+
+> ai.chat.model, ai.chat.background,
+ai.memory.viewLines, ai.memory.entryChars and ai.memory.origin in git
+config are no longer read; `ai memory config NAME=VALUE` is gone.
+
+- find the project through ai.toml and its minted id
+
+> chat and files need `ai init`; their stores move from
+`<root commit>` to `<project id>`, and memory's `root` field becomes
+`project`.
+
+### Features
+
+- **files:** store file summaries by content hash
+- **files:** walk a project's text files into a Merkle tree
+- **files:** summarise files and directories at their byte sizes
+- **files:** build and view a project's file summaries
+
 ## v0.13.1 - 2026-10-21
 
 ### Bug fixes
