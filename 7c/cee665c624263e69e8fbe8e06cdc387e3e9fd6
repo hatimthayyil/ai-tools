@@ -1,0 +1,14 @@
+ai/research/20261022T193800--dsh-harness-support.md
+  h_3b956d4cad68d1 1-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7ccee665c624263e69e8fbe8e06cdc387e3e9fd6",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
