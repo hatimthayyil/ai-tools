@@ -1,0 +1,20 @@
+ai/comments/plugins/pi/index.js.md
+  h_3b956d4cad68d1 1-12
+plugins/pi/index.js
+  h_3b956d4cad68d1 1-95
+plugins/pi/index.test.js
+  h_3b956d4cad68d1 1-232
+plugins/pi/package.json
+  h_3b956d4cad68d1 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "59fc778882098b945d2e8bbf9d433e4774ce3424",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
