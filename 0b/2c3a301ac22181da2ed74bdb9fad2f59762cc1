@@ -1,0 +1,14 @@
+flake.nix
+  h_3b956d4cad68d1 36-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0b2c3a301ac22181da2ed74bdb9fad2f59762cc1",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
