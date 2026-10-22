@@ -13,12 +13,14 @@ body = """
 {% for commit in commits %}\
 {% if group is ending_with("Upgrading") %}\
 {{ commit.body }}
-
+{% if not loop.last %}
+{% endif %}\
 {% else %}\
 - {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message }}
 {% if commit.breaking_description and commit.breaking_description != commit.message %}
 > {{ commit.breaking_description }}
-
+{% if not loop.last %}
+{% endif %}\
 {% endif %}\
 {% endif %}\
 {% endfor %}\
