@@ -1,0 +1,28 @@
+src/chat/mod.rs
+  h_3b956d4cad68d1 5
+src/chat/pi.rs
+  h_3b956d4cad68d1 1-695
+tests/fixtures/pi/compact.jsonl
+  h_3b956d4cad68d1 1-6
+tests/fixtures/pi/non-message-parents.jsonl
+  h_3b956d4cad68d1 1-8
+tests/fixtures/pi/plain.jsonl
+  h_3b956d4cad68d1 1-5
+tests/fixtures/pi/rewind.jsonl
+  h_3b956d4cad68d1 1-7
+tests/fixtures/pi/tools.jsonl
+  h_3b956d4cad68d1 1-8
+tests/fixtures/pi/unknown.jsonl
+  h_3b956d4cad68d1 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "32ecfa1801f9ac5c8a47f8ea1334209166571f4b",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
