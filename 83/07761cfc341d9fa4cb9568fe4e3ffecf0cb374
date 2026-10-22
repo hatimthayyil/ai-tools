@@ -1,0 +1,18 @@
+src/memory/claude.rs
+  h_3b956d4cad68d1 94,114,167-176,179-186,220,225,234,241,255,257,260,271,332-363,383-386
+src/memory/mod.rs
+  h_3b956d4cad68d1 11
+src/memory/pi.rs
+  h_3b956d4cad68d1 1-445
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8307761cfc341d9fa4cb9568fe4e3ffecf0cb374",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
