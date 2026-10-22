@@ -1,0 +1,26 @@
+README.md
+  h_3b956d4cad68d1 82
+ai/comments/src/chat/cli.rs.md
+  h_3b956d4cad68d1 10
+ai/comments/src/chat/dsh.rs.md
+  h_3b956d4cad68d1 9-10,13-14,16,19-20,23
+ai/comments/src/chat/sync.rs.md
+  h_3b956d4cad68d1 5
+src/chat/cli.rs
+  h_3b956d4cad68d1 16,246-275,286,289-299,301,305,311-325,648,676,679,692,703,720,763,797,825,859,917
+src/chat/dsh.rs
+  h_3b956d4cad68d1 2-3,7,11,21-23,98-106,108,113-163,170,185-260,262,266,271-280,286,288-290,292-296,298,301-303,308-315,325,327-344,347-350,361-362,381-391,396-437,439-442,444-456,460-544,567-574,577-585,599,604-623,675,677,679-684,686-690,692,694,700,704-738,743,794,799,823-826,837-958,961,963
+tests/chat_cli.rs
+  h_3b956d4cad68d1 648-725
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "234c4153e519a229e2b2f67893e2aa7812a6b428",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
