@@ -8,13 +8,18 @@ body = """
 ## Unreleased
 {% endif %}\
 {% for group, commits in commits | group_by(attribute="group") %}
-### {{ group }}
+### {{ group | striptags | trim }}
 
 {% for commit in commits %}\
+{% if group is ending_with("Upgrading") %}\
+{{ commit.body }}
+
+{% else %}\
 - {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message }}
 {% if commit.breaking_description and commit.breaking_description != commit.message %}
 > {{ commit.breaking_description }}
 
+{% endif %}\
 {% endif %}\
 {% endfor %}\
 {% endfor %}
@@ -26,6 +31,7 @@ conventional_commits = true
 filter_unconventional = true
 commit_parsers = [
     { field = "breaking", pattern = "true", group = "Breaking changes" },
+    { message = "^docs\\(upgrade\\)", group = "<!-- 0 -->Upgrading" },
     { field = "id", pattern = "^3198b9de", group = "Features" },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug fixes" },
