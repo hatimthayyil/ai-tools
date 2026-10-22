@@ -1,0 +1,38 @@
+Cargo.lock
+  h_3b956d4cad68d1 31,1596-1604,1885-1890
+Cargo.toml
+  h_3b956d4cad68d1 28
+README.md
+  h_3b956d4cad68d1 8,82-83
+ai/backlog.md
+  h_3b956d4cad68d1 34-35
+ai/comments/src/chat/cli.rs.md
+  h_3b956d4cad68d1 10
+ai/comments/src/chat/dsh.rs.md
+  h_3b956d4cad68d1 1-22
+src/chat/claude.rs
+  h_3b956d4cad68d1 12
+src/chat/cli.rs
+  h_3b956d4cad68d1 19,196,201-207,237-250,256-260,262,276,290-293
+src/chat/dsh.rs
+  h_3b956d4cad68d1 1-541
+src/chat/mod.rs
+  h_3b956d4cad68d1 3
+src/chat/model.rs
+  h_3b956d4cad68d1 60-76
+src/chat/sync.rs
+  h_3b956d4cad68d1 6,42-45,58-68,422-460
+tests/chat_cli.rs
+  h_3b956d4cad68d1 13,21,26-27,90-103,218,261-269,612-647
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d4b6ef7ec4fef1a6606d4f5d7c101c3f2db6f351",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
