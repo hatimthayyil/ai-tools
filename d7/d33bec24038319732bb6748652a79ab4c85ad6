@@ -1,0 +1,26 @@
+README.md
+  h_3b956d4cad68d1 82
+ai/backlog.md
+  h_3b956d4cad68d1 35
+ai/comments/src/chat/cli.rs.md
+  h_3b956d4cad68d1 10
+ai/comments/src/chat/sync.rs.md
+  h_3b956d4cad68d1 5
+src/chat/cli.rs
+  h_3b956d4cad68d1 22,209,241-245,268-275,291,335-338
+src/chat/sync.rs
+  h_3b956d4cad68d1 6,69-79,472-506
+tests/chat_cli.rs
+  h_3b956d4cad68d1 13,21,31-34,108-120,236,288-296,675-740,779-807,846-862,917,925
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d7d33bec24038319732bb6748652a79ab4c85ad6",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
