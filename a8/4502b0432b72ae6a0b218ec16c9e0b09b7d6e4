@@ -1,0 +1,20 @@
+ai/backlog.md
+  h_3b956d4cad68d1 35
+ai/comments/src/chat/pi.rs.md
+  h_3b956d4cad68d1 14-15,21
+src/chat/pi.rs
+  h_3b956d4cad68d1 17-30,206-207,242-248,250,288-295,338,343-403,675,715-758
+tests/fixtures/pi/subagent.jsonl
+  h_3b956d4cad68d1 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a84502b0432b72ae6a0b218ec16c9e0b09b7d6e4",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
