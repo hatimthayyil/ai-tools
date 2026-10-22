@@ -1,0 +1,39 @@
+src/files/mod.rs
+  s_77b04d9838f161::t_3bb65c6cdc8c19 2
+src/files/prompts/summary.txt
+  s_77b04d9838f161::t_9e9a37dfbba7c1 1-43
+ai/comments/src/files/summarise.rs.md
+  s_77b04d9838f161::t_36a838362ec1b6 1-2,4-10
+  s_77b04d9838f161::t_b25adde5f92d19 3
+ai/comments/src/memory/compact.rs.md
+  s_77b04d9838f161::t_6a86c851438306 7
+src/files/summarise.rs
+  s_77b04d9838f161::t_1f3b6c31b6cf36 1-206
+tests/files_summarise.rs
+  s_77b04d9838f161::t_ade63aeeda15b9 1-121,129-146,150-180,188-218,223-234,239-262,270-297,300-315,317,322-323,328,333,338-341,348-350
+  s_77b04d9838f161::t_f5884e235bef0d 298-299,316
+  s_77b04d9838f161::t_9c72b1bba66982 122-128,147-149,181-187,219-222,235-238,263-269,318-321,324-327,329-332,334-337,342-347
+src/memory/mod.rs
+  s_77b04d9838f161::t_6a35c02acb03da 26
+src/lib.rs
+  s_77b04d9838f161::t_3bb65c6cdc8c19 3
+src/memory/compact.rs
+  s_77b04d9838f161::t_a606136c4c71b6 204,207,210
+  s_77b04d9838f161::t_02e815f7f889e2 149-179,182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5a6ddf8c5cd141a178e18cbf6a0786c90e8f13f3",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}

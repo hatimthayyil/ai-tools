@@ -1,0 +1,22 @@
+ai/comments/cliff.toml.md
+  s_77b04d9838f161::t_4bc3ad86361c3a 1-4
+cliff.toml
+  s_77b04d9838f161::t_69dbc6113857ef 11,14-17,22
+  s_77b04d9838f161::t_1bbb4ea405feef 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "52f1b47f23ce55284bafdefae92dae4597a44a34",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+ai/research/20261021T194314--ids-handles-and-paths.md
+  s_77b04d9838f161::t_e078e580fdf8f2 119-120
+  s_77b04d9838f161::t_f3fd647ee19990 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9b8c801e03ce2e0e9e17ad392be662e8c016a672",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}

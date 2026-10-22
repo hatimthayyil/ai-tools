@@ -1,0 +1,138 @@
+src/config.rs
+  s_77b04d9838f161::t_9dfb134f251913 1-69
+tests/rollup.rs
+  s_77b04d9838f161::t_56a43975e2d53d 1047,1049-1053,1055,1063-1064,1066-1067
+  s_77b04d9838f161::t_0ab4f0c8b9720d 19
+tests/memory.rs
+  s_77b04d9838f161::t_d5670215f0209a 55
+  s_77b04d9838f161::t_a3bf374bc6b8eb 1155-1163
+  s_77b04d9838f161::t_ae66c3397ec3a2 816-820
+  s_77b04d9838f161::t_c105022b766656 1121-1124
+  s_77b04d9838f161::t_253417b6398291 1197,1199-1202,1204,1208,1210-1212,1214-1217
+  s_77b04d9838f161::t_2239f79d7399ad 16-17
+  s_77b04d9838f161::t_3aa790a07e88d4 15
+  s_77b04d9838f161::t_75c268aacce835 98-106
+tests/config.rs
+  s_77b04d9838f161::t_1440d5c253074f 1-49,58-76,81,86-95,101,112-130
+  s_77b04d9838f161::t_2239f79d7399ad 50-57,77-80,82-85,96-100,102-111
+ai/comments/src/git.rs.md
+  s_77b04d9838f161::t_5a7c6febe84eb1 14
+ai/comments/tests/config.rs.md
+  s_77b04d9838f161::t_7106ef4d824304 1-3
+tests/chat_cli.rs
+  s_77b04d9838f161::t_589ab770a17da9 30-31
+  s_77b04d9838f161::t_7e5acb720adf06 41-42,44-48,55
+ai/comments/src/config.rs.md
+  s_77b04d9838f161::t_f2f566590c702c 1-9
+src/memory/cli.rs
+  s_77b04d9838f161::t_2239f79d7399ad 263,353-361
+  s_77b04d9838f161::t_e7b9abfbb7512f 477-478,486
+  s_77b04d9838f161::t_8b7e511e18d280 21
+  s_77b04d9838f161::t_23f191248ac3f1 162-166
+  s_77b04d9838f161::t_75252415936eec 447
+  s_77b04d9838f161::t_40d420100d591a 457,470
+  s_77b04d9838f161::t_5f1b36565b223c 213
+  s_77b04d9838f161::t_05f785fd3d3a9d 286,288,291
+  s_77b04d9838f161::t_93644dd4a617bc 242
+  s_77b04d9838f161::t_6d47d93be7aa66 265
+  s_77b04d9838f161::t_f837f8dcdd4077 607,613
+  s_77b04d9838f161::t_33d18a1677bbcc 519
+  s_77b04d9838f161::t_ded017ece4ce51 426,437-438
+  s_77b04d9838f161::t_a4772d1a3612d9 373
+  s_77b04d9838f161::t_082b4902bfec9a 308
+  s_77b04d9838f161::t_dbf681d910eca2 227-228
+  s_77b04d9838f161::t_f425ac91b07973 15
+src/memory/store.rs
+  s_77b04d9838f161::t_b9de549eb96685 4,12
+  s_77b04d9838f161::t_0bf87d10f9bc33 51-63
+  s_77b04d9838f161::t_b589306d790bda 170-171,180
+  s_77b04d9838f161::t_9546942881acdd 192,197-200
+  s_77b04d9838f161::t_e716ffb621afef 16
+  s_77b04d9838f161::t_52c03453876574 167,169,173-179
+ai/comments/tests/chat_cli.rs.md
+  s_77b04d9838f161::t_256a8826f1c29d 3
+src/chat/cli.rs
+  s_77b04d9838f161::t_baab563baa33f2 507
+  s_77b04d9838f161::t_b85ea23f752d01 155
+src/chat/store.rs
+  s_77b04d9838f161::t_7891e268ad2045 162
+  s_77b04d9838f161::t_6ee789397e60b4 182-187,194-196
+  s_77b04d9838f161::t_4d8a34ed429ef6 197-198
+ai/comments/src/memory/store.rs.md
+  s_77b04d9838f161::t_d53d94b8642633 20
+  s_77b04d9838f161::t_fa4f9c0b4a5962 12
+  s_77b04d9838f161::t_4a447a427adcfa 7
+ai/comments/src/chat/summarise.rs.md
+  s_77b04d9838f161::t_3f631cf4263b9f 6
+  s_77b04d9838f161::t_0bcca74f31585f 37
+Cargo.toml
+  s_77b04d9838f161::t_e7c1e555c9d69f 30
+ai/evals/compactor/README.md
+  s_77b04d9838f161::t_e88b3a02ef70d3 8
+src/view.rs
+  s_77b04d9838f161::t_bc3ddb52c3a8bf 103-106,108
+  s_77b04d9838f161::t_66051287064307 12
+tests/cli.rs
+  s_77b04d9838f161::t_719eea1cf9f9d2 459
+  s_77b04d9838f161::t_128559fb38d999 504-537
+  s_77b04d9838f161::t_16c96ddc976de7 497
+  s_77b04d9838f161::t_b65c23cbced78c 78-84
+  s_77b04d9838f161::t_246fdbe5adb0ac 843-845
+ai/comments/tests/cli.rs.md
+  s_77b04d9838f161::t_955f7a0700514d 15-16
+  s_77b04d9838f161::t_da57508ee12c4d 13,17
+src/memory/config.rs
+  s_77b04d9838f161::t_d2b28fb5fc6623 1,17,20-21,39-42,44-46,50-69,72-74,82-84,88-92
+ai/comments/src/memory/cli.rs.md
+  s_77b04d9838f161::t_2cbc6d1e550802 4,6,15
+  s_77b04d9838f161::t_4fe3b4a013fd22 3
+README.md
+  s_77b04d9838f161::t_228b87863bcceb 61
+  s_77b04d9838f161::t_e675fbff313725 77-92
+ai/comments/tests/memory.rs.md
+  s_77b04d9838f161::t_94ae22e2dbb940 7
+src/chat/summarise.rs
+  s_77b04d9838f161::t_2239f79d7399ad 25,42-44
+  s_77b04d9838f161::t_ef937d33b3829a 13
+  s_77b04d9838f161::t_380c7ce5d0ba4f 29-31,33-41,45-64,68,70,78
+  s_77b04d9838f161::t_d3c97ee08dbeaf 87-88,90
+  s_77b04d9838f161::t_4498f432dda823 16
+ai/glossary.md
+  s_77b04d9838f161::t_adf6d54da82b46 23-24
+  s_77b04d9838f161::t_8ea7724bbf5321 66
+  s_77b04d9838f161::t_b5557f0e968c4c 19
+ai/comments/tests/rollup.rs.md
+  s_77b04d9838f161::t_da57508ee12c4d 7
+tests/fixtures/memory-v1.golden
+  s_77b04d9838f161::t_495aca503e72f9 117-119
+ai/comments/src/memory/config.rs.md
+  s_77b04d9838f161::t_b34ac11b721ad8 3-5
+ai/comments/src/chat/cli.rs.md
+  s_77b04d9838f161::t_a8f3a4c42247c6 38
+  s_77b04d9838f161::t_b6db666cd2406a 23
+ai/backlog.md
+  s_77b04d9838f161::t_aaf1da91cd0402 18
+  s_77b04d9838f161::t_2df97b0382af90 5
+ai/comments/src/notes/leaf.rs.md
+  s_77b04d9838f161::t_1ad71af8db8e28 8
+src/lib.rs
+  s_77b04d9838f161::t_2655343fef5544 2
+Cargo.lock
+  s_77b04d9838f161::t_47fa3b5d1da2af 33,1198-1207,1577-1585,1707-1745,1908-1913
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ba9ee202a2974f8ccbdf1a05a66d92afc02fdf62",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
