@@ -1,8 +1,0 @@
-# log.rs
-
-- Structured summarise log: `tracing` + `tracing-subscriber` fmt layer, no ANSI (forced off: feature unification with other crates could turn it on), default `SystemTime` timer = UTC RFC 3339 with microseconds, no extra time crate. Filter `$AI_MEMORY_LOG` (EnvFilter syntax), default `info`. No rotation; JSON would be `.json()` on the same builder (needs the `json` feature).
-- Event targets are module paths (`ai_tools::memory::compact`), which `$AI_MEMORY_LOG` directives match.
-- `init` uses `set_default` (thread-scoped guard), not a global subscriber: tests run many summarisers in one process, each against its own temp store, and a nested summariser (lock-race test) restores the outer one on drop. Worker threads get the dispatcher and the summariser span from `Compactor::pump`.
-- `spend!`: one field list for every line that reports a `Spend` (requests, retries, tokens, cost, retry_tokens, retry_cost), after the caller's fields; `tracing` cannot record a struct as several fields, hence a macro. `usd` rounds dollars to the millionth, as `secs` rounds to the millisecond.
-- `open`, `init` take the log's path: memory and notes use `summarise.log` in their dir, a chat thread `<name>.log` beside its lock.
-- `spawn`: the one way a summariser starts in the background (memory's and notes' `spawn_summariser`, chat's `Store::spawn_summariser`): this executable with the caller's arguments, stdin and stdout null, stderr appended to the log (so panics land there), own process group. The child holds none of the caller's pipes, so a caller whose output is being read (the Claude plugin waiting on `ai agent sync`) sees it close at once.

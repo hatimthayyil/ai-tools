@@ -1,7 +1,0 @@
-# grep.rs
-
-- ripgrep conventions (smart case, `-F`, `-i`/`-s`). Matches message text only; filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`. `-t` adds nodes (levels ≥ 1; level-0 nodes duplicate messages); `--since`, `--origin`, `--agent` and `--session` also filter nodes (by the compactor call that wrote them; free nodes have agent and session `-`), `--kind` and `--repo` exclude them.
-- Message lines `id|label` under date headers like every other line (meta.rs), the label flattened and, past 400 bytes, cut to a window around the first match (`…` marks a cut). Search output, not the view: the agent zooms `id` for the whole message. The old fixed `date hh:mm origin repo kind:` prefix is gone: `--time -o origin,repo` gives it back, and the default matches `view` and `zoom`. Tree hits (`-t`) carry the range of the messages under them. The parts' header repeats `--time`/`-o`. `-o` is ps's "output fields", not ripgrep's only-matching (which this grep never had).
-- Order by key `(last message, n)`. `-m N` keeps the newest N. Whole on a terminal, else `page::search`'s parts, newest first (page.rs.md, searches), all cut and saved by the first read, so no part repeats or skips a match.
-- `typed`: the arguments as typed, shared by the usage log and the parts' header (`command`, which quotes the pattern always and the rest only when needed).
-- `Pattern`: the pattern and its `-F`/`-i`/`-s` flags, flattened into this `Grep` and reused by `ai notes grep`, with `excerpt`.

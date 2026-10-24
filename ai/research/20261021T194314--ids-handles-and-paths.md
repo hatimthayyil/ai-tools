@@ -21,7 +21,7 @@ This is a design for review, and nothing in it is implemented. Facts about today
 
 **Derived**, so a rebuild gives the same ids:
 - **Item:** `item_`, the UUIDv5 of (harness, key). The key is unique across the harness:
-  - Claude: the entry's uuid, already unique across sessions (`ai/comments/src/chat/claude.rs.md`).
+  - Claude: the entry's uuid, already unique across sessions.
   - pi: the entry plus the session where it was first written, since pi entry ids are 8 hex digits, unique only within a session (the id note, "Consequences").
 
   The id depends only on the session files, not on the order sessions are attached. Items still dedupe by (harness, key), so a Claude fork's copied entries keep merging into the items already there.

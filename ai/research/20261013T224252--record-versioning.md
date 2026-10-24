@@ -74,7 +74,7 @@ Format bumps: removing a field, changing a field's meaning or encoding, moving p
 
 0.6.3 and 0.7.0 check no format; both pin gix 0.88.0. Old binaries may break on a format-2 store; they must not write to it.
 
-- The barrier is the format-2 encoding. The old decoder rejects named headers, and every old write decodes a message first: `note` and `import` the previous message, `nap` message 0 (an old reader takes the segment's column row for node 0, so node `(l, 0)` looks unbuilt at every level and its first job is leaf 0). Verified with 0.7.0 per command; the table is in `ai/comments/src/memory/upgrade/mod.rs.md`.
+- The barrier is the format-2 encoding. The old decoder rejects named headers, and every old write decodes a message first: `note` and `import` the previous message, `nap` message 0 (an old reader takes the segment's column row for node 0, so node `(l, 0)` looks unbuilt at every level and its first job is leaf 0). Verified with 0.7.0 per command.
 - An old compactor running at upgrade time holds the compactor's lock; the upgrade waits for it.
 - Messages stay at `log/`: the name describes the structure (append-only, position is id) and pairs with `tree/`.
 - Git's repository format is no lever. gix 0.88 refuses `repositoryformatversion` 2 before any open option applies, locking out the new binary and plain `git` alike. Version 1 with an unknown `extensions.*` key is ignored by gix and refused by plain `git`.

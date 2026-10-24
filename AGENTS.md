@@ -9,7 +9,7 @@
 ## Working
 
 - Delegate implementation work to dedicated subagents. Follow logical sequencing when there are dependencies between tasks. Multiple agents can be spawned or work that can be done parallely.
-- AI are provided with a workspace. This is the primary home for any AI assistant. `ai`, `ai/research`, `ai/comments`, etc.
+- AI are provided with a workspace. This is the primary home for any AI assistant. `ai`, `ai/research`, etc.
 - Humans are provided with a workspace. This is their primary home. Do NOT edit anything in this directory. `my`, `my/notes`, etc.
 - The main tree is for AI-assisted files. These are worked on by BOTH AI and humans. And should have minimal changes.
 - Glossary is given in `my/glossary.md`. Maintain `ai/glossary.md` yourself.

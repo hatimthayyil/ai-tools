@@ -1,5 +1,0 @@
-# config.rs
-
-- Knobs under `[memory]` in `ai.toml` (config.rs.md): `view.lines`, `entry-chars`. Paging has no knob: one part size, `page::PART`, serves every paged output (page.rs.md). `entry-chars`: the length a note aims for in characters, default 280, maximum `NOTE_MAX` = `NODE` (512: a note's leaf is its bare text, so it fits one node). `note_limit` accepts `NOTE_GRACE` = 40 characters past it, never past `NOTE_MAX`: agents are told the target, and a note that overshoots a little is kept rather than bounced for a rewrite. `view.lines`: how many lines `view` prints, default 96, set as `lines` in the nested `[memory.view]` table, which leaves room for more `view` keys; `Knob::key` gives it dotted.
-- `Config` is the `[memory]` table itself (with `View`, `[memory.view]`) and holds only what a file sets; `over` layers a project's over the user's. Each knob is checked as it is read (`Knob::read`), so a bad value fails with the TOML error's line and column; an unknown key fails too (`deny_unknown_fields`).
-- The store's origin is no knob: store.rs owns it.

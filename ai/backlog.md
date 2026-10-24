@@ -4,7 +4,7 @@
 
 - `ai desk`: a TUI overview of every part of `ai` (memory, chat threads and sessions, notes, code): search and navigate, see stale lines, resummarise a line. Mostly for `ai notes`/`ai code`, where the user takes part; the user doubts session logs need curating.
 - Overlap between `ai memory` and `ai agent` (both fold a log into a summary tree with the same ids): consider consolidating.
-- `ai summary` (formerly `ai files`, removed): shelved. Agent tools find related code through symbol graphs, language servers and search, not summary trees, and unrequested overviews cost more than they help; code graph and language-server tools cover structure, `ai comment` the reasons behind code, `ai note` concepts across files. Prior art: `ai/research/20261021T204120--file-tree-summary-prior-art.md`.
+- `ai summary` (formerly `ai files`, removed): shelved. Agent tools find related code through symbol graphs, language servers and search, not summary trees, and unrequested overviews cost more than they help; code graph and language-server tools cover structure, commit messages the reasons behind code, `ai note` concepts across files. Prior art: `ai/research/20261021T204120--file-tree-summary-prior-art.md`.
 - pi and DeepSeek Harness (DSH) support: an unreviewed implementation by DeepSeek Flash on branch `dsh-pi` (21 commits on v0.14.0). Review it before any of it lands, or reimplement. It holds:
   - chat: reading pi and DSH sessions into items, attach for pi, subagent reports as work turns;
   - plugins: one client for the ai CLI, `/ai` for pi and DSH, every plugin shipped in the package;

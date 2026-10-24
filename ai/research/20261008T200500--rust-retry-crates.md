@@ -19,4 +19,4 @@ Checked 2026-10-08 (crates.io API, GitHub, RustSec advisory-db).
 
 Choice: backon. Maintained, the most used, recommended by the advisory that retires `backoff`; its backoff is a plain iterator that plugs into `waits` unchanged; and its async `Retryable` with the `tokio-sleep` feature covers a later move to Tokio without changing crates.
 
-Use in `ai memory`: one `ExponentialBackoff` per failing node, 10 s doubling to 5 min, jitter, 8 retries (20-40 min in all), then the nap gives up (ERROR `gave up` in nap.log, exit 1); the next note's nap retries. Details in `ai/comments/ai/src/rs/memory/src/compact.rs.md`.
+Use in `ai memory`: one `ExponentialBackoff` per failing node, 10 s doubling to 5 min, jitter, 8 retries (20-40 min in all), then the nap gives up (ERROR `gave up` in nap.log, exit 1); the next note's nap retries.
