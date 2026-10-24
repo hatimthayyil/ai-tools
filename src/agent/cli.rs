@@ -41,7 +41,7 @@ pub const WAIT: Duration = Duration::from_secs(60);
 #[command(
     name = "agent",
     about = "Agents: named threads that span harness sessions, kept in this project.",
-    after_help = "Each agent's thread lives in ~/.ai/chat/<project id>, or under $AI_CHAT_DIR if set."
+    after_help = "Each agent's thread lives in .ai/agents in the project's main checkout."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -562,8 +562,8 @@ fn instructions(store: &Store, name: &str) -> Result<Option<String>> {
 }
 
 /// Where agent `name` starts: its `[agents.<name>]` worktree, canonical as the harness sees it,
-/// else `cwd`. A worktree must exist and lie in this project, so the session's hooks find this
-/// store.
+/// else `cwd`. A worktree must exist and be a git worktree of this checkout, so the session's
+/// hooks find this store.
 fn worktree(store: &Store, cwd: &Path, name: &str) -> Result<PathBuf> {
     let settings = store.settings()?;
     let Some(dir) = settings.agent(name).and_then(|a| a.worktree.as_deref()) else {
@@ -579,8 +579,10 @@ fn worktree(store: &Store, cwd: &Path, name: &str) -> Result<PathBuf> {
     let dir = fs::canonicalize(dir).at(dir)?;
     if !store.holds(&dir) {
         bail!(
-            "Agent {name}'s worktree {} is not in this project: its {FILE} must hold the id {}.",
+            "Agent {name}'s worktree {} does not share this project's agents: make it a git \
+             worktree of {}, holding an {FILE} with the id {}.",
             file::pretty(&dir),
+            file::pretty(&store.project().home),
             store.project().id
         );
     }

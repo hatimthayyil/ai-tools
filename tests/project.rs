@@ -37,7 +37,6 @@ impl Sandbox {
             .current_dir(dir)
             .args(args)
             .env("HOME", self.root.join("home"))
-            .env_remove("AI_CHAT_DIR")
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_SESSION_ID")
             .output()
@@ -76,18 +75,26 @@ fn init_mints_an_id_once() {
 }
 
 #[test]
-fn init_ignores_the_local_file_once() {
+fn init_ignores_the_local_file_and_the_agents_once() {
     let s = Sandbox::new();
     let ignore = s.work().join(".gitignore");
     ok(&s.ai(&s.work(), &["init"]));
-    assert_eq!(fs::read_to_string(&ignore).unwrap(), "/ai.local.toml\n");
+    assert_eq!(
+        fs::read_to_string(&ignore).unwrap(),
+        "/ai.local.toml\n/.ai/\n"
+    );
     ok(&s.ai(&s.work(), &["init"]));
-    assert_eq!(fs::read_to_string(&ignore).unwrap(), "/ai.local.toml\n");
+    assert_eq!(
+        fs::read_to_string(&ignore).unwrap(),
+        "/ai.local.toml\n/.ai/\n"
+    );
 
     for (before, after) in [
-        ("/target", "/target\n/ai.local.toml\n"),
-        ("/target\n", "/target\n/ai.local.toml\n"),
-        ("ai.local.toml\n", "ai.local.toml\n"),
+        ("/target", "/target\n/ai.local.toml\n/.ai/\n"),
+        ("/target\n", "/target\n/ai.local.toml\n/.ai/\n"),
+        ("ai.local.toml\n", "ai.local.toml\n/.ai/\n"),
+        ("/.ai\n", "/.ai\n/ai.local.toml\n"),
+        (".ai/\n/ai.local.toml\n", ".ai/\n/ai.local.toml\n"),
     ] {
         fs::write(&ignore, before).unwrap();
         ok(&s.ai(&s.work(), &["init"]));

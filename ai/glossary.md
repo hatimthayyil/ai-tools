@@ -40,7 +40,7 @@
 - `human prompt`: a user entry that opens a turn: one the user typed or sent (mid-run included) or a subagent's task. Tool results, hook context, `isMeta` entries, local commands and their output, task notifications are not.
 - `work`: an item that is a message from another agent, with its sender: a subagent's hand-back, a fork's report (from its description), a peer's report, a coordinator's instruction. It opens a turn (OptChat's name).
 - `agent`: a name in a project with one thread, created only by `ai agent new`. Every thread is an agent's.
-- `thread`: an agent's history: a directory `threads/<name>` of the project's chat store, `~/.ai/chat/<project id>`, so every clone and worktree shares it. Holds items, session tracks, subagents and lines as append-only JSON Lines, and copies of its sessions' files; format 3.
+- `thread`: an agent's history: a directory `threads/<name>` of the project's agent store, `.ai/agents` in its main checkout, so its linked worktrees share it. Holds items, session tracks, subagents and lines as append-only JSON Lines, and copies of its sessions' files; format 3.
 - `sequence number`: an item's position in its thread, from 0, permanent. Parents and line keys are sequence numbers. A subagent's items are numbered apart, beside the main tree.
 - `binding`: a harness session's record in a thread (`sessions/<harness>/<session>`): transcript path, graft, tip, attach and detach times. Attached until detached; a session is attached to at most one thread of a repository.
 - `graft`: the item a session's roots hang on: the thread's newest item when the session was first attached; none on a new thread.

@@ -90,7 +90,7 @@ impl Project {
     }
 
     /// The project at `dir`, minting an id into its `ai.toml` when it has none, the rest of the
-    /// file kept as written, with its `ai.local.toml` in its `.gitignore`.
+    /// file kept as written, with its `ai.local.toml` and `.ai/` in its `.gitignore`.
     pub fn init(dir: &Path) -> Result<Project> {
         let p = dir.join(FILE);
         if config::is_user(&p) {
@@ -103,7 +103,7 @@ impl Project {
             Some(project) => project,
             None => mint(dir, &p)?,
         };
-        ignore_local(dir)?;
+        ignore_untracked(dir)?;
         Ok(project)
     }
 }
@@ -141,19 +141,31 @@ fn mint(dir: &Path, p: &Path) -> Result<Project> {
     Project::read(p)?.context("ai init wrote no project id.")
 }
 
-/// Adds `/ai.local.toml` to the `.gitignore` in `dir`, unless a line there already ignores it.
-fn ignore_local(dir: &Path) -> Result<()> {
+/// What a project keeps out of git: its own settings and its agents.
+const UNTRACKED: [&str; 2] = [LOCAL, ".ai/"];
+
+/// Adds each of [`UNTRACKED`] to the `.gitignore` in `dir` as `/<name>`, unless a line there
+/// already names it, with or without its slashes.
+fn ignore_untracked(dir: &Path) -> Result<()> {
     let p = dir.join(".gitignore");
     let mut text = read_or_empty(&p)?;
-    let line = format!("/{LOCAL}");
-    if text.lines().any(|l| l.trim() == line || l.trim() == LOCAL) {
+    let bare = |l: &str| l.trim().trim_matches('/').to_string();
+    let have: Vec<String> = text.lines().map(bare).collect();
+    let missing: Vec<&str> = UNTRACKED
+        .into_iter()
+        .filter(|n| !have.contains(&bare(n)))
+        .collect();
+    if missing.is_empty() {
         return Ok(());
     }
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&line);
-    text.push('\n');
+    for n in missing {
+        text.push('/');
+        text.push_str(n);
+        text.push('\n');
+    }
     write(dir, &p, &text)
 }
 

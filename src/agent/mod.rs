@@ -16,10 +16,8 @@ pub use id::Id;
 pub use model::{Item, Kind, Marker, Place, SourceId, Tree, Turn, turns};
 pub use record::{Agent, Binding, Head, Key, Line, LineKind};
 pub use rollup::{Branch, Part, Rollup, Source};
-pub use store::{
-    Added, FORMAT, Mark, Snapshot, Store, Thread, ThreadInfo, Transcript, base_dir, check_name,
-};
+pub use store::{Added, FORMAT, Mark, Snapshot, Store, Thread, ThreadInfo, Transcript, check_name};
 pub use summarise::{
     Built, Config, Dry, DryLine, OnFail, Rewrote, build, dry_run, rebuild, rewrite, summarise,
 };
-pub use sync::{Attached, Synced, read, sync, sync_in};
+pub use sync::{Attached, Synced, read, sync};

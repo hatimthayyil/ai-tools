@@ -1,6 +1,6 @@
 # agent/record.rs
 
-The records of the chat store (store.rs.md), one JSON object per line.
+The records of the agent store (store.rs.md), one JSON object per line.
 
 - `Row`: an item's `Head` and its `Kind`, flattened into one object: `seq`, `parent`, `harness`, `session`, `entry`, `ts`, then `kind` naming the snake-case variant and `content` its text or fields. Tool input stays a JSON value. Source ids keep their exact whitespace and text.
 - `Tag`: a row read for its `kind` tag only, head and content skipped: whether the item opens a turn. Only the opening variants are named (`#[serde(other)]` for the rest); `rows_are_flat_with_tagged_kinds` checks it agrees with `Kind::opens` for every kind.

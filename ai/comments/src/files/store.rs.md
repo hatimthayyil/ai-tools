@@ -6,7 +6,7 @@ The summaries of `ai files`, keyed by content hash, so an unchanged file or dire
 - The caller passes the directory (`~/.ai/files/<project>/` from the CLI). `Store::open` checks its format and writes nothing.
 
 Layout (format 1)
-- `format`: `1`, written before the first write (`file::ensure_format`); `Store::open` refuses another format (`file::check_format`), as the chat store does.
+- `format`: `1`, written before the first write (`file::ensure_format`); `Store::open` refuses another format (`file::check_format`), as the agent store does.
 - `summaries.jsonl`: one `Summary` per line (`key`, `ts`, `who`, `text`), appended. `who` is `memory::Who`'s serde derive, as chat lines store it.
 - `summaries.lock`: the writers' lock.
 

@@ -81,7 +81,7 @@ Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_
 ### Projects
 
 ```sh
-ai init  # make this directory a project, once: mints its id into ai.toml, ignores ai.local.toml in .gitignore, prints the id
+ai init  # make this directory a project, once: mints its id into ai.toml, ignores ai.local.toml and .ai/ in .gitignore, prints the id
 ```
 
 `ai files` and `ai agent` work in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
@@ -110,7 +110,7 @@ ai agent grep -a dev <regex>          # search it; repeat -a to search several a
 ai agent build -a dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
-Only `new` creates an agent; `start`, `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<project id>`, or under `$AI_CHAT_DIR` if set, so every clone and worktree of a project shares them.
+Only `new` creates an agent; `start`, `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in `.ai/agents/` in the project's main checkout, so its linked worktrees share them; `ai init` adds `/.ai/` to `.gitignore`.
 
 A session is attached to one agent at a time. Detach it explicitly before attaching it to another; the previous agent's thread keeps the recorded history.
 
@@ -147,7 +147,7 @@ worktree = "../ai-tools-stabiliser"       # the directory it runs in
 
 An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Instructions add up: the agent gets the user's, then the project's, then `ai.local.toml`'s, each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it; in a linked git worktree, the root in the main checkout, so `../dev` names the same directory from every checkout.
 
-`ai agent start` runs the harness in the agent's `worktree`, else in the current directory, and `start` and `resume` add its `instructions` to the harness's system prompt (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must hold the project's `ai.toml`, so its sessions find the project's threads; a git worktree of a commit that has it does. A session in the worktree reads `ai.local.toml` from the main checkout.
+`ai agent start` runs the harness in the agent's `worktree`, else in the current directory, and `start` and `resume` add its `instructions` to the harness's system prompt (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a git worktree of the project's main checkout, at a commit holding its `ai.toml`, so its sessions find the threads in the main checkout's `.ai/agents`; a plain copy, or another clone, has its own. A session in the worktree reads `ai.local.toml` from the main checkout.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 

@@ -24,11 +24,11 @@ use crate::{
     },
     file::{self, AtPath},
     jsonl,
-    memory::{CALLS, Who, store_dir},
+    memory::{CALLS, Who},
     project::Project,
 };
 
-/// The chat store format this ai reads and writes.
+/// The agent store format this ai reads and writes.
 pub const FORMAT: u32 = 3;
 const THREADS: &str = "threads";
 const ITEMS: &str = "items.jsonl";
@@ -150,12 +150,10 @@ impl FromStr for Mark {
     }
 }
 
-/// `$AI_CHAT_DIR`, else `~/.ai/chat`: every project's store, named by its id.
-pub fn base_dir() -> Result<PathBuf> {
-    store_dir("AI_CHAT_DIR", "chat")
-}
+/// Where a project keeps its agents, below its [home](Project::home).
+pub const DIR: &str = ".ai/agents";
 
-/// The threads of one project: `<base>/<project id>`, shared by every copy of the project.
+/// The agents of one project: `.ai/agents` in its home, shared by its linked worktrees.
 pub struct Store {
     project: Project,
     root: PathBuf,
@@ -163,27 +161,20 @@ pub struct Store {
 }
 
 impl Store {
-    /// The threads of the project at or above `dir`, in [`base_dir`]; `None` outside a project.
+    /// The agents of the project at or above `dir`; `None` outside a project.
     /// A store of another format is refused.
     pub fn find(dir: &Path) -> Result<Option<Store>> {
-        Store::find_in(&base_dir()?, dir)
-    }
-
-    /// [`Store::find`] with the stores in `base`.
-    pub fn find_in(base: &Path, dir: &Path) -> Result<Option<Store>> {
-        Project::find(dir)?
-            .map(|p| Store::of(base, p, dir))
-            .transpose()
+        Project::find(dir)?.map(|p| Store::of(p, dir)).transpose()
     }
 
     /// [`Store::find`], else an error saying how to make the project.
     pub fn open(dir: &Path) -> Result<Store> {
-        Store::of(&base_dir()?, Project::require(dir)?, dir)
+        Store::of(Project::require(dir)?, dir)
     }
 
-    fn of(base: &Path, project: Project, cwd: &Path) -> Result<Store> {
-        let root = base.join(&project.id);
-        file::check_format(&root, FORMAT, "chat")?;
+    fn of(project: Project, cwd: &Path) -> Result<Store> {
+        let root = project.home.join(DIR);
+        file::check_format(&root, FORMAT, "agent")?;
         Ok(Store {
             project,
             root,
@@ -340,10 +331,13 @@ impl Store {
         Ok(list)
     }
 
-    /// Whether `dir` lies in this project: an existing directory whose project has this store's
-    /// id, this copy of the project or another.
+    /// Whether `dir` shares this store: an existing directory of this project, in its main
+    /// checkout or a linked worktree of it. Another clone has its own store.
     pub fn holds(&self, dir: &Path) -> bool {
-        Project::find(dir).is_ok_and(|p| p.is_some_and(|p| p.id == self.project.id))
+        let same = |a: &Path, b: &Path| fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
+        Project::find(dir).is_ok_and(|p| {
+            p.is_some_and(|p| p.id == self.project.id && same(&p.home, &self.project.home))
+        })
     }
 }
 

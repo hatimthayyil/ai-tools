@@ -6,7 +6,7 @@ use crate::agent::{
     claude,
     record::{Binding, State, Track, check_id},
     source,
-    store::{Added, Store, Thread, Transcript, base_dir},
+    store::{Added, Store, Thread, Transcript},
 };
 
 /// The outcome of [`sync`].
@@ -60,18 +60,7 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
 /// Ingests the new entries of an attached session; a session attached to no thread of the
 /// project at `dir` is [`Synced::NotAttached`].
 pub fn sync(dir: &Path, harness: &str, session: &str, transcript: Option<&Path>) -> Result<Synced> {
-    sync_in(&base_dir()?, dir, harness, session, transcript)
-}
-
-/// [`sync`] with the stores in `base`.
-pub fn sync_in(
-    base: &Path,
-    dir: &Path,
-    harness: &str,
-    session: &str,
-    transcript: Option<&Path>,
-) -> Result<Synced> {
-    match Store::find_in(base, dir)? {
+    match Store::find(dir)? {
         Some(store) => store.sync(harness, session, transcript),
         None => Ok(Synced::NotAttached),
     }
@@ -265,9 +254,9 @@ mod tests {
         }
     }
 
-    /// The chat store of the project at `dir`, kept inside it.
+    /// The agent store of the project at `dir`.
     fn open(dir: &Path) -> Store {
-        Store::find_in(&dir.join(".chat"), dir).unwrap().unwrap()
+        Store::find(dir).unwrap().unwrap()
     }
 
     fn plain() -> String {

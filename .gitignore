@@ -12,11 +12,9 @@ devenv.local.yaml
 # Rust
 /target
 
-# ai memory
-/.ai/memory/
-
-# ai settings, one user's
+# ai, one user's: settings and agents
 /ai.local.toml
+/.ai/
 
 # Claude Code
 /.claude/

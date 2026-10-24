@@ -121,13 +121,8 @@ impl Repo {
         self.dir.path().join("repo")
     }
 
-    /// Where the chat stores live.
-    fn base(&self) -> PathBuf {
-        self.dir.path().join("chat")
-    }
-
     fn store(&self) -> Store {
-        Store::find_in(&self.base(), &self.path()).unwrap().unwrap()
+        Store::find(&self.path()).unwrap().unwrap()
     }
 
     /// The new agent `t`, with `s` attached as session `s1`.
@@ -695,13 +690,9 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
         .lines();
     let slow = Fake::with(Duration::from_millis(300), |_| false);
     let summarising = {
-        let (base, path, slow) = (r.base(), r.path(), slow.clone());
+        let (path, slow) = (r.path(), slow.clone());
         thread::spawn(move || {
-            let t = Store::find_in(&base, &path)
-                .unwrap()
-                .unwrap()
-                .thread("t")
-                .unwrap();
+            let t = Store::find(&path).unwrap().unwrap().thread("t").unwrap();
             summarise(&t, slow.backend(), OnFail::Continue, &ProgressBar::hidden()).unwrap()
         })
     };
@@ -1033,7 +1024,7 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     .unwrap();
     let sub = r.path().join("src");
     fs::create_dir(&sub).unwrap();
-    let store = Store::find_in(&r.base(), &sub).unwrap().unwrap();
+    let store = Store::find(&sub).unwrap().unwrap();
     let s = store.settings().unwrap();
     assert_eq!(
         (s.summariser.model().as_str(), s.chat.background()),

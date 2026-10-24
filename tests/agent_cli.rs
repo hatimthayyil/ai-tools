@@ -18,8 +18,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const ISOLATE: [&str; 7] = [
-    "AI_CHAT_DIR",
+const ISOLATE: [&str; 6] = [
     "AI_MEMORY_DIR",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDECODE",
@@ -251,8 +250,7 @@ done
     }
 
     fn store(&self) -> Store {
-        let base = self.root.join("home/.ai/chat");
-        Store::find_in(&base, &self.repo()).unwrap().unwrap()
+        Store::find(&self.repo()).unwrap().unwrap()
     }
 
     /// Writes line `level@last` of thread `name`.
@@ -319,6 +317,22 @@ fn canonical(t: &File) -> bool {
 
 fn stdout(o: &Output) -> String {
     String::from_utf8(o.stdout.clone()).unwrap()
+}
+
+/// `git args` in `dir`, which must succeed.
+fn git(dir: &Path, args: &[&str]) {
+    let o = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", stderr(&o));
 }
 
 fn stderr(o: &Output) -> String {
@@ -1318,14 +1332,20 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
     let wt = s.root.join("dev-wt");
     fs::create_dir(&wt).unwrap();
     let id = Project::find(&s.repo()).unwrap().unwrap().id;
-    fails(
-        s.ai(&["start", "dev"]),
-        &format!(
-            "Agent dev's worktree {} is not in this project: its ai.toml must hold the id {id}.\n",
-            wt.display()
-        ),
+    let unshared = format!(
+        "Agent dev's worktree {} does not share this project's agents: make it a git worktree \
+         of {}, holding an ai.toml with the id {id}.\n",
+        wt.display(),
+        s.repo().display()
     );
+    fails(s.ai(&["start", "dev"]), &unshared);
     fs::write(wt.join("ai.toml"), &project).unwrap();
+    fails(s.ai(&["start", "dev"]), &unshared);
+    fs::remove_dir_all(&wt).unwrap();
+    git(&s.repo(), &["init", "-q"]);
+    git(&s.repo(), &["add", "."]);
+    git(&s.repo(), &["commit", "-qm", "init"]);
+    git(&s.repo(), &["worktree", "add", "-q", "../dev-wt"]);
     fails(
         s.ai(&["start", "dev"]),
         &format!(
