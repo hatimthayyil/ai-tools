@@ -69,9 +69,10 @@ pub(crate) struct File {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
-    /// A Markdown file of the agent's own instructions.
-    #[serde(deserialize_with = "path")]
-    pub instructions: Option<PathBuf>,
+    /// The Markdown files of the agent's instructions, one from each file that names one: the
+    /// user's, then the project's, then the local one.
+    #[serde(deserialize_with = "paths")]
+    pub instructions: Vec<PathBuf>,
     /// The directory the agent runs in.
     #[serde(deserialize_with = "path")]
     pub worktree: Option<PathBuf>,
@@ -86,17 +87,21 @@ fn path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
     }
 }
 
+fn paths<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<PathBuf>, D::Error> {
+    Ok(path(d)?.into_iter().collect())
+}
+
 impl Agent {
     fn over(self, base: Agent) -> Agent {
         Agent {
-            instructions: self.instructions.or(base.instructions),
+            instructions: [base.instructions, self.instructions].concat(),
             worktree: self.worktree.or(base.worktree),
         }
     }
 
     fn from(self, dir: &Path) -> Agent {
         Agent {
-            instructions: self.instructions.map(|p| dir.join(p)),
+            instructions: self.instructions.iter().map(|p| dir.join(p)).collect(),
             ..self
         }
     }
@@ -122,7 +127,7 @@ pub(crate) fn read(p: &Path) -> Result<Option<File>> {
 }
 
 /// What `ai.toml` sets: the project's `ai.local.toml` over its `ai.toml` over the user's, key by
-/// key; unset keys keep their defaults.
+/// key, except an agent's instructions, which add up; unset keys keep their defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub chat: agent::Config,

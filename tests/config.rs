@@ -204,7 +204,7 @@ fn only_the_local_file_beside_the_nearest_project_file_counts() {
 }
 
 #[test]
-fn an_agent_merges_key_by_key_with_paths_from_the_project_root() {
+fn an_agent_adds_up_instructions_and_overrides_its_worktree() {
     let t = Tree::new();
     fs::write(
         t.user(),
@@ -218,21 +218,25 @@ fn an_agent_merges_key_by_key_with_paths_from_the_project_root() {
     .unwrap();
     fs::write(
         t.inner().join("ai.local.toml"),
-        "[agents.stabiliser]\nworktree = \"../my-stabiliser\"\n",
+        "[agents.stabiliser]\ninstructions = \"mine.md\"\nworktree = \"../my-stabiliser\"\n",
     )
     .unwrap();
     let s = t.load().unwrap();
     assert_eq!(
         s.agent("stabiliser"),
         Some(&Agent {
-            instructions: Some(t.inner().join("ai/agents/stabiliser.md")),
+            instructions: vec![
+                "/home/me/stabiliser.md".into(),
+                t.inner().join("ai/agents/stabiliser.md"),
+                t.inner().join("mine.md"),
+            ],
             worktree: Some(t.inner().join("../my-stabiliser")),
         })
     );
     assert_eq!(
         s.agent("solo"),
         Some(&Agent {
-            instructions: None,
+            instructions: vec![],
             worktree: Some("/w".into()),
         })
     );
@@ -251,7 +255,7 @@ fn a_users_agent_takes_its_instructions_from_beside_the_users_file() {
     assert_eq!(
         t.load().unwrap().agent("reviewer"),
         Some(&Agent {
-            instructions: Some(t.tmp.path().join("agents/reviewer.md")),
+            instructions: vec![t.tmp.path().join("agents/reviewer.md")],
             worktree: Some(t.inner().join("../review")),
         })
     );
@@ -268,7 +272,7 @@ fn outside_a_project_a_relative_worktree_stays_as_written() {
     assert_eq!(
         t.load().unwrap().agent("helper"),
         Some(&Agent {
-            instructions: Some(t.tmp.path().join("helper.md")),
+            instructions: vec![t.tmp.path().join("helper.md")],
             worktree: Some("w".into()),
         })
     );

@@ -145,7 +145,7 @@ instructions = "ai/agents/stabiliser.md"  # its own instructions, a Markdown fil
 worktree = "../ai-tools-stabiliser"       # the directory it runs in
 ```
 
-An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it.
+An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Instructions add up: the agent gets the user's, then the project's, then `ai.local.toml`'s, each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it.
 
 `ai agent start` runs the harness in the agent's `worktree`, else in the current directory, and `start` and `resume` add its `instructions` to the harness's system prompt (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must hold the project's `ai.toml`, so its sessions find the project's threads; a git worktree of a commit that has it does. `ai.local.toml` is not copied, so a session in the worktree reads the worktree's own.
 

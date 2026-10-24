@@ -527,16 +527,23 @@ fn new(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Agent `name`'s `[agents.<name>]` instructions, read now; `None` when it names none.
+/// Agent `name`'s `[agents.<name>]` instructions, read now and joined by blank lines in the
+/// settings' order; `None` when they name none.
 fn instructions(store: &Store, name: &str) -> Result<Option<String>> {
     let settings = store.settings()?;
-    let Some(p) = settings.agent(name).and_then(|a| a.instructions.as_deref()) else {
+    let paths = settings.agent(name).map_or(&[][..], |a| &a.instructions);
+    if paths.is_empty() {
         return Ok(None);
-    };
-    fs::read_to_string(p)
-        .at(p)
-        .map(Some)
-        .map_err(|e| anyhow!("Cannot read agent {name}'s instructions: {e}"))
+    }
+    paths
+        .iter()
+        .map(|p| {
+            fs::read_to_string(p)
+                .at(p)
+                .map_err(|e| anyhow!("Cannot read agent {name}'s instructions: {e}"))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|texts| Some(texts.join("\n\n")))
 }
 
 /// Where agent `name` starts: its `[agents.<name>]` worktree, canonical as the harness sees it,

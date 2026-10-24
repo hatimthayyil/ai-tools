@@ -1328,6 +1328,21 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
         ]
     );
     assert_eq!(s.claude_dir(), wt);
+
+    fs::write(
+        s.repo().join("ai.local.toml"),
+        "[agents.dev]\ninstructions = \"agents/mine.md\"\n",
+    )
+    .unwrap();
+    fs::write(s.repo().join("agents/mine.md"), "Say why.").unwrap();
+    ok(s.ai(&["resume", "dev"]), "");
+    let argv = s.argv();
+    assert_eq!(argv[..3], ["--resume", &session, "--append-system-prompt"]);
+    assert_eq!(
+        argv[3..].join("\n"),
+        "Keep it short.\n\nSay why.",
+        "the project's instructions, then the local ones (argv is saved a line per argument)"
+    );
 }
 
 #[test]
