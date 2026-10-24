@@ -1,0 +1,26 @@
+ai/comments/flake.nix.md
+  s_77b04d9838f161::t_3c2d608c5cb3de 8
+ai/backlog.md
+  s_77b04d9838f161::t_f0f9d1558f5e6a 33
+README.md
+  s_77b04d9838f161::t_4f149f989238b7 119
+  s_77b04d9838f161::t_fce8d6a6a55f07 22-52
+ai/comments/plugins/claude/hooks/register.ts.md
+  s_77b04d9838f161::t_3f39b19152b403 5-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bcc8b98a96fd9efbe1fea84f1152c7b452a6f8ce",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
