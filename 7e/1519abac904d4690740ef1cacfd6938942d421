@@ -1,0 +1,41 @@
+src/memory/config.rs
+  s_77b04d9838f161::t_dd3dbde22e292d 40,42-45
+  s_77b04d9838f161::t_e5b3cff6874646 8-15
+tests/fixtures/memory-v1.golden
+  s_77b04d9838f161::t_ceeeb27aa617e2 119
+ai/comments/src/memory/cli.rs.md
+  s_77b04d9838f161::t_75197fd4e22a21 6
+ai/comments/tests/memory.rs.md
+  s_77b04d9838f161::t_75197fd4e22a21 7
+README.md
+  s_77b04d9838f161::t_bdf0226827ee95 135
+tests/cli.rs
+  s_77b04d9838f161::t_ceeeb27aa617e2 511
+ai/comments/src/memory/config.rs.md
+  s_77b04d9838f161::t_75197fd4e22a21 3
+src/memory/cli.rs
+  s_77b04d9838f161::t_0367f0a5fd546a 20
+  s_77b04d9838f161::t_190f124292fea9 414
+  s_77b04d9838f161::t_95beb94771a51c 425,428
+tests/memory.rs
+  s_77b04d9838f161::t_9b4ad51b0a1d8e 1204-1205
+  s_77b04d9838f161::t_d0e84fd5b022f5 1207,1220-1241
+  s_77b04d9838f161::t_a5dc4c8ae993b2 1206
+  s_77b04d9838f161::t_a43f1620f0cd52 1208-1210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7e1519abac904d4690740ef1cacfd6938942d421",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
