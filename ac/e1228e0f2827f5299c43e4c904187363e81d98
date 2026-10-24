@@ -1,0 +1,28 @@
+ai/research/20261024T084514--agents.md
+  s_77b04d9838f161::t_2e2fe859c13269 72
+README.md
+  s_77b04d9838f161::t_c5024d15178f55 148
+src/config.rs
+  s_77b04d9838f161::t_1d9a699f138ad6 68-69
+  s_77b04d9838f161::t_ae4e95dea6909d 150-151,154,165-166
+tests/config.rs
+  s_77b04d9838f161::t_0e265c5308cc0e 357-385
+ai/comments/src/config.rs.md
+  s_77b04d9838f161::t_3a3a48d36cef72 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ace1228e0f2827f5299c43e4c904187363e81d98",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
