@@ -5,6 +5,11 @@
 - Settings outside `ai.toml`: the chat view size (64 lines, a constant) and `AI_MEMORY_MODEL`.
 - `ai desk`: a TUI overview of every part of `ai` (memory, chat threads and sessions, notes, code): search and navigate, see stale lines, resummarise a line. Mostly for `ai notes`/`ai code`, where the user takes part; the user doubts session logs need curating.
 - Overlap between `ai memory` and `ai chat` (both fold a log into a summary tree with the same ids): consider consolidating.
+- pi and DeepSeek Harness (DSH) support: an unreviewed implementation by DeepSeek Flash on branch `dsh-pi` (21 commits on v0.14.0). Review it before any of it lands, or reimplement. It holds:
+  - chat: reading pi and DSH sessions into items, attach for pi, subagent reports as work turns;
+  - plugins: one client for the ai CLI, `/ai` for pi and DSH, every plugin shipped in the package;
+  - memory: the summariser through pi, with a `[summariser]` table in `ai.toml` choosing backend and model;
+  - surveys: `ai/research/20261021T002801--pi-harness-support.md` (on main; the branch rewrites it from pi 1.3.0) and `ai/research/20261022T193800--dsh-harness-support.md` (branch only).
 - One JSONL storage module for chat and memory: `src/jsonl.rs` (append, locks, format file, recovery of a half-written last line) serves chat; when memory moves to JSONL it uses the same module, and the Git plumbing in `src/git.rs` (refs, compare-and-swap, fan-out paths) and the record codec in `src/record.rs` go. gix stays for provenance, git config and `ai notes`. Undecided: the user wants it explained first.
 
 ## Memory
