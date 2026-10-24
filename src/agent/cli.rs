@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     env, fs,
     io::{self, IsTerminal, Write},
+    ops::Range,
     os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{self, ExitCode},
@@ -20,7 +21,7 @@ use crate::{
         id::Id,
         record::{Binding, Key},
         rollup::Rollup,
-        store::{Mark, Snapshot, Store, Thread, ThreadInfo},
+        store::{Snapshot, Store, Thread, ThreadInfo},
         summarise::{OnFail, build, dry_run, first, rebuild, rewrite, summarise},
         sync::Synced,
         upgrade,
@@ -69,8 +70,6 @@ enum Command {
         agent: Option<String>,
         #[command(flatten)]
         session: Session,
-        #[command(flatten)]
-        parts: Parts,
     },
     #[command(about = "attach this session to an agent's thread.")]
     Attach {
@@ -90,8 +89,6 @@ enum Command {
         target: Target,
         #[arg(help = "an id: 12 (turn 12), 8+4 (turns 8 to 11), 12.3 (item 3 of turn 12)")]
         id: String,
-        #[command(flatten)]
-        parts: Parts,
         #[arg(long, help = "include tool output")]
         tool_output: bool,
     },
@@ -105,8 +102,6 @@ enum Command {
         pat: Pattern,
         #[arg(long, help = "also search tool output")]
         tool_output: bool,
-        #[command(flatten)]
-        parts: Parts,
     },
     #[command(
         about = "write a thread's summary lines that are ready, or one line, stopping at the first that fails."
@@ -167,29 +162,6 @@ struct Build {
         help = "run as the background summariser: build what it can past a failed line"
     )]
     background: bool,
-}
-
-/// Which part of a long output to print, and the thread state the parts come from.
-#[derive(Args, Debug, Default)]
-struct Parts {
-    #[arg(long, hide = true, help = "the part to print, as printed")]
-    part: Option<u64>,
-    #[arg(
-        long,
-        hide = true,
-        help = "the thread state the parts come from, as printed"
-    )]
-    at: Option<String>,
-}
-
-impl Parts {
-    /// The state `at` names, else the thread's latest.
-    fn snapshot(&self, t: &Thread) -> Result<Snapshot> {
-        match &self.at {
-            Some(at) => t.snapshot_at(at.parse()?),
-            None => t.snapshot(),
-        }
-    }
 }
 
 /// An agent's newest session continued, else a new one started.
@@ -365,7 +337,6 @@ impl Cli {
         let command = self.command.unwrap_or(Command::View {
             agent: None,
             session: Session::default(),
-            parts: Parts::default(),
         });
         let msg = match &command {
             Command::New { name } => format!("ai agent new {name}"),
@@ -398,25 +369,19 @@ impl Command {
             Command::New { name } => new(cwd, out, &name),
             Command::Resume(r) => r.run(cwd),
             Command::List { session } => list(cwd, out, session),
-            Command::View {
-                agent,
-                session,
-                parts,
-            } => view(cwd, out, agent, session, &parts, terminal),
+            Command::View { agent, session } => view(cwd, out, agent, session, terminal),
             Command::Attach { name, session } => attach(cwd, out, &name, session),
             Command::Detach { session } => detach(cwd, out, session),
             Command::Zoom {
                 target,
                 id,
-                parts,
                 tool_output,
-            } => zoom(cwd, out, target, &id, &parts, terminal, tool_output),
+            } => zoom(cwd, out, target, &id, terminal, tool_output),
             Command::Grep {
                 targets,
                 pat,
                 tool_output,
-                parts,
-            } => grep(cwd, out, targets, &pat, tool_output, &parts, terminal),
+            } => grep(cwd, out, targets, &pat, tool_output, terminal),
             Command::Build(a) => build_cmd(cwd, out, a),
             Command::SyncSession { session } | Command::EndSession { session } => {
                 sync_session(cwd, session)
@@ -869,17 +834,16 @@ fn latest(store: &Store, t: &Thread, c: Option<&Current>) -> Result<Snapshot> {
     t.snapshot()
 }
 
-/// The thread view `ai view` prints after the memory, with the thread's name and state:
-/// [`pick`]'s thread, of the session's branch (synced first) when it is attached there, else of
-/// the newest; with `at` (a state it gave), of that state, unsynced. Unnamed, an agent session
-/// reads only the thread it is attached to, and outside a project with threads there is
-/// none. `None` too while the branch holds no item. It writes no line.
+/// The thread view `ai view` prints after the memory, with the thread's name: [`pick`]'s
+/// thread, of the session's branch (synced first) when it is attached there, else of the
+/// newest. Unnamed, an agent session reads only the thread it is attached to, and outside a
+/// project with threads there is none. `None` too while the branch holds no item. It writes no
+/// line.
 pub fn thread_view(
     cwd: &Path,
     name: Option<String>,
     s: Session,
-    at: Option<Mark>,
-) -> Result<Option<(String, String, Mark)>> {
+) -> Result<Option<(String, String)>> {
     let c = s.current();
     if name.is_none() {
         let Some(store) = Store::find(cwd)? else {
@@ -894,51 +858,39 @@ pub fn thread_view(
         }
     }
     let (store, t, c) = pick(cwd, name, c, "ai view <name>")?;
-    let snap = match at {
-        Some(at) => t.snapshot_at(at)?,
-        None => latest(&store, &t, c.as_ref())?,
-    };
+    let snap = latest(&store, &t, c.as_ref())?;
     let view = view_in(&t, &snap, c.as_ref(), fold_lines(&store)?)?;
-    Ok(view.map(|v| (v, t.name().to_string(), snap.mark())))
+    Ok(view.map(|v| (v, t.name().to_string())))
 }
 
-/// The thread's view, from one state of it: of the session's branch when the session is
-/// attached to it (synced first), else of its newest branch; whole on a `terminal`, else in
-/// parts. It writes no line: a turn not summarised yet shows its message; `--at` reads the state
-/// it names.
+/// The thread's view: of the session's branch when the session is attached to it (synced
+/// first), else of its newest branch; whole on a `terminal`, else in parts read on with `ai
+/// page`. It writes no line: a turn not summarised yet shows its message.
 fn view(
     cwd: &Path,
     out: &mut dyn Write,
     name: Option<String>,
     s: Session,
-    parts: &Parts,
     terminal: bool,
 ) -> Result<ExitCode> {
     let (store, t, session) = pick(cwd, name, s.current(), "ai agent view <name>")?;
-    let snap = match &parts.at {
-        Some(_) => parts.snapshot(&t)?,
-        None => latest(&store, &t, session.as_ref())?,
-    };
-    let shown =
-        view_in(&t, &snap, session.as_ref(), fold_lines(&store)?)?.map(|v| (v, snap.mark()));
-    let Some((text, mark)) = shown else {
+    let snap = latest(&store, &t, session.as_ref())?;
+    let Some(text) = view_in(&t, &snap, session.as_ref(), fold_lines(&store)?)? else {
         writeln!(out, "Thread {} holds nothing yet.", t.name())?;
         return Ok(ExitCode::SUCCESS);
     };
-    page::print(out, &text, page::pick(parts.part, terminal), |k| {
-        format!("ai agent view {} --part {k} --at {mark}", t.name())
-    })?;
+    let command = format!("ai agent view {}", t.name());
+    page::print(out, &page::cache()?, &command, &text, terminal)?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// What `id` holds on the picked thread's branch (the session's, else the newest): whole on a
-/// `terminal`, else in parts, each cut from the state the first read.
+/// `terminal`, else in parts read on with `ai page`.
 fn zoom(
     cwd: &Path,
     out: &mut dyn Write,
     target: Target,
     id: &str,
-    parts: &Parts,
     terminal: bool,
     tool_output: bool,
 ) -> Result<ExitCode> {
@@ -949,32 +901,27 @@ fn zoom(
             "'{id}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3 (an item)."
         );
     };
-    let snap = parts.snapshot(&t)?;
+    let snap = t.snapshot()?;
     let branch = read_branch(&snap, session.as_ref(), fold_lines(&store)?)?;
     let Some(text) = branch.and_then(|b| b.zoom(parsed, tool_output)) else {
         bail!("This branch has no {parsed}.");
     };
-    let (mark, flag) = (snap.mark(), if tool_output { " --tool-output" } else { "" });
-    page::print(out, &text, page::pick(parts.part, terminal), |k| {
-        format!(
-            "ai agent zoom -a {} {parsed} --part {k} --at {mark}{flag}",
-            t.name()
-        )
-    })?;
+    let flag = if tool_output { " --tool-output" } else { "" };
+    let command = format!("ai agent zoom -a {} {parsed}{flag}", t.name());
+    page::print(out, &page::cache()?, &command, &text, terminal)?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// The matches of `pat` on each picked thread's branch (the session's, else the newest), thread
 /// by thread in the order named, oldest first within each, and each line led by its agent's
-/// name when there are several: all on a `terminal`, else in parts newest first, each cut from
-/// the states the first read.
+/// name when there are several: all on a `terminal`, else in parts newest first, read on with
+/// `ai page`.
 fn grep(
     cwd: &Path,
     out: &mut dyn Write,
     targets: Targets,
     pat: &Pattern,
     tool_output: bool,
-    parts: &Parts,
     terminal: bool,
 ) -> Result<ExitCode> {
     let usage = "ai agent grep -a <name> <pattern>";
@@ -993,25 +940,15 @@ fn grep(
             .collect::<Result<_>>()?,
     };
     let re = pat.regex()?;
-    let ats: Vec<Option<&str>> = match &parts.at {
-        None => vec![None; picked.len()],
-        Some(at) if at.split(',').count() == picked.len() => at.split(',').map(Some).collect(),
-        Some(at) => bail!("'{at}' does not name one state for each agent searched."),
-    };
     let several = picked.len() > 1;
-    let (mut hits, mut marks, mut agents) = (Vec::new(), Vec::new(), Vec::new());
-    for ((store, t, session), at) in picked.iter().zip(ats) {
-        let snap = match at {
-            Some(at) => t.snapshot_at(at.parse()?)?,
-            None => t.snapshot()?,
-        };
-        if let Some(b) = read_branch(&snap, session.as_ref(), fold_lines(store)?)? {
+    let (mut hits, mut agents) = (Vec::new(), Vec::new());
+    for (store, t, session) in &picked {
+        if let Some(b) = read_branch(&t.snapshot()?, session.as_ref(), fold_lines(store)?)? {
             hits.extend(b.grep(&re, tool_output).into_iter().map(|h| match several {
                 true => format!("{} {}", t.name(), h.line),
                 false => h.line,
             }));
         }
-        marks.push(snap.mark().to_string());
         agents.push(format!("-a {}", t.name()));
     }
     if hits.is_empty() {
@@ -1027,17 +964,16 @@ fn grep(
         cmd += " --tool-output";
     }
     let sizes: Vec<u64> = hits.iter().map(|h| h.len() as u64 + 1).collect();
-    let mark = marks.join(",");
-    let (shown, footer) = page::search(
+    let render = |shown: Range<usize>| hits[shown].iter().map(|h| format!("{h}\n")).collect();
+    page::search(
+        out,
+        &page::cache()?,
+        &cmd,
         &sizes,
         hits.len() as u64,
-        page::pick(parts.part, terminal),
-        |k| format!("{cmd} --part {k} --at {mark}"),
+        terminal,
+        render,
     )?;
-    for h in &hits[shown] {
-        writeln!(out, "{h}")?;
-    }
-    writeln!(out, "{footer}")?;
     Ok(ExitCode::SUCCESS)
 }
 

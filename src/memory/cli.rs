@@ -26,7 +26,7 @@ use crate::{
         prov,
         record::{Kind, Message, Place, Who, midnight},
         stats::{Stats, stats},
-        store::{ME, Mark, Snapshot, Store},
+        store::{ME, Snapshot, Store},
         tree::Coord,
         usage::{self, Tally, Use},
         view::{Mem, PLACEHOLDER, VIEW},
@@ -114,14 +114,6 @@ enum Command {
     Init,
     #[command(about = "read your memory: print the view (the default).")]
     View {
-        #[arg(long, hide = true, help = "the part of the view to print, as printed")]
-        part: Option<u64>,
-        #[arg(
-            long,
-            hide = true,
-            help = "the memory state the parts come from, as printed"
-        )]
-        at: Option<String>,
         #[arg(
             long,
             hide = true,
@@ -144,14 +136,6 @@ enum Command {
     Zoom {
         #[arg(help = "a line's id, as printed: 2184+8, or 7 for message 7")]
         id: String,
-        #[arg(long, hide = true, help = "the part to print, as printed")]
-        part: Option<u64>,
-        #[arg(
-            long,
-            hide = true,
-            help = "the memory state the parts come from, as printed"
-        )]
-        at: Option<String>,
         #[command(flatten)]
         meta: Meta,
     },
@@ -180,36 +164,22 @@ enum Command {
 impl Command {
     /// Its name and arguments, as typed; a note's text is in the store.
     fn typed(&self) -> (&'static str, Vec<String>) {
-        let parts = |p: &Option<u64>, at: &Option<String>| {
-            p.iter()
-                .flat_map(|p| ["--part".into(), p.to_string()])
-                .chain(at.iter().flat_map(|a| ["--at".into(), a.clone()]))
-                .collect::<Vec<String>>()
-        };
         match self {
             Command::Init => ("init", Vec::new()),
-            Command::View {
-                part,
-                at,
-                whole,
-                meta,
-            } => (
+            Command::View { whole, meta } => (
                 "view",
-                parts(part, at)
+                whole
+                    .then(|| "--whole".into())
                     .into_iter()
-                    .chain(whole.then(|| "--whole".into()))
                     .chain(meta.args())
                     .collect(),
             ),
             Command::Note { .. } => ("note", Vec::new()),
             Command::Build => ("build", Vec::new()),
             Command::Grep(g) => ("grep", g.typed()),
-            Command::Zoom { id, part, at, meta } => (
+            Command::Zoom { id, meta } => (
                 "zoom",
-                std::iter::once(id.clone())
-                    .chain(parts(part, at))
-                    .chain(meta.args())
-                    .collect(),
+                std::iter::once(id.clone()).chain(meta.args()).collect(),
             ),
             Command::Show { id } => ("show", vec![id.clone()]),
             Command::Config => ("config", Vec::new()),
@@ -235,6 +205,8 @@ pub struct Runtime {
     /// Called by `build` when a round is done, while it still holds the compactor lock.
     pub before_release: Box<dyn Fn()>,
     pub stdin: Box<dyn Fn() -> io::Result<String>>,
+    /// Where paged output is saved for `ai page`.
+    pub views: Box<dyn Fn() -> Result<PathBuf>>,
 }
 
 impl Default for Runtime {
@@ -248,6 +220,7 @@ impl Default for Runtime {
             summarise_on_note: std::env::var_os("AI_MEMORY_SUMMARISE").is_none_or(|v| v != "0"),
             before_release: Box::new(|| {}),
             stdin: Box::new(|| io::read_to_string(io::stdin())),
+            views: Box::new(page::cache),
         }
     }
 }
@@ -276,12 +249,10 @@ pub fn default_dir() -> Result<PathBuf> {
 }
 
 impl Cli {
-    /// `view --at <at> --whole`: the whole view of state `at`, read and recorded as any view.
-    pub fn view_whole(at: Mark) -> Cli {
+    /// `view --whole`: the whole view, read and recorded as any view.
+    pub fn view_whole() -> Cli {
         Cli {
             command: Some(Command::View {
-                part: None,
-                at: Some(at.to_string()),
                 whole: true,
                 meta: Meta::default(),
             }),
@@ -307,8 +278,6 @@ impl Cli {
 
     pub fn run_with(self, dir: &Path, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
-            part: None,
-            at: None,
             whole: false,
             meta: Meta::default(),
         });
@@ -353,30 +322,11 @@ impl Command {
     ) -> Result<ExitCode> {
         match self {
             Command::Init | Command::PromptHook => unreachable!(),
-            Command::View {
-                part,
-                at,
-                whole,
-                meta,
-            } => view(
-                s,
-                out,
-                &rt.config,
-                part,
-                at.as_deref(),
-                whole || rt.terminal,
-                &meta,
-            ),
+            Command::View { whole, meta } => view(s, out, rt, whole || rt.terminal, &meta),
             Command::Note { text } => note(s, out, &text, rt, place, who),
             Command::Build => build(s, out, rt),
-            Command::Grep(g) => grep(s, out, &g, rt.terminal),
-            Command::Zoom { id, part, at, meta } => {
-                let snap = match at {
-                    Some(at) => s.snapshot_at(at.parse()?)?,
-                    None => s.snapshot()?,
-                };
-                zoom_cmd(&snap, out, &id, page::pick(part, rt.terminal), &meta)
-            }
+            Command::Grep(g) => grep(s, out, &g, rt.terminal, &(rt.views)()?),
+            Command::Zoom { id, meta } => zoom_cmd(&s.snapshot()?, out, &id, rt, &meta),
             Command::Show { id } => show(&s.snapshot()?, out, &id),
             Command::Config => config(out, &rt.config),
             Command::Import { file } => import(s, out, &file),
@@ -457,28 +407,17 @@ fn init(dir: &Path, out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The view of the memory's state `at`, else of its latest: whole when `whole`, else `part`
-/// (the first by default) of its parts, each naming the command for the next.
+/// The memory's view: whole when `whole`, else in parts read on with `ai page`.
 fn view(
     s: &Store,
     out: &mut dyn Write,
-    cfg: &Config,
-    part: Option<u64>,
-    at: Option<&str>,
+    rt: &Runtime,
     whole: bool,
     meta: &Meta,
 ) -> Result<ExitCode> {
-    let snap = match at {
-        Some(at) => s.snapshot_at(at.parse()?)?,
-        None => s.snapshot()?,
-    };
-    let mark = snap.mark();
-    page::print(
-        out,
-        &view_text(&snap, cfg.get(Knob::ViewLines), meta)?,
-        page::pick(part, whole),
-        |k| format!("{ME} view --part {k} --at {mark}{}", meta.flags()),
-    )?;
+    let text = view_text(&s.snapshot()?, rt.config.get(Knob::ViewLines), meta)?;
+    let command = format!("{ME} view{}", meta.flags());
+    page::print(out, &(rt.views)()?, &command, &text, whole)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -623,23 +562,20 @@ fn config(out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// What line `id` of state `s` opens into: whole for `part` `None`, else that part, each part
-/// naming the state for the next.
+/// What line `id` of `s` opens into: whole on a terminal, else in parts read on with `ai page`.
 fn zoom_cmd(
     s: &Snapshot,
     out: &mut dyn Write,
     id: &str,
-    part: Option<u64>,
+    rt: &Runtime,
     meta: &Meta,
 ) -> Result<ExitCode> {
     let c = line_id(id, s.log_len()?)?;
     let Some(text) = zoom(s, c.id(), c.n(), Some(meta))? else {
         bail!("No line {c}.");
     };
-    let mark = s.mark();
-    page::print(out, &text, part, |k| {
-        format!("{ME} zoom {c} --part {k} --at {mark}{}", meta.flags())
-    })?;
+    let command = format!("{ME} zoom {c}{}", meta.flags());
+    page::print(out, &(rt.views)()?, &command, &text, rt.terminal)?;
     Ok(ExitCode::SUCCESS)
 }
 

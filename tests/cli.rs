@@ -56,6 +56,7 @@ impl Sandbox {
         let home = self.path().join("home");
         c.env("HOME", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_CACHE_HOME", home.join(".cache"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CEILING_DIRECTORIES", self.path().parent().unwrap());
         for k in ISOLATE {
@@ -565,7 +566,7 @@ fn every_command_logs_one_usage_line() {
         (&["note", "two\nlines"], "s1"),
         (&["zoom", "0", "--time", "-o", "repo"], "s1"),
         (&["zoom", "9"], "s1"),
-        (&["grep", "it's", "-t", "-m", "3", "--part", "1"], "s1"),
+        (&["grep", "it's", "-t", "-m", "3"], "s1"),
         (&["show", "0"], "s2"),
     ] {
         by(args, session);
@@ -591,7 +592,7 @@ fn every_command_logs_one_usage_line() {
             "[]",
             r#"["0","--time","-o","repo"]"#,
             r#"["9"]"#,
-            r#"["it's","-t","-m","3","--part","1"]"#,
+            r#"["it's","-t","-m","3"]"#,
             r#"["0"]"#
         ]
     );

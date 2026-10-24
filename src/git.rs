@@ -210,10 +210,6 @@ impl<'r> AsRef<Snap<'r>> for Snap<'r> {
 }
 
 impl Snap<'_> {
-    pub fn commit(&self) -> Option<ObjectId> {
-        self.commit
-    }
-
     pub fn tree_id(&self) -> ObjectId {
         self.tree
     }

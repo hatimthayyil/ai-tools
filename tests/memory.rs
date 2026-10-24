@@ -57,7 +57,20 @@ fn runtime(backend: Arc<dyn Backend>) -> Runtime {
         summarise_on_note: false,
         before_release: Box::new(|| {}),
         stdin: Box::new(|| Ok(String::new())),
+        views: Box::new(|| Ok(views())),
     }
+}
+
+/// Where the tests' paged output is saved.
+fn views() -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join("views")
+}
+
+/// What `ai page <page>` prints.
+fn page(page: &str) -> String {
+    let mut out = Vec::new();
+    ai_tools::page::show(&views(), page, &mut out).unwrap();
+    String::from_utf8(out).unwrap()
 }
 
 fn run_rt(dir: &Path, rt: &Runtime, args: &[&str]) -> Out {
@@ -834,32 +847,10 @@ fn a_life_through_the_cli() {
         one.ends_with(&format!("\n{AWAKE}\n")),
         "a short view is one part, with no footer: {one}"
     );
-    let mark = Store::open(d)
-        .unwrap()
-        .snapshot()
-        .unwrap()
-        .mark()
-        .to_string();
     run(d, &["note", "lands after the read"]);
-    assert_eq!(run(d, &["view", "--at", &mark]).stdout, one);
     let whole = run(d, &["view", "--whole"]).stdout;
     assert!(whole.contains("\n42|lands after the read\n"), "{whole}");
     assert!(tiles(&line_ids(&whole), 0, 43), "{whole}");
-    assert_eq!(
-        run(d, &["view", "--part", "2"]).stderr,
-        "No part 2: it has 1."
-    );
-    assert!(
-        run(d, &["view", "--at", "xyz"])
-            .stderr
-            .contains("'xyz' is not a memory state")
-    );
-    let unknown = "0".repeat(40);
-    assert!(
-        run(d, &["view", "--at", &unknown])
-            .stderr
-            .contains("is not a state of this memory")
-    );
 
     let z = run(d, &["zoom", "0+32"]).stdout;
     assert_eq!(z.lines().filter(|l| l.contains('|')).count(), 4, "{z}");
@@ -889,11 +880,6 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["zoom", "0+64"]).stderr, "No line 0+64.");
     assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
     assert!(run(d, &["zoom", "x"]).stderr.contains("not a line id"));
-    assert!(
-        run(d, &["zoom", "3", "--part", "99"])
-            .stderr
-            .contains("No part 99")
-    );
 
     let origin = Store::open(d).unwrap().origin().to_string();
     let show = run(d, &["show", "40"]).stdout;
@@ -1000,30 +986,27 @@ fn long_output_comes_in_parts_of_one_state_and_whole_on_a_terminal() {
     fs::write(&seed, notes).unwrap();
     assert_eq!(run(d, &["import", seed.to_str().unwrap()]).code, 0);
 
+    let whole = run(d, &["view", "--whole", "--time"]).stdout;
     let first = run(d, &["view", "--time"]).stdout;
-    let (body, footer) = first.trim_end().rsplit_once('\n').unwrap();
-    let next = footer
-        .strip_prefix("Part 1 of 2. Next: ai memory ")
-        .unwrap();
-    assert!(
-        Regex::new(r"^view --part 2 --at [0-9a-f]{40} --time$")
-            .unwrap()
-            .is_match(next),
-        "{next}"
-    );
+    let body = first
+        .strip_prefix("ai memory view --time, part 1 of 2.\n")
+        .expect(&first);
+    let (body, next) = body.split_once("\nNext: ai page ").unwrap();
+    let next = next.strip_suffix('\n').unwrap();
+    assert!(Regex::new(r"^\d+:2$").unwrap().is_match(next), "{next}");
     run(d, &["note", "lands between two parts"]);
-    let args: Vec<&str> = next.split(' ').collect();
-    let second = run(d, &args).stdout;
-    let (rest, footer) = second.trim_end().rsplit_once('\n').unwrap();
-    assert_eq!(footer, "Part 2 of 2.");
-    let whole = run(d, &["view", "--whole", "--at", args[4], "--time"]).stdout;
+    let second = page(next);
+    let rest = second
+        .strip_prefix("ai memory view --time, part 2 of 2.\n")
+        .expect(&second);
     assert_eq!(
-        format!("{body}\n{rest}\n"),
+        format!("{body}\n{rest}"),
         whole,
         "the parts come from one state"
     );
     assert!(!whole.contains("lands between"), "{whole}");
     assert!(whole.ends_with(&format!("\n{AWAKE}\n")), "{whole}");
+    assert_eq!(page(next), second, "a part reads again as saved");
 
     let terminal = Runtime {
         terminal: true,
@@ -1035,22 +1018,16 @@ fn long_output_comes_in_parts_of_one_state_and_whole_on_a_terminal() {
             && shown.ends_with(&format!("\n{AWAKE}\n")),
         "a terminal reads the latest whole: {shown}"
     );
-    assert!(
-        run_rt(d, &terminal, &["view", "--part", "1"])
-            .stdout
-            .contains("\nPart 1 of 2. Next: ai memory view --part 2 --at ")
-    );
 
     let first = run(d, &["zoom", "80"]).stdout;
-    let (body, next) = first.split_once("\nPart 1 of 2. Next: ai memory ").unwrap();
-    assert!(
-        Regex::new(r"^zoom 80 --part 2 --at [0-9a-f]{40}\n$")
-            .unwrap()
-            .is_match(next),
-        "{next}"
-    );
-    let rest = run(d, &next.split_whitespace().collect::<Vec<_>>()).stdout;
-    let rest = rest.strip_suffix("Part 2 of 2.\n").unwrap();
+    let body = first
+        .strip_prefix("ai memory zoom 80, part 1 of 2.\n")
+        .expect(&first);
+    let (body, next) = body.split_once("\nNext: ai page ").unwrap();
+    let second = page(next.trim_end());
+    let rest = second
+        .strip_prefix("ai memory zoom 80, part 2 of 2.\n")
+        .unwrap();
     assert_eq!(format!("{body}{rest}"), format!("2020-01-02\n80|{big}\n"));
     assert_eq!(
         run_rt(d, &terminal, &["zoom", "80"]).stdout,
@@ -1065,21 +1042,24 @@ fn long_output_comes_in_parts_of_one_state_and_whole_on_a_terminal() {
             .collect()
     };
     let first = run(d, &["grep", "^note", "--time"]).stdout;
-    let (newer, footer) = first.trim_end().rsplit_once('\n').unwrap();
+    let (header, rest) = first.split_once('\n').unwrap();
     let parts = Regex::new(
-        r"^Part 1 of 2, newest first: (\d+) of 80 matches\. Next: ai memory (grep '\^note' --time --part 2 --at [0-9a-f]{40})$",
+        r"^ai memory grep '\^note' --time, part 1 of 2, newest first: (\d+) of 80 matches\.$",
     )
     .unwrap();
-    let caps = parts.captures(footer).expect(footer);
+    let caps = parts.captures(header).expect(header);
     let shown: usize = caps[1].parse().unwrap();
+    let (newer, next) = rest.split_once("Next: ai page ").unwrap();
     assert!(newer.len() < 20_000);
     run(d, &["note", "note lands between two parts"]);
-    let args: Vec<&str> = caps[2].split(' ').map(|a| a.trim_matches('\'')).collect();
-    let second = run(d, &args).stdout;
-    let (older, footer) = second.trim_end().rsplit_once('\n').unwrap();
+    let second = page(next.trim_end());
+    let (header, older) = second.split_once('\n').unwrap();
     assert_eq!(
-        footer,
-        format!("Part 2 of 2, newest first: {} of 80 matches.", 80 - shown)
+        header,
+        format!(
+            "ai memory grep '^note' --time, part 2 of 2, newest first: {} of 80 matches.",
+            80 - shown
+        )
     );
     let want: Vec<String> = (0..80).map(|k| k.to_string()).collect();
     assert_eq!(

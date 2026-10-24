@@ -60,7 +60,7 @@ ai memory zoom <id>             # open a line of the view
 ai memory grep <regex>          # search every message
 ```
 
-Views print whole on a terminal. Piped, as an agent reads them, they come in parts of at most 20,000 bytes, each ending with the command for the next.
+Views print whole on a terminal. Piped, as an agent reads them, they come in parts of at most 20,000 bytes. The first read saves every part in `$XDG_CACHE_HOME/ai/views/` (default `~/.cache/ai/views/`), and each part ends with the command for the next, like `ai page 17:2`. A saved view is gone 10 minutes after it was last read.
 
 `ai` stores memories in `~/.ai/memory`, or in `$AI_MEMORY_DIR` if you set it. A newer `ai` upgrades the memory on first use and prints the commit holding its previous state; older releases then fail on it without writing.
 
@@ -108,7 +108,7 @@ A session is attached to one agent at a time. Detach it explicitly before attach
 
 Each turn's work, the agent's steps between your message and its final reply, is summarised first; the turn's line is then written from your message, that summary and the final reply. A summary line is asked for 50 to 200 words, more where the AI wrote more and ran more tools, and holds at most 512 characters per 50 words. A command you run, `/ai` included, writes the lines it needs and stops at the first that fails, naming each failed line with its error: `/ai` then compacts nothing, and `ai agent resume` starts no new session. The background summariser, started after each turn, builds what it can and only logs, to `<thread>.log` beside the threads.
 
-A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Each file is a directory of 1 MiB segments, so a commit of a growing thread stores only the newest segment. Earlier states are prefixes of those files (`--at`). A newer store format is refused; an older one is converted, once you agree, the first time an `ai agent` command runs on a terminal. Re-attaching a session rebuilds its thread from the transcript.
+A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Each file is a directory of 1 MiB segments, so a commit of a growing thread stores only the newest segment. A newer store format is refused; an older one is converted, once you agree, the first time an `ai agent` command runs on a terminal. Re-attaching a session rebuilds its thread from the transcript.
 
 This needs the [Claude Code plugin](#claude-code-plugin).
 

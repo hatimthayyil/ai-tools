@@ -13,8 +13,8 @@
 - `build` (memory): `ai memory build`: run the compactor until nothing is buildable, then exit. `note` starts one in the background when a node is due.
 - `backend`: the compactor's model access (`Backend`/`Conversation`); now only Claude Code (`claude -p`, Sonnet, medium effort).
 - `ai memory view`: print the view under date headers: whole on a terminal, else in parts.
-- `part`: one page of a view's output when it is not on a terminal: at most `PART` (20,000) bytes, ending with `--part N --at <state>` for the next.
-- `state` (`--at`): what a view's parts are read from, so they join up: the memory's commit (`0` while empty), a thread's file lengths (`items.lines.sessions`), or for `ai view` both, `<commit>:<thread>:<items.lines.sessions>`.
+- `part`: one page of a view's output when it is not on a terminal: at most `PART` (20,000) bytes, headed by its command and `part k of n`, ending with `Next: ai page <view>:<part>` while parts remain.
+- `saved view`: every part of one paged output, saved by its first read as `<n>.json` in `$XDG_CACHE_HOME/ai/views/` and printed part by part by `ai page <n>:<part>`; numbered with the lowest free number, gone 10 minutes after it was last read.
 - `zoom`: open `id+n` two levels down; a bare `id` gives the original message in bounded pages (`part`, from 1).
 - `origin`: a store's random id (6 Crockford base-32 characters), made at `init` and kept in the store's `origin` file; stamped on every message and node the store writes.
 - `show`: every field of one message or node.

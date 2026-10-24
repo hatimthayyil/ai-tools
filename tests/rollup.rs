@@ -12,8 +12,8 @@ use std::{
 
 use ai_tools::{
     agent::{
-        Built, Id, Key, Line, LineKind, OnFail, Rollup, Source, Store, Thread, build, dry_run,
-        rebuild, rewrite, rollup, summarise,
+        Built, Id, Key, Line, LineKind, Mark, OnFail, Rollup, Source, Store, Thread, build,
+        dry_run, rebuild, rewrite, rollup, summarise,
     },
     memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage},
     project::Project,
@@ -267,15 +267,9 @@ fn summarised(t: &Thread, fake: &Arc<Fake>) -> Built {
         .expect("the lock is free")
 }
 
-fn state(r: &Repo) -> String {
+fn state(r: &Repo) -> Mark {
     let store = r.store();
-    store
-        .thread("t")
-        .unwrap()
-        .snapshot()
-        .unwrap()
-        .mark()
-        .to_string()
+    store.thread("t").unwrap().snapshot().unwrap().mark()
 }
 
 #[test]

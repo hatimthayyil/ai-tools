@@ -21,6 +21,10 @@ enum Command {
     Resume(ai_tools::agent::Resume),
     #[command(about = "Your whole memory, then a thread's view: one read to wake on.")]
     View(ai_tools::view::Cli),
+    #[command(
+        about = "Print a part of a long output, as the part before it names it: ai page 17:2."
+    )]
+    Page(ai_tools::page::Cli),
     #[command(about = "Make this directory a project: mint its id into its ai.toml, once.")]
     Init(ai_tools::project::Init),
 }
@@ -32,6 +36,7 @@ fn main() -> ExitCode {
         Command::Agent(cli) => cli.exec(),
         Command::Resume(cli) => cli.exec(),
         Command::View(cli) => cli.exec(),
+        Command::Page(cli) => cli.exec(),
         Command::Init(cli) => cli.exec(),
     };
     result.unwrap_or_else(|e| {

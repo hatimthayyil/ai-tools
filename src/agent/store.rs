@@ -1,9 +1,8 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt, fs, io,
+    fs, io,
     ops::Range,
     path::{Path, PathBuf},
-    str::FromStr,
     time::Instant,
 };
 
@@ -123,31 +122,6 @@ pub struct Mark {
     items: u64,
     lines: u64,
     sessions: u64,
-}
-
-impl fmt::Display for Mark {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.items, self.lines, self.sessions)
-    }
-}
-
-impl FromStr for Mark {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Mark> {
-        let n: Vec<u64> = s
-            .split('.')
-            .map(str::parse)
-            .collect::<Result<Vec<u64>, _>>()
-            .ok()
-            .filter(|n| n.len() == 3)
-            .with_context(|| format!("'{s}' is not a thread state. Copy it as printed."))?;
-        Ok(Mark {
-            items: n[0],
-            lines: n[1],
-            sessions: n[2],
-        })
-    }
 }
 
 /// Where a project keeps its agents, in its [private store](Project::store).
@@ -378,23 +352,6 @@ impl Thread {
             agents,
             events,
         })
-    }
-
-    /// The thread as it was at `mark`, one of its states.
-    pub fn snapshot_at(&self, mark: Mark) -> Result<Snapshot> {
-        let mut s = self.snapshot()?;
-        for (b, n) in [
-            (&mut s.items, mark.items),
-            (&mut s.lines, mark.lines),
-            (&mut s.tracks, mark.sessions),
-        ] {
-            let n = usize::try_from(n).unwrap_or(usize::MAX);
-            if n > b.len() || (n > 0 && b[n - 1] != b'\n') {
-                bail!("{mark} is not a state of thread {}.", self.name);
-            }
-            b.truncate(n);
-        }
-        Ok(s)
     }
 
     /// The writers' lock on this thread's files.

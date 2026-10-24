@@ -1,10 +1,9 @@
 use std::{
     collections::BTreeMap,
-    fmt, fs,
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
     rc::Rc,
-    str::FromStr,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -211,12 +210,6 @@ impl Store {
         self.at(self.head()?)
     }
 
-    /// The memory as of `mark`, a state [`Snapshot::mark`] gave.
-    pub fn snapshot_at(&self, mark: Mark) -> Result<Snapshot<'_>> {
-        self.at(mark.0)
-            .with_context(|| format!("{mark} is not a state of this memory. Copy it as printed."))
-    }
-
     /// The memory as of `commit`, which must be of [`FORMAT`]; `None` is the empty memory.
     fn at(&self, commit: Option<ObjectId>) -> Result<Snapshot<'_>> {
         let git = self.git.raw(commit)?;
@@ -401,32 +394,6 @@ fn node(seg: &Seg, k: usize) -> Option<Node> {
     Node::decode(seg.lines.get(k)?, &seg.cols)
 }
 
-/// A state of the memory, printed for `--at`: its commit, or `0` while it is empty.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Mark(Option<ObjectId>);
-
-impl fmt::Display for Mark {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.0 {
-            Some(c) => write!(f, "{c}"),
-            None => f.write_str("0"),
-        }
-    }
-}
-
-impl FromStr for Mark {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Mark> {
-        if s == "0" {
-            return Ok(Mark(None));
-        }
-        let c = ObjectId::from_hex(s.as_bytes())
-            .map_err(|_| anyhow!("'{s}' is not a memory state. Copy it as printed."))?;
-        Ok(Mark(Some(c)))
-    }
-}
-
 /// The memory as of one commit: every read through it sees the same state.
 pub struct Snapshot<'s> {
     store: &'s Store,
@@ -440,11 +407,6 @@ impl<'s> AsRef<Snap<'s>> for Snapshot<'s> {
 }
 
 impl Snapshot<'_> {
-    /// Its state, for [`Store::snapshot_at`].
-    pub fn mark(&self) -> Mark {
-        Mark(self.git.commit())
-    }
-
     pub(crate) fn fetch(&self, id: ObjectId) -> Result<Vec<u8>> {
         self.git.fetch(id)
     }

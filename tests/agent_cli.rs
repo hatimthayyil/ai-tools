@@ -198,6 +198,7 @@ done
         c.current_dir(dir)
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CEILING_DIRECTORIES", &self.root)
             .env("AI_MEMORY_SUMMARISE", "0")
@@ -541,7 +542,7 @@ fn plumbing_is_hidden_from_help() {
     }
     for cmd in ["list", "view", "attach", "detach", "zoom", "grep", "build"] {
         let help = stdout(&s.ai(&[cmd, "--help"]));
-        for flag in ["--harness", "--session", "--transcript", "--part", "--at"] {
+        for flag in ["--harness", "--session", "--transcript"] {
             assert!(!help.contains(flag), "{cmd} {flag}: {help}");
         }
     }
@@ -752,40 +753,50 @@ fn view_prints_a_thread_in_parts_from_one_state() {
         view.len()
     );
     let first = stdout(&s.ai_in("s-2", &["view"]));
+    let (header, body, next) = part(&first);
+    assert_eq!(header, "ai agent view long-one, part 1 of 3.");
     assert_eq!(
-        first,
-        stdout(&s.ai(&["view", "long-one"])),
+        part(&stdout(&s.ai(&["view", "long-one"]))).1,
+        body,
         "outside the session: the thread's newest branch, here the same"
     );
-    let (body, footer) = first.trim_end().rsplit_once('\n').unwrap();
-    let next = footer.strip_prefix("Part 1 of 3. Next: ai agent ").unwrap();
-    assert!(next.starts_with("view long-one --part 2 --at "));
-    let mut parts = body.to_string() + "\n";
+    let mut parts = body.to_string();
     s.transcript("s-2", &talk(101, ask));
     ok(s.ai_in("s-2", &["sync-session"]), "");
     assert_ne!(
-        stdout(&s.ai_in("s-2", &["view"])),
-        first,
+        paged(&s, Some("s-2"), &["agent", "view"]),
+        view,
         "the thread moved on"
     );
-    let args: Vec<&str> = next.split(' ').collect();
-    let second = stdout(&s.ai(&args));
-    let (body, footer) = second.trim_end().rsplit_once('\n').unwrap();
-    parts += &(body.to_string() + "\n");
-    let args: Vec<&str> = footer
-        .split_once("Next: ai agent ")
-        .unwrap()
-        .1
-        .split(' ')
-        .collect();
-    let third = stdout(&s.ai_in("s-2", &args));
-    let (body, footer) = third.trim_end().rsplit_once('\n').unwrap();
-    assert_eq!(footer, "Part 3 of 3.");
-    parts += &(body.to_string() + "\n");
+    let second = stdout(&s.top(None, &["page", next.unwrap()]));
+    let (header, body, next) = part(&second);
+    assert_eq!(header, "ai agent view long-one, part 2 of 3.");
+    parts += body;
+    let third = stdout(&s.top(None, &["page", next.unwrap()]));
+    let (header, body, next) = part(&third);
+    assert_eq!(
+        (header, next),
+        ("ai agent view long-one, part 3 of 3.", None)
+    );
+    parts += body;
     assert_eq!(parts, view, "the parts come from one state");
-    let o = s.ai_in("s-2", &["view", "--part", "2", "--at", "xyz"]);
-    assert_eq!(code(&o), 1);
-    assert!(stderr(&o).contains("'xyz' is not a thread state"));
+    fails(
+        s.top(None, &["page", "99:1"]),
+        "View 99 is gone: run the command again.\n",
+    );
+    fails(
+        s.top(None, &["page", "2"]),
+        "'2' is not a page. Copy it as printed, like 17:2.\n",
+    );
+}
+
+/// A part of paged output: its header, its body and the page its `Next` line names, if any.
+fn part(out: &str) -> (&str, &str, Option<&str>) {
+    let (header, rest) = out.split_once('\n').expect(out);
+    match rest.rsplit_once("Next: ai page ") {
+        Some((body, next)) => (header, body, Some(next.trim_end())),
+        None => (header, rest, None),
+    }
 }
 
 #[test]
@@ -881,7 +892,7 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
         "with no thread, only the memory: {alone}"
     );
     assert_eq!(
-        paged(&s, None, &["view"], "ai "),
+        paged(&s, None, &["view"]),
         alone,
         "an agent reads it in parts"
     );
@@ -898,14 +909,16 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     assert!(thread.contains("|user: question 1"), "{thread}");
     let first = stdout(&s.top(Some("s-1"), &["view"]));
     assert!(
-        Regex::new(
-            r"\nPart 1 of 2\. Next: ai view --part 2 --at [0-9a-f]{40}:dev:\d+\.\d+\.\d+\n$"
-        )
-        .unwrap()
-        .is_match(&first),
+        first.starts_with("ai view dev, part 1 of 2.\n# Memory\n"),
         "{first}"
     );
-    assert_eq!(paged(&s, Some("s-1"), &["view"], "ai "), both);
+    assert!(
+        Regex::new(r"\nNext: ai page \d+:2\n$")
+            .unwrap()
+            .is_match(&first),
+        "{first}"
+    );
+    assert_eq!(paged(&s, Some("s-1"), &["view"]), both);
     assert_eq!(
         stdout(&s.top(None, &["view", "--whole"])),
         both,
@@ -936,32 +949,31 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     assert_eq!(
         usage
             .lines()
-            .filter(|l| l.contains(r#""cmd":"view","args":["--at""#))
+            .filter(|l| l.contains(r#""cmd":"view","args":["--whole"]"#))
             .count(),
-        10,
+        8,
         "each ai view reads the memory once, after its thread is known: {usage}"
     );
 }
 
-/// The output of `args` run as `ai` in `session`, and then each part's next command: the parts
-/// joined, without their footers.
-fn paged(s: &Sandbox, session: Option<&str>, args: &[&str], prefix: &str) -> String {
+/// The output of `args` run as `ai` in `session`, then of each `ai page` its parts name: the
+/// parts joined, without their headers and `Next` lines.
+fn paged(s: &Sandbox, session: Option<&str>, args: &[&str]) -> String {
+    let header = Regex::new(r"^.*, part \d+ of \d+[.,].*\n").unwrap();
     let mut out = String::new();
-    let mut args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let mut o = s.top(session, args);
     loop {
-        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        let o = s.top(session, &argv);
         assert_eq!(code(&o), 0, "{}", stderr(&o));
-        let o = stdout(&o);
-        let Some((body, footer)) = o.trim_end().rsplit_once("\nPart ") else {
-            return out + &o;
+        let text = stdout(&o);
+        let Some(h) = header.find(&text) else {
+            return out + &text;
+        };
+        let body = &text[h.end()..];
+        let Some((body, next)) = body.rsplit_once("Next: ai page ") else {
+            return out + body;
         };
         out += body;
-        out.push('\n');
-        match footer.split_once(&format!("Next: {prefix}")) {
-            Some((_, next)) => args = next.split(' ').map(str::to_string).collect(),
-            None => return out,
-        }
+        o = s.top(None, &["page", next.trim_end()]);
     }
 }
 
@@ -1003,28 +1015,25 @@ fn zoom_opens_lines_and_items() {
         "2.0|user: question 2\n2.1|ai: reply 2\n",
     );
     ok(s.ai_in("s-1", &["zoom", "2.1"]), "2.1|ai: reply 2\n");
-    let next = |args: &[&str], want: &str| -> String {
+    let both = |args: &[&str], command: &str| -> String {
         let out = stdout(&s.ai_in("s-1", args));
-        let (body, next) = out
-            .split_once("\nPart 1 of 2. Next: ai agent ")
+        let body = out
+            .strip_prefix(&format!("{command}, part 1 of 2.\n"))
             .expect(&out);
-        assert!(Regex::new(want).unwrap().is_match(next), "{next}");
-        let rest = stdout(&s.ai(&next.split_whitespace().collect::<Vec<_>>()));
-        format!(
-            "{body}{}",
-            rest.strip_suffix("Part 2 of 2.\n").expect(&rest)
-        )
+        let (body, next) = body.split_once("\nNext: ai page ").expect(&out);
+        let rest = stdout(&s.top(None, &["page", next.trim_end()]));
+        let rest = rest
+            .strip_prefix(&format!("{command}, part 2 of 2.\n"))
+            .expect(&rest);
+        format!("{body}{rest}")
     };
     assert_eq!(
-        next(
-            &["zoom", "4.0"],
-            r"^zoom -a dev 4\.0 --part 2 --at \d+\.\d+\.\d+\n$"
-        ),
+        both(&["zoom", "4.0"], "ai agent zoom -a dev 4.0"),
         format!("4.0|user: {}\n", "paste ".repeat(5_000).trim_end())
     );
-    next(
+    both(
         &["zoom", "4", "--tool-output"],
-        r"^zoom -a dev 4 --part 2 --at \S+ --tool-output\n$",
+        "ai agent zoom -a dev 4 --tool-output",
     );
     for (id, err) in [
         (
@@ -1061,12 +1070,15 @@ fn grep_pages_the_newest_matches_first() {
     );
     ok(s.ai_in("s-1", &["grep", "nothing"]), "No match.\n");
     let mut seen = Vec::new();
-    let mut args = vec!["grep".to_string(), "Question".into(), "-i".into()];
-    let mut k = 0;
+    let mut out = stdout(&s.ai_in("s-1", &["grep", "Question", "-i"]));
+    let header = Regex::new(
+        r"^ai agent grep -a dev 'Question' -i, part (\d+) of (\d+), newest first: (\d+) of 300 matches\.$",
+    )
+    .unwrap();
+    let (mut k, mut view) = (0, String::new());
     loop {
         k += 1;
-        let out = stdout(&s.ai_in("s-1", &args.iter().map(String::as_str).collect::<Vec<_>>()));
-        let (body, footer) = out.trim_end().rsplit_once('\n').unwrap();
+        let (head, body, next) = part(&out);
         let page: Vec<&str> = body.lines().collect();
         assert!(body.len() < 20_000);
         seen.splice(
@@ -1074,35 +1086,26 @@ fn grep_pages_the_newest_matches_first() {
             page.iter()
                 .map(|l| l.split('|').next().unwrap().to_string()),
         );
-        let head = format!("Part {k} of ");
-        assert!(footer.starts_with(&head), "{footer}");
-        match footer.split_once(" Next: ai agent ") {
-            Some((_, next)) => {
-                let want = format!(r"^grep -a dev 'Question' -i --part {} --at \S+$", k + 1);
-                assert!(Regex::new(&want).unwrap().is_match(next), "{next}");
-                args = next
-                    .split(' ')
-                    .map(|a| a.trim_matches('\'').to_string())
-                    .collect();
-            }
-            None => {
-                assert_eq!(
-                    footer,
-                    format!(
-                        "Part {k} of {k}, newest first: {} of 300 matches.",
-                        page.len()
-                    )
-                );
-                break;
-            }
-        }
+        let caps = header.captures(head).expect(head);
+        assert_eq!(
+            (&caps[1], &caps[3]),
+            (k.to_string().as_str(), page.len().to_string().as_str())
+        );
+        let Some(next) = next else {
+            assert_eq!(&caps[2], k.to_string());
+            break;
+        };
+        let (v, p) = next.split_once(':').unwrap();
+        assert_eq!(p, (k + 1).to_string());
+        view = v.to_string();
+        out = stdout(&s.top(None, &["page", next]));
     }
     assert!(k > 1);
     let want: Vec<String> = (0..300).map(|k| format!("{k}.0")).collect();
     assert_eq!(seen, want, "every match once, oldest first");
     fails(
-        s.ai_in("s-1", &["grep", "Question", "-i", "--part", "99"]),
-        &format!("No part 99: it has {k}.\n"),
+        s.top(None, &["page", &format!("{view}:{}", k + 1)]),
+        &format!("View {view} has no part {}: it has {k}.\n", k + 1),
     );
 }
 
@@ -1138,29 +1141,23 @@ fn grep_searches_each_agent_named() {
         s.ai(&["grep", "-a", "dev", "-a", "qa", "asks"]),
         "No agent qa in this project. Create it: ai agent new qa\n",
     );
-    let mut args: Vec<String> = ["grep", "-a", "one", "-a", "two", "says"]
-        .map(String::from)
-        .into();
+    let mut out = stdout(&s.ai(&["grep", "-a", "one", "-a", "two", "says"]));
     let mut seen = Vec::new();
     let mut parts = 0;
     for k in 1.. {
         parts = k;
-        let out = stdout(&s.ai(&args.iter().map(String::as_str).collect::<Vec<_>>()));
-        let (body, footer) = out.trim_end().rsplit_once('\n').unwrap();
+        let (header, body, next) = part(&out);
+        let want = format!("ai agent grep -a one -a two 'says', part {k} of ");
+        assert!(header.starts_with(&want), "{header}");
         seen.splice(
             0..0,
             body.lines()
                 .map(|l| l.split('|').next().unwrap().to_string()),
         );
-        let Some((_, next)) = footer.split_once(" Next: ai agent ") else {
+        let Some(next) = next else {
             break;
         };
-        let want = format!(r"^grep -a one -a two 'says' --part {} --at \S+,\S+$", k + 1);
-        assert!(Regex::new(&want).unwrap().is_match(next), "{next}");
-        args = next
-            .split(' ')
-            .map(|a| a.trim_matches('\'').to_string())
-            .collect();
+        out = stdout(&s.top(None, &["page", next]));
     }
     let want: Vec<String> = ["one", "two"]
         .iter()
@@ -1168,11 +1165,6 @@ fn grep_searches_each_agent_named() {
         .collect();
     assert!(parts > 1);
     assert_eq!(seen, want, "every match once, agent by agent");
-    let at = s.ai(&["grep", "-a", "dev", "-a", "ops", "asks", "--at", "0.0.0"]);
-    fails(
-        at,
-        "'0.0.0' does not name one state for each agent searched.\n",
-    );
 }
 
 #[test]

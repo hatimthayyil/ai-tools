@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, io::Write, process::ExitCode};
+use std::{collections::VecDeque, io::Write, ops::Range, path::Path, process::ExitCode};
 
 use anyhow::{Result, anyhow};
 use clap::Args;
@@ -108,14 +108,6 @@ pub struct Grep {
     count: bool,
     #[command(flatten)]
     meta: Meta,
-    #[arg(long, hide = true, help = "the part to print, as printed")]
-    part: Option<u64>,
-    #[arg(
-        long,
-        hide = true,
-        help = "the memory state the parts come from, as printed"
-    )]
-    at: Option<String>,
 }
 
 type Key = (u64, u64);
@@ -201,8 +193,8 @@ impl Grep {
         self.kind.is_some() || self.repo.is_some()
     }
 
-    /// The arguments, as typed, but `--part` and `--at`.
-    fn args(&self) -> Vec<String> {
+    /// Every argument, as typed.
+    pub fn typed(&self) -> Vec<String> {
         let mut a = self.pat.args();
         let flags = [(self.tree, "-t"), (self.count, "-c")];
         a.extend(
@@ -230,20 +222,8 @@ impl Grep {
         a
     }
 
-    /// Every argument, as typed.
-    pub fn typed(&self) -> Vec<String> {
-        let mut a = self.args();
-        if let Some(p) = self.part {
-            a.extend(["--part".into(), p.to_string()]);
-        }
-        if let Some(at) = &self.at {
-            a.extend(["--at".into(), at.clone()]);
-        }
-        a
-    }
-
     fn command(&self) -> String {
-        let a = self.args();
+        let a = self.typed();
         let rest: String = a[1..].iter().map(|v| format!(" {}", word(v))).collect();
         format!("{ME} grep {}{rest}", quote(&a[0]))
     }
@@ -289,13 +269,16 @@ impl Unit {
     }
 }
 
-/// The matches of the memory's state `--at`, else of its latest, oldest first: all of them when
-/// `whole`, else in parts newest first, each cut from the state the first read.
-pub fn grep(store: &Store, out: &mut dyn Write, g: &Grep, whole: bool) -> Result<ExitCode> {
-    let s = &match &g.at {
-        Some(at) => store.snapshot_at(at.parse()?)?,
-        None => store.snapshot()?,
-    };
+/// The memory's matches, oldest first: all of them when `whole`, else in parts newest first,
+/// saved in `views` and read on with `ai page`.
+pub fn grep(
+    store: &Store,
+    out: &mut dyn Write,
+    g: &Grep,
+    whole: bool,
+    views: &Path,
+) -> Result<ExitCode> {
+    let s = &store.snapshot()?;
     let pat = g.pat.regex()?;
     let end = s.log_len()?;
     let since = g.since.map(midnight).unwrap_or_default();
@@ -350,27 +333,25 @@ pub fn grep(store: &Store, out: &mut dyn Write, g: &Grep, whole: bool) -> Result
     units.sort_unstable_by_key(Unit::key);
     let kept = &units[units.len() - g.max.map_or(units.len(), |m| units.len().min(m as usize))..];
     let sizes: Vec<u64> = kept.iter().map(|u| u.size).collect();
-    let mark = s.mark();
-    let (shown, footer) = page::search(&sizes, hits, page::pick(g.part, whole), |k| {
-        format!("{} --part {k} --at {mark}", g.command())
-    })?;
-
-    let (mut prev, mut last) = (None, None);
-    for (k, u) in kept[shown].iter().enumerate() {
-        let joined = prev.is_some_and(|e| u.span.is_some_and(|(lo, _)| lo == e));
-        if g.context > 0 && k > 0 && !joined {
-            writeln!(out, "--")?;
-        }
-        for l in &u.lines {
-            if last.is_none_or(|p: &Line| p.day != l.day) {
-                writeln!(out, "{}", l.day)?;
+    let render = |shown: Range<usize>| {
+        let (mut text, mut prev, mut last) = (String::new(), None, None);
+        for (k, u) in kept[shown].iter().enumerate() {
+            let joined = prev.is_some_and(|e| u.span.is_some_and(|(lo, _)| lo == e));
+            if g.context > 0 && k > 0 && !joined {
+                text += "--\n";
             }
-            writeln!(out, "{}", l.text)?;
-            last = Some(l);
+            for l in &u.lines {
+                if last.is_none_or(|p: &Line| p.day != l.day) {
+                    text += &format!("{}\n", l.day);
+                }
+                text += &format!("{}\n", l.text);
+                last = Some(l);
+            }
+            prev = u.span.map(|(_, hi)| hi);
         }
-        prev = u.span.map(|(_, hi)| hi);
-    }
-    writeln!(out, "{footer}")?;
+        text
+    };
+    page::search(out, views, &g.command(), &sizes, hits, whole, render)?;
     Ok(ExitCode::SUCCESS)
 }
 
