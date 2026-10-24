@@ -34,7 +34,7 @@ pub struct Table {
 pub struct Project {
     /// The directory holding its `ai.toml`.
     pub dir: PathBuf,
-    /// Where it keeps what is not checked in: see [`home`].
+    /// Where it keeps its `.ai` store: see [`home`].
     pub home: PathBuf,
     pub id: String,
     /// Its slug: `[project] name`, else the directory's name.
@@ -108,7 +108,7 @@ impl Project {
     }
 }
 
-/// Where the project at `dir` keeps what is not checked in: in a linked git worktree, the same
+/// Where the project at `dir` keeps its `.ai` store: in a linked git worktree, the same
 /// directory in the main checkout; else `dir`.
 pub fn home(dir: &Path) -> Result<PathBuf> {
     let Ok(repo) = gix::discover(dir) else {

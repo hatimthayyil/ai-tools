@@ -8,8 +8,7 @@ use std::{
 use ai_tools::project::Project;
 use tempfile::TempDir;
 
-const ISOLATE: [&str; 5] = [
-    "AI_FILES_DIR",
+const ISOLATE: [&str; 4] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_AUTHOR_NAME",
@@ -41,7 +40,17 @@ impl Sandbox {
         s.write("logo.png", "\0\x01binary");
         Project::init(&s.repo()).unwrap();
         gix::init(s.repo()).unwrap();
-        let commit = Command::new("git")
+        s.git(&["commit", "-q", "--allow-empty", "--no-verify", "-m", "init"]);
+        s.fake_claude();
+        s
+    }
+
+    fn repo(&self) -> PathBuf {
+        self.root.join("repo")
+    }
+
+    fn git(&self, args: &[&str]) {
+        let status = Command::new("git")
             .args([
                 "-c",
                 "user.name=t",
@@ -50,18 +59,12 @@ impl Sandbox {
                 "-c",
                 "commit.gpgsign=false",
             ])
-            .args(["commit", "-q", "--allow-empty", "--no-verify", "-m", "init"])
-            .current_dir(s.repo())
+            .args(args)
+            .current_dir(self.repo())
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .status()
             .unwrap();
-        assert!(commit.success());
-        s.fake_claude();
-        s
-    }
-
-    fn repo(&self) -> PathBuf {
-        self.root.join("repo")
+        assert!(status.success(), "git {args:?}");
     }
 
     fn write(&self, path: &str, text: &str) {
@@ -134,14 +137,9 @@ done
         asked
     }
 
-    /// The project's store: the one directory under `~/.ai/files`.
+    /// The project's store, in its main checkout.
     fn store(&self) -> PathBuf {
-        let mut dirs: Vec<PathBuf> = fs::read_dir(self.root.join("home/.ai/files"))
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .collect();
-        assert_eq!(dirs.len(), 1, "{dirs:?}");
-        dirs.pop().unwrap()
+        self.repo().join(".ai/files")
     }
 }
 
@@ -219,6 +217,29 @@ fn a_build_summarises_only_what_changed_since_the_last() {
         "Wrote 3 summaries in 3 requests to the model, $0.03.\n"
     );
     assert_eq!(s.asked(), [".", "src", "src/a.rs"]);
+}
+
+#[test]
+fn the_summaries_are_never_summarised_whatever_gitignore_says() {
+    let s = Sandbox::new();
+    s.write(".gitignore", "target/\n");
+    ok(&s.ai(&["build"]));
+    assert!(s.store().join("summaries.jsonl").is_file());
+    s.asked();
+    assert_eq!(ok(&s.ai(&["build"])), "Nothing to build.\n");
+}
+
+#[test]
+fn a_linked_worktree_keeps_its_summaries_in_the_main_checkout() {
+    let s = Sandbox::new();
+    s.git(&["add", "-A"]);
+    s.git(&["commit", "-q", "--no-verify", "-m", "files"]);
+    let wt = s.root.join("wt");
+    s.git(&["worktree", "add", "-q", wt.to_str().unwrap()]);
+    ok(&s.ai_in(&wt, &["build"]));
+    assert!(!wt.join(".ai").exists());
+    assert!(s.store().join("summaries.jsonl").is_file());
+    assert_eq!(ok(&s.ai(&["view", "src/a.rs"])), "summary of src/a.rs\n");
 }
 
 #[test]

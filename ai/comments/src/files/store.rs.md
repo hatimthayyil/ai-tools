@@ -3,7 +3,7 @@
 The summaries of `ai files`, keyed by content hash, so an unchanged file or directory is never summarised twice.
 
 - Keys are the hashes the tree walk puts on its nodes: a file's content, a directory's children. Nothing is keyed by path, so a renamed or copied file, or a directory holding the same children, finds its summary under the same key.
-- The caller passes the directory (`~/.ai/files/<project>/` from the CLI). `Store::open` checks its format and writes nothing.
+- The caller passes the directory (`.ai/files/` in the project's main checkout, from the CLI). `Store::open` checks its format and writes nothing.
 
 Layout (format 1)
 - `format`: `1`, written before the first write (`file::ensure_format`); `Store::open` refuses another format (`file::check_format`), as the agent store does.

@@ -2,7 +2,8 @@
 
 `ai files build` and `ai files view`: the walk, the store and the summariser joined.
 
-- The project is `Project::find`, the same lookup chat uses, so a change to how projects are found reaches both. The store is `~/.ai/files/<project id>/`, its calls in `calls/` under it.
+- The project is `Project::find`, the same lookup chat uses, so a change to how projects are found reaches both. The store is `.ai/files/` in the project's home, its main checkout, so linked worktrees share it; `.ai/` is gitignored, so the summaries stay private. Its calls are in `calls/` under it.
+- The walk leaves out the project's `.ai/`, which ai writes, whatever `.gitignore` says, so a build never summarises its own summaries.
 - `build` runs only when asked: no hook or background run starts it, since a build costs model calls.
 - Rounds, as `notes build`: each round summarises what is ready (files, and directories whose children all have summaries), in batches of `JOBS` calls at once. A node whose hash is stored is skipped, and so is everything under a stored directory, its hash covering them.
 - Each hash is summarised once per round, so identical files or directories cost one call.

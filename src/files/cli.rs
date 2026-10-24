@@ -19,7 +19,7 @@ use crate::{
         walk,
     },
     git::hash,
-    memory::{Backend, CALLS, JOBS, Spend, broken_pipe, log::usd, plural, store_dir},
+    memory::{Backend, CALLS, JOBS, Spend, broken_pipe, log::usd, plural},
     progress,
     project::Project,
     summariser,
@@ -30,8 +30,8 @@ use crate::{
     name = "files",
     about = "Summaries of a project's files, rolled up its directory tree.",
     after_help = "A directory is summarised from its children's summaries. What git ignores and \
-                  files that are not text are left out. Summaries live in \
-                  ~/.ai/files/<project id>, or under $AI_FILES_DIR if set."
+                  files that are not text are left out. Summaries live in .ai/files in the \
+                  project's main checkout."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -51,10 +51,8 @@ enum Command {
     },
 }
 
-/// `$AI_FILES_DIR`, else `~/.ai/files`: every project's summaries, named by its id.
-pub fn base_dir() -> Result<PathBuf> {
-    store_dir("AI_FILES_DIR", "files")
-}
+/// Where a project keeps its summaries, below its [home](Project::home).
+const DIR: &str = ".ai/files";
 
 impl Cli {
     /// Runs in the current directory, printing to stdout.
@@ -76,10 +74,15 @@ impl Cli {
     }
 }
 
+/// The files of the project at `root` as they are now, leaving out ai's own `.ai`.
+fn tree(root: &Path) -> Result<Node> {
+    Ok(Node::Dir(walk(root, &["/.ai/".into()])?))
+}
+
 /// The directory of the project at or above `cwd`, and its summaries.
 fn open(cwd: &Path) -> Result<(PathBuf, Store)> {
     let p = Project::require(cwd)?;
-    let store = Store::open(&base_dir()?.join(&p.id))?;
+    let store = Store::open(&p.home.join(DIR))?;
     Ok((p.dir, store))
 }
 
@@ -96,7 +99,7 @@ fn build(
         bail!("Another ai files build is running on this project.");
     };
     let bar = progress::bar("summaries", "reading the files");
-    let tree = Node::Dir(walk(root, &[])?);
+    let tree = tree(root)?;
     if matches!(&tree, Node::Dir(d) if d.kids.is_empty()) {
         bar.finish_and_clear();
         bail!("No text files to summarise in {}.", pretty(root));
@@ -258,7 +261,7 @@ fn view(
         Some(p) => relative(cwd, root, p)?,
         None => String::new(),
     };
-    let tree = Node::Dir(walk(root, &[])?);
+    let tree = tree(root)?;
     let n = find(&tree, &rel).with_context(|| {
         format!(
             "ai files leaves {} out: git ignores it, or it holds no text.",
