@@ -67,6 +67,7 @@ fn without_a_file_every_key_has_its_default() {
         ),
         (96, 280)
     );
+    assert_eq!(s.agent.view.lines(), 64);
 }
 
 #[test]
@@ -74,13 +75,13 @@ fn the_nearest_project_file_overrides_the_users_key_by_key() {
     let t = Tree::new();
     fs::write(
         t.user(),
-        "[chat]\nbackground = false\n\n[summariser]\nmodel = \"opus\"\n\n[memory.view]\nlines = 50\n",
+        "[chat]\nbackground = false\n\n[summariser]\nmodel = \"opus\"\n\n[memory.view]\nlines = 50\n\n[agent.view]\nlines = 20\n",
     )
     .unwrap();
     fs::write(t.outer().join("ai.toml"), "[memory.view]\nlines = 10\n").unwrap();
     fs::write(
         t.inner().join("ai.toml"),
-        "[summariser]\nmodel = \"haiku\"\n\n[memory]\nentry-chars = 100\n",
+        "[summariser]\nmodel = \"haiku\"\n\n[memory]\nentry-chars = 100\n\n[agent.view]\nlines = 16\n",
     )
     .unwrap();
     let s = t.load().unwrap();
@@ -96,6 +97,7 @@ fn the_nearest_project_file_overrides_the_users_key_by_key() {
         (50, 100),
         "only the nearest project file counts"
     );
+    assert_eq!(s.agent.view.lines(), 16);
 }
 
 #[test]
@@ -122,6 +124,12 @@ fn a_bad_key_or_value_names_its_file_and_key() {
         ("[chat]\nmodel = \"haiku\"\n", "model", "unknown field"),
         ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),
         ("[agents.a]\nworktree = \"\"\n", "worktree", "is empty"),
+        ("[agent.view]\nline = 3\n", "line", "unknown field"),
+        (
+            "[agent.view]\nlines = 0\n",
+            "lines",
+            "positive whole number",
+        ),
         (
             "[memory.view]\nlines = 0\n",
             "lines",

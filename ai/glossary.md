@@ -21,7 +21,7 @@
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes); off a terminal, in parts newest first.
 - `snapshot`: the memory as of one commit; every command reads one.
 - `knob`: a memory size set under `[memory]` in `ai.toml`, shown by `ai memory config`: `view.lines`, `entry-chars`.
-- `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[memory]`, `[summariser]`): the user's in `~/.ai`, and the project's, the nearest one at or above the cwd (never the user's), whose keys win. A project's also holds `[project]`: its `id` and `name`.
+- `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[agent]`, `[memory]`, `[summariser]`): the user's in `~/.ai`, and the project's, the nearest one at or above the cwd (never the user's), whose keys win. A project's also holds `[project]`: its `id` and `name`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.
 - `format`: the store's format number, the `format` blob at the tree root (absent: 1). This ai reads and writes only its own (`FORMAT`); it refuses a newer store and upgrades an older one.
@@ -47,11 +47,11 @@
 - `tip` (of a session): the item of its transcript's newest entry, the end of its branch.
 - `line` (chat): a summary in a thread, keyed by its level and the last item it covers (`level@last`), of kind chunk (a work line), turn or node; written once.
 - `sync` (chat): ingest an attached session's new entries into its thread, writing nothing if nothing is new; an unattached session is reported as such.
-- `view` (chat): what `ai agent compact-session` and `ai agent view` print for a session: an instruction, then one list of every turn of its branch once, oldest first: the fold (at most `FOLD_LINES` = 64 lines), the recent turns, the newest turn. Computed fresh each time; nothing about it is stored.
+- `view` (chat): what `ai agent compact-session` and `ai agent view` print for a session: an instruction, then one list of every turn of its branch once, oldest first: the fold (at most `[agent.view] lines` lines, default 64), the recent turns, the newest turn. Computed fresh each time; nothing about it is stored.
 - `level` (chat view): how much of a turn the view shows, least first: oldest (in a merged line), older (its turn line), recent, newest. Never decreases toward the present.
 - `recent turns`: the turns before the newest, back from it, whole while they fit `RECENT` (16,000 bytes) at their worst: message and final reply word for word, work lines between.
 - `newest turn`: a branch's last turn, closed or open: the view lists its every item as `ai agent zoom` does, and builds no line for it.
-- `fold` (chat): the turns of a session's branch before the recent ones, in lines, oldest coarsest: from one line per turn, the most due aligned pair merges first, due = (T − last)/2^l, until at most 64 lines are left. An unbuilt line shows what is built under it, else a placeholder.
+- `fold` (chat): the turns of a session's branch before the recent ones, in lines, oldest coarsest: from one line per turn, the most due aligned pair merges first, due = (T − last)/2^l, until at most `[agent.view] lines` (default 64) are left. An unbuilt line shows what is built under it, else a placeholder.
 - `id` (chat): how a line or item prints, on a branch: `12` turn 12, `8+4` turns 8 to 11 (a node when aligned), `12.3` item 3 of turn 12 (item 0 opens it), `12.3+7` items 3 to 9 of turn 12 (a work line, or a chunk of the work). Turns count from 0 along the branch; past a fork, the same id names a different turn on each branch. What `ai agent zoom` takes. Store keys stay `level@last`.
 - `place` (chat): an item's turn and number in it, from its branch (`model::Place`); fixed by the path from the root, so the same on every branch through the item.
 - `open turn`: a branch's last turn, not yet closed: no message follows it and the harness has not ended it.

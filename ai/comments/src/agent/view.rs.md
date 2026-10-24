@@ -15,8 +15,8 @@ Levels
 
 Fold
 - Computed fresh at every call: start from one line per turn, merge the most due aligned pair, due = (T − last)/2^l with `last` the pair's last turn, oldest first on ties, until the lines fit. No high/low-water batches and no persisted view: the view is sent once per compaction, so its prefix never has to stay stable from one call to the next; only the merge order matters.
-- The fold of the turns before the recent ones into at most `FOLD_LINES` (64) lines, as `ai memory view` caps its view by lines: the fold the view wants if everything were built. `needed` is its unbuilt lines and the recent turns' unbuilt work lines; `compact` asks the roll-up to build them before rendering. 64 lines of 512 to 2,048 bytes (50 to 200 words, rollup.rs.md) is 33 to 131 KB.
-- `render`: each planned line if built; else what is built under it (a node's halves, recursively; a turn's message cut to `LINE`, its chunk lines, a placeholder for the rest); else one placeholder naming its id, a turn's carrying its message cut to `LINE` (`12|(not summarised yet) user: …`). Fallbacks can outgrow the plan, so while over `FOLD_LINES` the oldest multi-line fallbacks collapse back to one placeholder each. A full fold has no room for multi-line fallbacks, but a turn's placeholder is one line, so an unsummarised turn shows its message at any size: `view` writes no line, so it shows unsummarised turns often.
+- The fold of the turns before the recent ones into at most `[agent.view] lines` lines (`View`, default 64; `Branch.fold`), as `ai memory view` caps its view by lines: the fold the view wants if everything were built. A nested table, so later `agent view` settings sit beside `lines`. `needed` is its unbuilt lines and the recent turns' unbuilt work lines; `compact` asks the roll-up to build them before rendering. 64 lines of 512 to 2,048 bytes (50 to 200 words, rollup.rs.md) is 33 to 131 KB.
+- `render`: each planned line if built; else what is built under it (a node's halves, recursively; a turn's message cut to `LINE`, its chunk lines, a placeholder for the rest); else one placeholder naming its id, a turn's carrying its message cut to `LINE` (`12|(not summarised yet) user: …`). Fallbacks can outgrow the plan, so while over the fold's lines the oldest multi-line fallbacks collapse back to one placeholder each. A full fold has no room for multi-line fallbacks, but a turn's placeholder is one line, so an unsummarised turn shows its message at any size: `view` writes no line, so it shows unsummarised turns often.
 - Zoom keeps bare placeholders: it opens what is built, and a turn zooms into its items.
 
 Ids
@@ -26,7 +26,7 @@ Chunks
 - A turn's chunks are the roll-up's own cut (`Part::chunks`, every chunk, the open last one included): the view shows the built chunk lines consecutive from the first, each with its exact range, so the compactor may write them in any order. A chunk line after an unbuilt one is left out until the gap is built.
 
 Budgets
-- The fold at most `FOLD_LINES` lines, the recent turns at most `RECENT` bytes; the newest turn whole, however long. Constants until the config system.
+- The fold at most `[agent.view] lines` lines, the recent turns at most `RECENT` bytes; the newest turn whole, however long. The CLI reads the setting once per command (`fold_lines`) and hands it to the branch, so zoom, grep and build read the same branch as the view.
 - Item lines: `render::item_line`, the one renderer the compactor's input uses too (render.rs.md). Fold fallbacks cut words to 512 bytes (`SHORT`); recent turns print message and reply whole; the newest turn and zoom share `LISTING`.
 - The instruction names the four levels, least detail first, with an id of each, so a reader knows what a line covers before zooming it.
 - The instruction says a summary cites the item holding a detail as `[12.3]`, as the compactor's prompt asks.

@@ -133,6 +133,9 @@ name = "widget"    # its name; default the directory's
 [chat]
 background = true  # summarise in the background after each turn
 
+[agent.view]
+lines = 64         # the most lines the view folds the older turns into
+
 [summariser]       # what writes every summary: chat, memory, notes, files
 backend = "claude" # claude -p; the only backend yet
 model = "sonnet"   # in the backend's own spelling

@@ -441,24 +441,30 @@ fn row(t: &ThreadInfo) -> String {
     )
 }
 
+/// How many lines the view's fold prints where `store` was found: `[agent.view] lines`.
+fn fold_lines(store: &Store) -> Result<usize> {
+    Ok(store.settings()?.agent.view.lines())
+}
+
 /// The branch a command reads in `s`: session `c`'s (to its newest item, else its graft), else
-/// the thread's newest; `None` while it holds no item.
-fn read_branch(s: &Snapshot, c: Option<&Current>) -> Result<Option<Branch>> {
+/// the thread's newest, its fold in at most `fold` lines; `None` while it holds no item.
+fn read_branch(s: &Snapshot, c: Option<&Current>, fold: usize) -> Result<Option<Branch>> {
     match c {
         Some(c) => match s.binding(&c.harness, &c.session)? {
-            Some(b) if b.tip.or(b.graft).is_some() => Ok(Some(Branch::session(s, &b)?)),
+            Some(b) if b.tip.or(b.graft).is_some() => Ok(Some(Branch::session(s, &b, fold)?)),
             _ => Ok(None),
         },
         None => match s.tips()?.last() {
-            Some(&tip) => Ok(Some(Branch::load(s, Some(tip))?)),
+            Some(&tip) => Ok(Some(Branch::load(s, Some(tip), fold)?)),
             None => Ok(None),
         },
     }
 }
 
-/// The view of the branch `c` reads in snapshot `s`; `None` while that branch holds no item.
-fn view_in(t: &Thread, s: &Snapshot, c: Option<&Current>) -> Result<Option<String>> {
-    Ok(read_branch(s, c)?.map(|b| b.view(t.name())))
+/// The view of the branch `c` reads in snapshot `s`, its fold in at most `fold` lines; `None`
+/// while that branch holds no item.
+fn view_in(t: &Thread, s: &Snapshot, c: Option<&Current>, fold: usize) -> Result<Option<String>> {
+    Ok(read_branch(s, c, fold)?.map(|b| b.view(t.name())))
 }
 
 /// The thread's latest snapshot, once the lines the view of `branch` (read in it) needs are
@@ -613,8 +619,11 @@ fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let t = store.existing(name)?;
     let dir = worktree(&store, cwd, name)?;
     let instructions = instructions(&store, name)?;
+    let fold = fold_lines(&store)?;
     ready(&store, &t, |s| {
-        s.graft()?.map(|g| Branch::load(s, Some(g))).transpose()
+        s.graft()?
+            .map(|g| Branch::load(s, Some(g), fold))
+            .transpose()
     })?;
     let session = uuid()?;
     let config = claude_config().context("No home directory: set CLAUDE_CONFIG_DIR.")?;
@@ -762,8 +771,9 @@ fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCo
     let Some((store, t, c)) = synced(cwd, s)? else {
         return not_attached();
     };
-    let snap = ready(&store, &t, |s| read_branch(s, Some(&c)))?;
-    if let Some(view) = view_in(&t, &snap, Some(&c))? {
+    let fold = fold_lines(&store)?;
+    let snap = ready(&store, &t, |s| read_branch(s, Some(&c), fold))?;
+    if let Some(view) = view_in(&t, &snap, Some(&c), fold)? {
         write!(out, "{view}")?;
     }
     Ok(ExitCode::SUCCESS)
@@ -806,7 +816,7 @@ pub fn thread_view(
         Some(at) => t.snapshot_at(at)?,
         None => latest(&store, &t, c.as_ref())?,
     };
-    let view = view_in(&t, &snap, c.as_ref())?;
+    let view = view_in(&t, &snap, c.as_ref(), fold_lines(&store)?)?;
     Ok(view.map(|v| (v, t.name().to_string(), snap.mark())))
 }
 
@@ -827,7 +837,8 @@ fn view(
         Some(_) => parts.snapshot(&t)?,
         None => latest(&store, &t, session.as_ref())?,
     };
-    let shown = view_in(&t, &snap, session.as_ref())?.map(|v| (v, snap.mark()));
+    let shown =
+        view_in(&t, &snap, session.as_ref(), fold_lines(&store)?)?.map(|v| (v, snap.mark()));
     let Some((text, mark)) = shown else {
         writeln!(out, "Thread {} holds nothing yet.", t.name())?;
         return Ok(ExitCode::SUCCESS);
@@ -850,14 +861,14 @@ fn zoom(
     tool_output: bool,
 ) -> Result<ExitCode> {
     let usage = "ai agent zoom -a <name> <id>";
-    let (_, t, session) = pick(cwd, target.agent, target.session.current(), usage)?;
+    let (store, t, session) = pick(cwd, target.agent, target.session.current(), usage)?;
     let Some(parsed) = Id::parse(id) else {
         bail!(
             "'{id}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3 (an item)."
         );
     };
     let snap = parts.snapshot(&t)?;
-    let branch = read_branch(&snap, session.as_ref())?;
+    let branch = read_branch(&snap, session.as_ref(), fold_lines(&store)?)?;
     let Some(text) = branch.and_then(|b| b.zoom(parsed, tool_output)) else {
         bail!("This branch has no {parsed}.");
     };
@@ -907,12 +918,12 @@ fn grep(
     };
     let several = picked.len() > 1;
     let (mut hits, mut marks, mut agents) = (Vec::new(), Vec::new(), Vec::new());
-    for ((_, t, session), at) in picked.iter().zip(ats) {
+    for ((store, t, session), at) in picked.iter().zip(ats) {
         let snap = match at {
             Some(at) => t.snapshot_at(at.parse()?)?,
             None => t.snapshot()?,
         };
-        if let Some(b) = read_branch(&snap, session.as_ref())? {
+        if let Some(b) = read_branch(&snap, session.as_ref(), fold_lines(store)?)? {
             hits.extend(b.grep(&re, tool_output).into_iter().map(|h| match several {
                 true => format!("{} {}", t.name(), h.line),
                 false => h.line,
@@ -978,7 +989,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
             let id = Id::parse(v).with_context(|| {
                 format!("'{v}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.1+7 (the work of turn 12).")
             })?;
-            let key = read_branch(&t.snapshot()?, session.as_ref())?
+            let key = read_branch(&t.snapshot()?, session.as_ref(), fold_lines(&store)?)?
                 .and_then(|b| b.line_key(id))
                 .with_context(|| {
                     format!("{id} is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and their work (12.1+7).")

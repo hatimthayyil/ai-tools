@@ -2,6 +2,7 @@ use std::{collections::HashMap, ops::Range};
 
 use anyhow::Result;
 use regex::Regex;
+use serde::{Deserialize, Deserializer, de::Error as _};
 
 use crate::{
     agent::{
@@ -15,8 +16,6 @@ use crate::{
     memory::{Coord, excerpt, flat},
 };
 
-/// The most lines the fold prints.
-pub const FOLD_LINES: usize = 64;
 /// The most the recent turns print, in bytes.
 pub const RECENT: usize = 16_000;
 /// The most of a message's words the fold prints for a turn not summarised yet.
@@ -37,6 +36,51 @@ const LISTING: Cut = Cut {
     input: CALL,
     output: None,
 };
+
+/// `[agent]` in `ai.toml`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Table {
+    pub view: View,
+}
+
+impl Table {
+    /// These settings, then `base`'s for those unset here.
+    pub fn over(self, base: Table) -> Table {
+        Table {
+            view: self.view.over(base.view),
+        }
+    }
+}
+
+/// `[agent.view]` in `ai.toml`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct View {
+    /// The most lines the fold prints; default 64.
+    #[serde(deserialize_with = "positive")]
+    pub lines: Option<usize>,
+}
+
+impl View {
+    pub fn lines(&self) -> usize {
+        self.lines.unwrap_or(64)
+    }
+
+    /// These settings, then `base`'s for those unset here.
+    pub fn over(self, base: View) -> View {
+        View {
+            lines: self.lines.or(base.lines),
+        }
+    }
+}
+
+fn positive<'de, D: Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    match usize::deserialize(d)? {
+        0 => Err(D::Error::custom("must be a positive whole number")),
+        n => Ok(Some(n)),
+    }
+}
 
 const TURNS: &str = "Turns";
 
@@ -155,13 +199,16 @@ pub struct Branch {
     /// Each turn's chunks, as the roll-up cuts it.
     cuts: Vec<Vec<Range<usize>>>,
     lines: HashMap<Key, String>,
+    /// The most lines its fold prints.
+    fold: usize,
     /// Read for the session attached to it.
     attached: bool,
 }
 
 impl Branch {
-    /// The branch ending at item `tip`, none for no item, with `lines` by key.
-    pub fn new(tree: Tree, tip: Option<u64>, lines: HashMap<Key, String>) -> Branch {
+    /// The branch ending at item `tip`, none for no item, with `lines` by key, its fold in at most
+    /// `fold` lines.
+    pub fn new(tree: Tree, tip: Option<u64>, lines: HashMap<Key, String>, fold: usize) -> Branch {
         let b = tip.map(|t| rollup::branch(&tree, t as usize));
         let (path, parts) = b.map_or_else(Default::default, |b| (b.seqs, b.parts));
         let (xs, cuts) = parts.into_iter().map(|p| (p.turn, p.chunks)).unzip();
@@ -171,24 +218,26 @@ impl Branch {
             xs,
             cuts,
             lines,
+            fold,
             attached: false,
         }
     }
 
-    /// The branch of `s` ending at item `tip`, with every line of the thread.
-    pub fn load(s: &Snapshot, tip: Option<u64>) -> Result<Branch> {
+    /// The branch of `s` ending at item `tip`, with every line of the thread, its fold in at most
+    /// `fold` lines.
+    pub fn load(s: &Snapshot, tip: Option<u64>, fold: usize) -> Result<Branch> {
         let lines = s
             .all_lines()?
             .into_iter()
             .map(|(k, l)| (k, l.text))
             .collect();
-        Ok(Branch::new(s.tree()?, tip, lines))
+        Ok(Branch::new(s.tree()?, tip, lines, fold))
     }
 
     /// The branch of session `b`: to its tip, else to its graft, the thread's newest item when
     /// it was attached.
-    pub fn session(s: &Snapshot, b: &Binding) -> Result<Branch> {
-        let mut branch = Branch::load(s, b.tip.or(b.graft))?;
+    pub fn session(s: &Snapshot, b: &Binding, fold: usize) -> Result<Branch> {
+        let mut branch = Branch::load(s, b.tip.or(b.graft), fold)?;
         branch.attached = true;
         Ok(branch)
     }
@@ -210,11 +259,11 @@ impl Branch {
     }
 
     /// Each entry of the view with its level, oldest first: the fold over the turns before the
-    /// recent ones in at most [`FOLD_LINES`] lines, the recent turns, then the newest turn.
+    /// recent ones in at most its `fold` lines, the recent turns, then the newest turn.
     fn levels(&self) -> Vec<(Coord, Level)> {
         let n = self.xs.len();
         let first = self.recent();
-        let fold = fold(first as u64, FOLD_LINES, |_| 1)
+        let fold = fold(first as u64, self.fold, |_| 1)
             .into_iter()
             .map(|c| match c.l {
                 0 => (c, Level::Older),
@@ -523,7 +572,7 @@ impl Branch {
 
     /// The lines of fold `plan`: each built line, else what is built under it, else its
     /// placeholder with a turn's message; the oldest of the fallbacks become placeholders while
-    /// over [`FOLD_LINES`].
+    /// over its `fold` lines.
     fn render(&self, plan: &[Coord]) -> Vec<String> {
         let mut parts: Vec<Vec<String>> = plan
             .iter()
@@ -535,7 +584,7 @@ impl Branch {
             .collect();
         let mut n: usize = parts.iter().map(Vec::len).sum();
         for (part, &c) in parts.iter_mut().zip(plan) {
-            if n <= FOLD_LINES {
+            if n <= self.fold {
                 break;
             }
             if part.len() > 1 {
@@ -707,7 +756,7 @@ mod tests {
             .iter()
             .map(|&(level, last, t)| (Key { level, last }, t.to_string()))
             .collect();
-        Branch::new(Tree::new(items), tip, lines)
+        Branch::new(Tree::new(items), tip, lines, View::default().lines())
     }
 
     fn short(i: usize) -> String {
@@ -766,7 +815,7 @@ mod tests {
 
     /// The fold over every closed turn of `b`, rendered.
     fn folded(b: &Branch) -> Vec<String> {
-        b.render(&fold(b.closed(), FOLD_LINES, |_| 1))
+        b.render(&fold(b.closed(), b.fold, |_| 1))
     }
 
     #[test]
@@ -802,7 +851,7 @@ mod tests {
             &[(2, 3, "first two"), (1, 5, "third"), (1, 131, "newest")],
         );
         let fold = folded(&b);
-        assert_eq!(fold.len(), FOLD_LINES);
+        assert_eq!(fold.len(), b.fold);
         assert_eq!(
             fold[..3],
             [
@@ -1032,7 +1081,7 @@ mod tests {
             .map(|&k| (k, "w".repeat(work_limit(&items[last(k) - 2..=last(k)]))))
             .collect();
         let tip = Some(items.len() as u64 - 1);
-        let b = Branch::new(Tree::new(items), tip, built);
+        let b = Branch::new(Tree::new(items), tip, built, View::default().lines());
         assert_eq!(
             b.recent(),
             25,
@@ -1053,7 +1102,7 @@ mod tests {
             branch(chain(&spec, big), &[]),
         ] {
             let v = b.view("dev");
-            let most = FOLD_LINES * 600 + RECENT + bytes(&b.newest(3000)) + 4_000;
+            let most = b.fold * 600 + RECENT + bytes(&b.newest(3000)) + 4_000;
             assert!(v.len() <= most, "{}", v.len());
             assert!(v.starts_with("# Thread `dev`\n\nThis is the thread `dev`"));
             assert_eq!(v.matches("\n## ").count(), 1, "one list");
@@ -1062,7 +1111,7 @@ mod tests {
                 .iter()
                 .filter(|(_, l)| *l <= Level::Older)
                 .count();
-            assert!(fold > 10 && fold <= FOLD_LINES, "{fold}");
+            assert!(fold > 10 && fold <= b.fold, "{fold}");
             let list = section_lines(&v, TURNS);
             assert!(list.last().unwrap().starts_with("3000.0|user: "));
             check(&b);
@@ -1076,7 +1125,12 @@ mod tests {
         let mut items = chain("ututu", short);
         items[4].parent = Some(source(1));
         let view = |tip: u64, attached: bool| {
-            let mut b = Branch::new(Tree::new(items.clone()), Some(tip), HashMap::new());
+            let mut b = Branch::new(
+                Tree::new(items.clone()),
+                Some(tip),
+                HashMap::new(),
+                View::default().lines(),
+            );
             b.attached = attached;
             b.view("dev")
         };

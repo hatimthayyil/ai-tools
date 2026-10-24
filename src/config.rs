@@ -59,6 +59,7 @@ fn same(a: &Path, b: &Path) -> bool {
 pub(crate) struct File {
     pub project: Option<project::Table>,
     pub chat: agent::Config,
+    pub agent: agent::Table,
     pub memory: memory::Config,
     pub summariser: summariser::Config,
     pub agents: BTreeMap<String, Agent>,
@@ -132,6 +133,7 @@ pub(crate) fn read(p: &Path) -> Result<Option<File>> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub chat: agent::Config,
+    pub agent: agent::Table,
     pub memory: memory::Config,
     pub summariser: summariser::Config,
     agents: BTreeMap<String, Agent>,
@@ -195,6 +197,7 @@ impl Settings {
         }
         Ok(Some(Settings {
             chat: f.chat,
+            agent: f.agent,
             memory: f.memory,
             summariser: f.summariser,
             agents: f
@@ -213,6 +216,7 @@ impl Settings {
         }
         Settings {
             chat: self.chat.over(base.chat),
+            agent: self.agent.over(base.agent),
             memory: self.memory.over(base.memory),
             summariser: self.summariser.over(base.summariser),
             agents,
