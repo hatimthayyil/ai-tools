@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    env,
+    env, fs,
     io::{self, IsTerminal, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use dialoguer::Select;
 use indicatif::ProgressBar;
@@ -25,7 +25,8 @@ use crate::{
         sync::Synced,
         view::Branch,
     },
-    file,
+    config::FILE,
+    file::{self, AtPath},
     memory::{Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page, progress,
 };
@@ -56,18 +57,25 @@ enum Command {
     },
     #[command(
         about = "start Claude Code in a new session attached to an agent.",
-        after_help = "It first writes the summary lines the session's view needs; if one fails, Claude Code does not start."
+        after_help = "It runs in the agent's worktree, with its instructions, when ai.toml's [agents.<name>] names them. It first writes the summary lines the session's view needs; if one fails, Claude Code does not start."
     )]
     Start {
         #[arg(help = "the agent")]
         name: String,
+        #[arg(long, default_value = claude::HARNESS, value_parser = [claude::HARNESS], help = "the harness to run it in")]
+        harness: String,
         #[arg(last = true, help = "arguments for claude, after --")]
         args: Vec<String>,
     },
-    #[command(about = "continue the agent's newest Claude Code session.")]
+    #[command(
+        about = "continue the agent's newest Claude Code session.",
+        after_help = "It runs where that session ran, with the agent's instructions from ai.toml's [agents.<name>]."
+    )]
     Resume {
         #[arg(help = "the agent")]
         name: String,
+        #[arg(long, default_value = claude::HARNESS, value_parser = [claude::HARNESS], help = "the harness to run it in")]
+        harness: String,
         #[arg(last = true, help = "arguments for claude, after --")]
         args: Vec<String>,
     },
@@ -299,8 +307,8 @@ impl Cli {
         });
         match command {
             Command::New { name } => new(cwd, out, &name),
-            Command::Start { name, args } => launch(cwd, &name, &args),
-            Command::Resume { name, args } => resume(cwd, &name, &args),
+            Command::Start { name, args, .. } => launch(cwd, &name, &args),
+            Command::Resume { name, args, .. } => resume(cwd, &name, &args),
             Command::List { session } => list(cwd, out, session),
             Command::View {
                 thread,
@@ -519,11 +527,66 @@ fn new(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// A new Claude Code session attached to agent `name`, bound with its future transcript, once
-/// the lines its view needs are written.
+/// Agent `name`'s `[agents.<name>]` instructions, read now; `None` when it names none.
+fn instructions(store: &Store, name: &str) -> Result<Option<String>> {
+    let settings = store.settings()?;
+    let Some(p) = settings.agent(name).and_then(|a| a.instructions.as_deref()) else {
+        return Ok(None);
+    };
+    fs::read_to_string(p)
+        .at(p)
+        .map(Some)
+        .map_err(|e| anyhow!("Cannot read agent {name}'s instructions: {e}"))
+}
+
+/// Where agent `name` starts: its `[agents.<name>]` worktree, canonical as the harness sees it,
+/// else `cwd`. A worktree must exist and lie in this project, so the session's hooks find this
+/// store.
+fn worktree(store: &Store, cwd: &Path, name: &str) -> Result<PathBuf> {
+    let settings = store.settings()?;
+    let Some(dir) = settings.agent(name).and_then(|a| a.worktree.as_deref()) else {
+        return Ok(cwd.to_path_buf());
+    };
+    if !dir.is_dir() {
+        bail!(
+            "Agent {name}'s worktree {} does not exist. Create it: git worktree add {}",
+            file::pretty(dir),
+            dir.display()
+        );
+    }
+    let dir = fs::canonicalize(dir).at(dir)?;
+    if !store.holds(&dir) {
+        bail!(
+            "Agent {name}'s worktree {} is not in this project: its {FILE} must hold the id {}.",
+            file::pretty(&dir),
+            store.project().id
+        );
+    }
+    Ok(dir)
+}
+
+/// `claude`'s arguments: `first`, the agent's `instructions` as an added system prompt, then
+/// the launcher's `args`.
+fn claude_args<'a>(
+    first: [&'a str; 2],
+    instructions: &'a Option<String>,
+    args: &'a [String],
+) -> Vec<&'a str> {
+    let mut argv = first.to_vec();
+    if let Some(text) = instructions {
+        argv.extend(["--append-system-prompt", text]);
+    }
+    argv.extend(args.iter().map(String::as_str));
+    argv
+}
+
+/// A new Claude Code session attached to agent `name`, in its worktree with its instructions,
+/// bound with its future transcript, once the lines its view needs are written.
 fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
     let t = store.existing(name)?;
+    let dir = worktree(&store, cwd, name)?;
+    let instructions = instructions(&store, name)?;
     ready(&store, &t, |s| {
         s.graft()?.map(|g| Branch::load(s, Some(g))).transpose()
     })?;
@@ -531,16 +594,17 @@ fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let config = claude_config().context("No home directory: set CLAUDE_CONFIG_DIR.")?;
     let path = config
         .join("projects")
-        .join(claude::project_dir(cwd))
+        .join(claude::project_dir(&dir))
         .join(format!("{session}.jsonl"));
     store.attach(name, claude::HARNESS, &session, Some(&path))?;
-    let mut argv = vec!["--session-id", &session];
-    argv.extend(args.iter().map(String::as_str));
-    exec_claude(cwd, &argv)
+    exec_claude(
+        &dir,
+        &claude_args(["--session-id", &session], &instructions, args),
+    )
 }
 
 /// The thread's newest Claude Code session, resumed attached in the directory it ran in when
-/// it can be; else a new one.
+/// it can be, with the agent's instructions; else a new one.
 fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
     let t = store.existing(name)?;
@@ -555,10 +619,12 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
         Some(b) => match &b.transcript {
             Some(p) if p.is_file() => match claude::session_dir(p) {
                 Some(dir) if store.holds(&dir) => {
+                    let instructions = instructions(&store, name)?;
                     store.attach(name, claude::HARNESS, &b.session, Some(p))?;
-                    let mut argv = vec!["--resume", &b.session];
-                    argv.extend(args.iter().map(String::as_str));
-                    return exec_claude(&dir, &argv);
+                    return exec_claude(
+                        &dir,
+                        &claude_args(["--resume", &b.session], &instructions, args),
+                    );
                 }
                 Some(dir) => format!(
                     "session {} ran in {}, outside this project",

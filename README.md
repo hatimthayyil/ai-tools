@@ -102,6 +102,7 @@ A file's summary is asked for a tenth of its bytes, at least 512; a directory's 
 ai agent new dev                      # create agent dev, with an empty thread
 ai agent start dev [-- claude args]   # Claude Code in a new session of dev; its thread's view is its context
 ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in
+                                      # both take --harness; claude is the only one yet
 ai agent list                         # the agents here, newest first, and their sessions
 ai agent view dev                     # dev's view, from the summaries written so far
 ai agent zoom -t dev <id>             # open a line of it; --tool-output adds tool output
@@ -145,6 +146,8 @@ worktree = "../ai-tools-stabiliser"       # the directory it runs in
 ```
 
 An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it.
+
+`ai agent start` runs the harness in the agent's `worktree`, else in the current directory, and `start` and `resume` add its `instructions` to the harness's system prompt (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must hold the project's `ai.toml`, so its sessions find the project's threads; a git worktree of a commit that has it does. `ai.local.toml` is not copied, so a session in the worktree reads the worktree's own.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 

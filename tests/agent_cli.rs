@@ -1222,6 +1222,115 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
 }
 
 #[test]
+fn an_agent_runs_in_its_worktree_with_its_instructions() {
+    let s = Sandbox::new();
+    let toml = s.repo().join("ai.toml");
+    let project = fs::read_to_string(&toml).unwrap();
+    fs::write(
+        &toml,
+        format!(
+            "{project}\n[agents.dev]\ninstructions = \"agents/dev.md\"\nworktree = \"../dev-wt\"\n"
+        ),
+    )
+    .unwrap();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent start dev\n",
+    );
+
+    let given = s.repo().join("../dev-wt");
+    fails(
+        s.ai(&["start", "dev"]),
+        &format!(
+            "Agent dev's worktree {0} does not exist. Create it: git worktree add {0}\n",
+            given.display()
+        ),
+    );
+    let wt = s.root.join("dev-wt");
+    fs::create_dir(&wt).unwrap();
+    let id = Project::find(&s.repo()).unwrap().unwrap().id;
+    fails(
+        s.ai(&["start", "dev"]),
+        &format!(
+            "Agent dev's worktree {} is not in this project: its ai.toml must hold the id {id}.\n",
+            wt.display()
+        ),
+    );
+    fs::write(wt.join("ai.toml"), &project).unwrap();
+    fails(
+        s.ai(&["start", "dev"]),
+        &format!(
+            "Cannot read agent dev's instructions: {}: No such file or directory.\n",
+            s.repo().join("agents/dev.md").display()
+        ),
+    );
+    assert!(!s.root.join("out/argv").exists(), "nothing started");
+
+    fs::create_dir(s.repo().join("agents")).unwrap();
+    fs::write(s.repo().join("agents/dev.md"), "Keep it short.").unwrap();
+    let o = s.ai(&["start", "dev", "--harness", "pi"]);
+    assert_eq!(code(&o), 2, "only claude is a harness yet");
+    ok(
+        s.ai(&[
+            "start",
+            "dev",
+            "--harness",
+            "claude",
+            "--",
+            "--model",
+            "haiku",
+        ]),
+        "",
+    );
+    let argv = s.argv();
+    let session = argv[1].clone();
+    assert_eq!(
+        argv,
+        [
+            "--session-id",
+            &session,
+            "--append-system-prompt",
+            "Keep it short.",
+            "--model",
+            "haiku"
+        ]
+    );
+    assert_eq!(s.claude_dir(), wt);
+    let t = s.store().thread("dev").unwrap();
+    let b = t
+        .snapshot()
+        .unwrap()
+        .binding("claude", &session)
+        .unwrap()
+        .unwrap();
+    let transcript = s.project(&wt).join(format!("{session}.jsonl"));
+    assert_eq!(
+        b.transcript,
+        Some(transcript.clone()),
+        "Claude Code keeps the session under the worktree"
+    );
+    ok(
+        s.ai_at(&wt, &session, &["view"]),
+        "Thread dev holds nothing yet.\n",
+    );
+
+    fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    fs::write(&transcript, ran_in(&fixture("plain.jsonl"), &wt)).unwrap();
+    ok(s.ai_at(&wt, &session, &["sync-session"]), "");
+    ok(s.ai(&["resume", "dev"]), "");
+    assert_eq!(
+        s.argv(),
+        [
+            "--resume",
+            &session,
+            "--append-system-prompt",
+            "Keep it short."
+        ]
+    );
+    assert_eq!(s.claude_dir(), wt);
+}
+
+#[test]
 fn threads_resolve_in_the_current_repository_only() {
     let s = Sandbox::new();
     let other = s.root.join("other");
