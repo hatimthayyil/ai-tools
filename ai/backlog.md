@@ -2,7 +2,6 @@
 
 ## ai
 
-- Settings outside `ai.toml`: the chat view size (64 lines, a constant).
 - `ai desk`: a TUI overview of every part of `ai` (memory, chat threads and sessions, notes, code): search and navigate, see stale lines, resummarise a line. Mostly for `ai notes`/`ai code`, where the user takes part; the user doubts session logs need curating.
 - Overlap between `ai memory` and `ai agent` (both fold a log into a summary tree with the same ids): consider consolidating.
 - pi and DeepSeek Harness (DSH) support: an unreviewed implementation by DeepSeek Flash on branch `dsh-pi` (21 commits on v0.14.0). Review it before any of it lands, or reimplement. It holds:
