@@ -1,0 +1,13 @@
+{
+  "name": "ai",
+  "description": "The Claude Code plugin of the ai package",
+  "owner": {
+    "name": "Hatim Thayyil"
+  },
+  "plugins": [
+    {
+      "name": "ai",
+      "source": "./claude"
+    }
+  ]
+}

@@ -33,12 +33,16 @@
             };
             cargoLock.lockFile = ./Cargo.lock;
             postInstall = ''
-              mkdir -p $out/share/ai/plugins
-              cp -r --no-preserve=mode ${./plugins/claude} $out/share/ai/plugins/claude
+              mkdir -p $out/share/ai
+              cp -r --no-preserve=mode ${./plugins} $out/share/ai/plugins
             '';
             nativeCheckInputs = [ pkgs.git ];
             nativeInstallCheckInputs = [ pkgs.versionCheckHook ];
             doInstallCheck = true;
+            postInstallCheck = ''
+              test -f $out/share/ai/plugins/.claude-plugin/marketplace.json
+              test -f $out/share/ai/plugins/claude/.claude-plugin/plugin.json
+            '';
             meta = {
               description = "All-in-one AI tool: permanent memory for AI agents";
               homepage = "https://github.com/hatimthayyil/ai-tools";
