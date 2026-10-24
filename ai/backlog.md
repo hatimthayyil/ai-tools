@@ -10,6 +10,7 @@
   - plugins: one client for the ai CLI, `/ai` for pi and DSH, every plugin shipped in the package;
   - memory: the summariser through pi, with a `[summariser]` table in `ai.toml` choosing backend and model;
   - surveys: `ai/research/20261021T002801--pi-harness-support.md` (on main; the branch rewrites it from pi 1.3.0) and `ai/research/20261022T193800--dsh-harness-support.md` (branch only).
+- Headless agents, to explore: an agent that runs without a terminal, for example a harness's print mode resuming the agent's thread, and takes its messages from its inbox. Agents are interactive. Design: `ai/research/20261024T084514--agents.md`.
 - One JSONL storage module for chat and memory: `src/jsonl.rs` (append, locks, format file, recovery of a half-written last line) serves chat; when memory moves to JSONL it uses the same module, and the Git plumbing in `src/git.rs` (refs, compare-and-swap, fan-out paths) and the record codec in `src/record.rs` go. gix stays for provenance, git config and `ai notes`. Undecided: the user wants it explained first.
 
 ## Memory
