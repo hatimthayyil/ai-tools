@@ -1,0 +1,76 @@
+ai/comments/src/agent/summarise.rs.md
+  s_77b04d9838f161::t_3ea51cb31b0063 16-18
+tests/rollup.rs
+  s_77b04d9838f161::t_d99b56036c54bc 502
+  s_77b04d9838f161::t_0f55ecd89abc08 627-630
+  s_77b04d9838f161::t_b13e561a0e3c36 609,617,631-635
+  s_77b04d9838f161::t_eb12ca7a61eabd 690
+  s_77b04d9838f161::t_95aa704a7c6160 707,720-723,726-729,731-732
+ai/comments/tests/rollup.rs.md
+  s_77b04d9838f161::t_790475d5b98628 7
+ai/comments/tests/agent_cli.rs.md
+  s_77b04d9838f161::t_ec6c7391697e73 24
+ai/comments/plugins/claude/hooks/register.ts.md
+  s_77b04d9838f161::t_8d63aba446dcd4 23
+  s_77b04d9838f161::t_31eec34c62362c 22,24
+  s_77b04d9838f161::t_9d2f8a6c5df614 26
+src/agent/summarise.rs
+  s_77b04d9838f161::t_2121914a63d849 488
+  s_77b04d9838f161::t_98ce2b48f91e37 182,231,299,341
+  s_77b04d9838f161::t_d68c769dc2c4c5 457-458
+  s_77b04d9838f161::t_8cf31e99b55f68 123-125,139,143
+  s_77b04d9838f161::t_8489c65f63bbee 7
+src/agent/cli.rs
+  s_77b04d9838f161::t_d0b21b9321d486 39
+  s_77b04d9838f161::t_4136fa2c956f51 511-513,519-550
+  s_77b04d9838f161::t_adedaef04e87c2 815-817
+  s_77b04d9838f161::t_3c703f637d8da5 1048
+  s_77b04d9838f161::t_3f97d5cc147601 25
+ai/comments/src/agent/cli.rs.md
+  s_77b04d9838f161::t_2dad05023d40b7 47
+  s_77b04d9838f161::t_ab760686171fad 30
+plugins/claude/hooks/register.ts
+  s_77b04d9838f161::t_008b394f00cf83 31-32
+  s_77b04d9838f161::t_d669fae6d19913 29,34-37,41-43
+  s_77b04d9838f161::t_3a3ca08e9d7b2e 28,30,33,39-40
+  s_77b04d9838f161::t_6decd7bdd905d3 150
+  s_77b04d9838f161::t_d91e7c05733b48 53
+  s_77b04d9838f161::t_c56c8ecf3189f7 38,152
+  s_77b04d9838f161::t_5a3c6b65c47979 84
+  s_77b04d9838f161::t_8632d107e73242 80
+  s_77b04d9838f161::t_4252f3af5255a6 89
+src/agent/store.rs
+  s_77b04d9838f161::t_17392cdb3c8f06 378-384
+plugins/claude/tests/ai.test.ts
+  s_77b04d9838f161::t_1348185b1861fc 33-35,47-50,52,54-57
+  s_77b04d9838f161::t_22b09f7ca9384a 72
+  s_77b04d9838f161::t_3734c17f6b4fcf 107,114-123,125-137,140-141,143-147
+  s_77b04d9838f161::t_46fa19e45cd10c 124,139
+  s_77b04d9838f161::t_6cfcf438ce6f5b 138,142
+  s_77b04d9838f161::t_8c0d713d768553 53,58
+  s_77b04d9838f161::t_b00d9eb5438212 51
+  s_77b04d9838f161::t_2a2c88a5112c93 59,148
+tests/agent_cli.rs
+  s_77b04d9838f161::t_447f5449ff3b65 117-118
+  s_77b04d9838f161::t_4dfbf368850d0f 153,158
+  s_77b04d9838f161::t_0f55ecd89abc08 1863-1866,1872-1876
+  s_77b04d9838f161::t_bbb7892398277e 1808-1862,1867-1871,1877-1879
+  s_77b04d9838f161::t_5417bcbc47afba 142,146-148
+  s_77b04d9838f161::t_150491b4723758 149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cde2586b2e822f93ea2d399ebcd0629c5b0311a5",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
