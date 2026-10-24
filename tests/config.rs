@@ -1,8 +1,13 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use ai_tools::{
     config::{Agent, Settings},
     memory::Knob,
+    project::Project,
     summariser::Kind,
 };
 use tempfile::TempDir;
@@ -291,4 +296,90 @@ fn the_local_file_holds_no_project_table() {
             local.display()
         )
     );
+}
+
+/// `git args` in `dir`, which must succeed.
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_linked_worktree_reads_the_main_checkouts_local_file() {
+    let tmp = TempDir::new().unwrap();
+    let main = tmp.path().join("main");
+    let sub = main.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(
+        sub.join("ai.toml"),
+        "[project]\nid = \"project_01m5h1sxw1eh2rcnjyd5hb8fy4\"\n\n[summariser]\nmodel = \"haiku\"\n",
+    )
+    .unwrap();
+    fs::write(main.join(".gitignore"), "ai.local.toml\n").unwrap();
+    git(&main, &["init", "-q"]);
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-qm", "init"]);
+    git(&main, &["worktree", "add", "-q", "../wt"]);
+    fs::write(
+        sub.join("ai.local.toml"),
+        "[summariser]\nmodel = \"opus\"\n",
+    )
+    .unwrap();
+    let wt = tmp.path().join("wt").join("sub");
+    fs::write(
+        wt.join("ai.local.toml"),
+        "[summariser]\nmodel = \"fable\"\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        Settings::load(None, &wt).unwrap().summariser.model(),
+        "opus"
+    );
+    let p = Project::find(&wt).unwrap().unwrap();
+    assert_eq!((p.dir, p.home), (wt, fs::canonicalize(&sub).unwrap()));
+    assert_eq!(Project::find(&sub).unwrap().unwrap().home, sub);
+}
+
+#[test]
+fn a_linked_worktree_finds_an_agents_worktree_where_the_main_checkout_does() {
+    let tmp = TempDir::new().unwrap();
+    let main = fs::canonicalize(tmp.path()).unwrap().join("main");
+    let sub = main.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(
+        sub.join("ai.toml"),
+        "[project]\nid = \"project_01m5h1sxw1eh2rcnjyd5hb8fy4\"\n\n[agents.dev]\nworktree = \"../dev\"\n",
+    )
+    .unwrap();
+    git(&main, &["init", "-q"]);
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-qm", "init"]);
+    git(&main, &["worktree", "add", "-q", "../wt"]);
+    let wt = main.parent().unwrap().join("wt").join("sub");
+
+    let from = |dir: &Path| {
+        Settings::load(None, dir)
+            .unwrap()
+            .agent("dev")
+            .unwrap()
+            .worktree
+            .clone()
+    };
+    assert_eq!(from(&sub), Some(sub.join("../dev")));
+    assert_eq!(from(&wt), from(&sub));
 }

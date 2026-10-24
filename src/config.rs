@@ -65,7 +65,8 @@ pub(crate) struct File {
 }
 
 /// `[agents.<name>]`: what an agent runs with. A relative `instructions` is from the folder of the
-/// file that sets it, a relative `worktree` from the project's root.
+/// file that sets it, a relative `worktree` from the project's [`home`](project::home), so every
+/// checkout of the project names the same directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
@@ -138,7 +139,7 @@ pub struct Settings {
 
 impl Settings {
     /// The user's `ai.toml`, under the nearest one at or above `cwd`, under the `ai.local.toml`
-    /// beside that.
+    /// beside that in the project's [`home`](project::home).
     pub fn find(cwd: &Path) -> Result<Settings> {
         Settings::load(user_file().as_deref(), cwd)
     }
@@ -146,7 +147,11 @@ impl Settings {
     /// [`Settings::find`] with the user's file at `user`.
     pub fn load(user: Option<&Path>, cwd: &Path) -> Result<Settings> {
         let project = nearest(user, cwd);
-        let local = project.as_deref().map(|p| p.with_file_name(LOCAL));
+        let home = match project.as_deref().and_then(Path::parent) {
+            Some(dir) => Some(project::home(dir)?),
+            None => None,
+        };
+        let local = home.as_ref().map(|h| h.join(LOCAL));
         [
             user.map(|p| (p, Layer::User)),
             project.as_deref().map(|p| (p, Layer::Project)),
@@ -157,8 +162,8 @@ impl Settings {
         .try_fold(Settings::default(), |base, (p, layer)| {
             Ok(Settings::read(p, layer)?.unwrap_or_default().over(base))
         })
-        .map(|s| match project.as_deref().and_then(Path::parent) {
-            Some(root) => s.under(root),
+        .map(|s| match &home {
+            Some(home) => s.under(home),
             None => s,
         })
     }

@@ -34,6 +34,8 @@ pub struct Table {
 pub struct Project {
     /// The directory holding its `ai.toml`.
     pub dir: PathBuf,
+    /// Where it keeps what is not checked in: see [`home`].
+    pub home: PathBuf,
     pub id: String,
     /// Its slug: `[project] name`, else the directory's name.
     pub name: String,
@@ -79,7 +81,12 @@ impl Project {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         });
-        Ok(Some(Project { dir, id, name }))
+        Ok(Some(Project {
+            home: home(&dir)?,
+            dir,
+            id,
+            name,
+        }))
     }
 
     /// The project at `dir`, minting an id into its `ai.toml` when it has none, the rest of the
@@ -99,6 +106,29 @@ impl Project {
         ignore_local(dir)?;
         Ok(project)
     }
+}
+
+/// Where the project at `dir` keeps what is not checked in: in a linked git worktree, the same
+/// directory in the main checkout; else `dir`.
+pub fn home(dir: &Path) -> Result<PathBuf> {
+    let Ok(repo) = gix::discover(dir) else {
+        return Ok(dir.to_path_buf());
+    };
+    if !matches!(repo.kind(), gix::repository::Kind::LinkedWorkTree) {
+        return Ok(dir.to_path_buf());
+    }
+    let main = repo
+        .main_repo()
+        .with_context(|| format!("Cannot open the main checkout of {}.", pretty(dir)))?;
+    let (Some(tree), Some(root)) = (repo.workdir(), main.workdir()) else {
+        return Ok(dir.to_path_buf());
+    };
+    let tree = fs::canonicalize(tree).at(tree)?;
+    let dir = fs::canonicalize(dir).at(dir)?;
+    Ok(match dir.strip_prefix(&tree) {
+        Ok(rel) => root.join(rel),
+        Err(_) => dir,
+    })
 }
 
 /// Mints an id into the `ai.toml` at `p`, in `dir`.

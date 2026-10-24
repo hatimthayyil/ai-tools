@@ -122,7 +122,7 @@ This needs the [Claude Code plugin](#claude-code-plugin).
 
 ### Settings
 
-`ai` reads `~/.ai/ai.toml`, then the nearest `ai.toml` at or above the current directory, then the `ai.local.toml` beside it; each file's keys win over the one before. `ai.local.toml` is one user's overrides of a project's settings: `ai init` adds it to the project's `.gitignore`. It takes the same tables, except `[project]`. Every key is optional:
+`ai` reads `~/.ai/ai.toml`, then the nearest `ai.toml` at or above the current directory, then the `ai.local.toml` beside it; each file's keys win over the one before. `ai.local.toml` is one user's overrides of a project's settings: `ai init` adds it to the project's `.gitignore`. In a linked git worktree, `ai` reads it from the same folder in the main checkout, so one file serves every worktree. It takes the same tables, except `[project]`. Every key is optional:
 
 ```toml
 [project]          # a project's ai.toml only
@@ -145,9 +145,9 @@ instructions = "ai/agents/stabiliser.md"  # its own instructions, a Markdown fil
 worktree = "../ai-tools-stabiliser"       # the directory it runs in
 ```
 
-An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Instructions add up: the agent gets the user's, then the project's, then `ai.local.toml`'s, each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it.
+An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Instructions add up: the agent gets the user's, then the project's, then `ai.local.toml`'s, each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it; in a linked git worktree, the root in the main checkout, so `../dev` names the same directory from every checkout.
 
-`ai agent start` runs the harness in the agent's `worktree`, else in the current directory, and `start` and `resume` add its `instructions` to the harness's system prompt (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must hold the project's `ai.toml`, so its sessions find the project's threads; a git worktree of a commit that has it does. `ai.local.toml` is not copied, so a session in the worktree reads the worktree's own.
+`ai agent start` runs the harness in the agent's `worktree`, else in the current directory, and `start` and `resume` add its `instructions` to the harness's system prompt (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must hold the project's `ai.toml`, so its sessions find the project's threads; a git worktree of a commit that has it does. A session in the worktree reads `ai.local.toml` from the main checkout.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 
