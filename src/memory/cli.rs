@@ -162,7 +162,8 @@ enum Command {
     },
     #[command(
         about = "show the memory's sizes.",
-        after_help = "Set them under [memory] in ~/.ai/ai.toml, or in a project's ai.toml."
+        after_help = "Set them under [memory] in ~/.ai/ai.toml, a project's ai.toml, or its \
+                      ai.local.toml."
     )]
     Config,
     #[command(about = "bulk-load dated notes (bootstrap only).")]

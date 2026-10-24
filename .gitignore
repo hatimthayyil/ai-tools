@@ -15,6 +15,9 @@ devenv.local.yaml
 # ai memory
 /.ai/memory/
 
+# ai settings, one user's
+/ai.local.toml
+
 # Claude Code
 /.claude/
 /plugins/claude/.claude-plugin/types/

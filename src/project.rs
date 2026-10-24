@@ -13,7 +13,7 @@ use tempfile::NamedTempFile;
 use toml_edit::DocumentMut;
 
 use crate::{
-    config::{self, FILE},
+    config::{self, FILE, LOCAL},
     file::{AtPath, pretty},
 };
 
@@ -83,7 +83,7 @@ impl Project {
     }
 
     /// The project at `dir`, minting an id into its `ai.toml` when it has none, the rest of the
-    /// file kept as written.
+    /// file kept as written, with its `ai.local.toml` in its `.gitignore`.
     pub fn init(dir: &Path) -> Result<Project> {
         let p = dir.join(FILE);
         if config::is_user(&p) {
@@ -92,22 +92,56 @@ impl Project {
                 pretty(&p)
             );
         }
-        if let Some(project) = Project::read(&p)? {
-            return Ok(project);
-        }
-        let text = match fs::read_to_string(&p) {
-            Ok(t) => t,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(e).at(&p),
+        let project = match Project::read(&p)? {
+            Some(project) => project,
+            None => mint(dir, &p)?,
         };
-        let mut doc: DocumentMut = text.parse().map_err(|e| anyhow!("{}: {e}", pretty(&p)))?;
-        let table = doc.entry("project").or_insert(toml_edit::table());
-        table["id"] = toml_edit::value(PREFIX.create_type_id::<V7>().to_string());
-        let mut f = NamedTempFile::new_in(dir).at(dir)?;
-        f.write_all(doc.to_string().as_bytes()).at(f.path())?;
-        f.persist(&p).map_err(|e| e.error).at(&p)?;
-        Project::read(&p)?.context("ai init wrote no project id.")
+        ignore_local(dir)?;
+        Ok(project)
     }
+}
+
+/// Mints an id into the `ai.toml` at `p`, in `dir`.
+fn mint(dir: &Path, p: &Path) -> Result<Project> {
+    let text = read_or_empty(p)?;
+    let mut doc: DocumentMut = text.parse().map_err(|e| anyhow!("{}: {e}", pretty(p)))?;
+    let table = doc.entry("project").or_insert(toml_edit::table());
+    table["id"] = toml_edit::value(PREFIX.create_type_id::<V7>().to_string());
+    write(dir, p, &doc.to_string())?;
+    Project::read(p)?.context("ai init wrote no project id.")
+}
+
+/// Adds `/ai.local.toml` to the `.gitignore` in `dir`, unless a line there already ignores it.
+fn ignore_local(dir: &Path) -> Result<()> {
+    let p = dir.join(".gitignore");
+    let mut text = read_or_empty(&p)?;
+    let line = format!("/{LOCAL}");
+    if text.lines().any(|l| l.trim() == line || l.trim() == LOCAL) {
+        return Ok(());
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&line);
+    text.push('\n');
+    write(dir, &p, &text)
+}
+
+/// The file at `p`, or nothing when there is none.
+fn read_or_empty(p: &Path) -> Result<String> {
+    match fs::read_to_string(p) {
+        Ok(t) => Ok(t),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).at(p),
+    }
+}
+
+/// Writes `text` to `p`, in `dir`, by rename.
+fn write(dir: &Path, p: &Path, text: &str) -> Result<()> {
+    let mut f = NamedTempFile::new_in(dir).at(dir)?;
+    f.write_all(text.as_bytes()).at(f.path())?;
+    f.persist(p).map_err(|e| e.error).at(p)?;
+    Ok(())
 }
 
 /// `id` if it is a project's: a TypeID of type `project`.

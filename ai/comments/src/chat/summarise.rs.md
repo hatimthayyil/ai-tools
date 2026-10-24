@@ -3,7 +3,7 @@
 The summariser: builds the lines `rollup.rs` plans. Design: `ai/research/20261014T002322--chat-design.md`, Roll-up (background compactor) and Contract.
 
 Config (`Chat::config`)
-- `[chat]` in `ai.toml` (config.rs.md), the user's under the project's: `model` (default `memory::claude::model()`: `$AI_MEMORY_MODEL`, else Sonnet, as memory's compactor; an empty one is an error), `background` (bool, default true). `Chat::config` reads the files from the directory the store was found from, each time it is asked, so a command that never needs them never reads them.
+- `[chat]` in `ai.toml` (config.rs.md), the user's under the project's under its `ai.local.toml`: `model` (default `memory::claude::model()`: `$AI_MEMORY_MODEL`, else Sonnet, as memory's compactor; an empty one is an error), `background` (bool, default true). `Chat::config` reads the files from the directory the store was found from, each time it is asked, so a command that never needs them never reads them.
 - `backend(model)`: `ClaudeCode::compactor_at` with `model` (`build --model`), else the configured one (medium effort, isolated `claude -p`).
 
 Runs (`Run`)

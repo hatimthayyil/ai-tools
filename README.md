@@ -81,7 +81,7 @@ Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_
 ### Projects
 
 ```sh
-ai init  # make this directory a project, once: mints its id into ai.toml and prints it
+ai init  # make this directory a project, once: mints its id into ai.toml, ignores ai.local.toml in .gitignore, prints the id
 ```
 
 `ai files` and `ai chat` work in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
@@ -120,7 +120,7 @@ This needs the [Claude Code plugin](#claude-code-plugin).
 
 ### Settings
 
-`ai` reads `~/.ai/ai.toml`, then the nearest `ai.toml` at or above the current directory, whose keys win. Every key is optional:
+`ai` reads `~/.ai/ai.toml`, then the nearest `ai.toml` at or above the current directory, then the `ai.local.toml` beside it; each file's keys win over the one before. `ai.local.toml` is one user's overrides of a project's settings: `ai init` adds it to the project's `.gitignore`. It takes the same tables, except `[project]`. Every key is optional:
 
 ```toml
 [project]          # a project's ai.toml only
