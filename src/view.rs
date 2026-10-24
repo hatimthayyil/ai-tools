@@ -15,7 +15,7 @@ use crate::{agent, config::Settings, memory, page};
 /// (`agent::thread_view`); whole on a terminal, else in parts from one state of both.
 #[derive(Args, Debug)]
 pub struct Cli {
-    #[arg(help = agent::THREAD_HELP)]
+    #[arg(help = agent::AGENT_HELP)]
     thread: Option<String>,
     #[arg(long, hide = true, help = "the part of the view to print, as printed")]
     part: Option<u64>,

@@ -19,7 +19,7 @@ Runs (`Run`)
 - A sync's summariser that starts while a build holds the lock exits `busy`; lines the view did not need wait for the next sync.
 - Logs to the thread's log like a summariser, under a `build` span, so a compaction's failed lines are on record.
 
-`summarise(thread, backend)` (for `ai agent build -t <name>`)
+`summarise(thread, backend)` (for `ai agent build -a <name>`)
 - Logs to `Thread::log_path` (`log::init`; INFO `start`, `built` (line, bytes, secs), `end`; WARN `failed`; `busy`).
 - Under the thread's lock (`try_lock`; `None` at once when held): passes until one starts nothing, then releases the lock and compares the head with the last pass's commit. Moved (a sync landed meanwhile): take the lock again and go on, or exit if another summariser has it. This closes the window in which a sync's summariser finds the lock held just before this one exits.
 - The lock is `unlock`ed before it is dropped: a process forked by another thread between our open and close (a `claude -p` call, a test's `git`) holds a copy of the descriptor until its exec, and the flock stays with it until then.
@@ -34,7 +34,7 @@ Runs (`Run`)
 - One pass with `Run::dry` set: free lines and model replies go to the pass's in-memory map, so lines above them are built from them, and to the run's list instead of the store. With `rebuild` the pass reads no stored line (`Anew::All`), so it builds every line anew; with `line` it builds that line and the unbuilt ones under it, and with both it reads that one line as unbuilt (`Anew::Line`), as `rewrite` would write it. No lock: it writes nothing. Each line comes back with its first item (for its printed id) and the stored line it would replace. Logged under a `dry_run` span.
 
 `Store::spawn_summariser(thread)` (for `ai agent sync-session`)
-- Unless `chat.background` is false: this executable as `chat build -t <name>` from the project's directory, detached by `memory::log::spawn` (stdin/stdout null, stderr to the thread's log, own process group). No readiness check: a summariser with nothing to do exits after one pass, and sync stays fast.
+- Unless `chat.background` is false: this executable as `agent build -a <name>` from the project's directory, detached by `memory::log::spawn` (stdin/stdout null, stderr to the thread's log, own process group). No readiness check: a summariser with nothing to do exits after one pass, and sync stays fast.
 
 Smoke (2026-10-15, haiku, throwaway repo, synthetic 4-turn thread): 3 calls, 1 free turn line, 1 node; the spawning process's piped stdout closed at once (spawn 0.3 ms); a second summariser exited `busy`.
 

@@ -86,8 +86,8 @@ enum Command {
     },
     #[command(about = "print a thread's view, from the summaries written so far (the default).")]
     View {
-        #[arg(help = THREAD_HELP)]
-        thread: Option<String>,
+        #[arg(help = AGENT_HELP)]
+        agent: Option<String>,
         #[command(flatten)]
         session: Session,
         #[command(flatten)]
@@ -121,7 +121,7 @@ enum Command {
     )]
     Grep {
         #[command(flatten)]
-        target: Target,
+        targets: Targets,
         #[command(flatten)]
         pat: Pattern,
         #[arg(long, help = "also search tool output")]
@@ -224,19 +224,34 @@ pub struct Session {
     transcript: Option<PathBuf>,
 }
 
-/// What a thread argument defaults to: [`pick`]'s order.
-pub const THREAD_HELP: &str = "the thread [default: the one this session is attached to, else the project's only thread, else one you pick on a terminal]";
+/// What an agent argument defaults to: [`pick`]'s order.
+pub const AGENT_HELP: &str = "the agent [default: the one this session is attached to, else the project's only agent, else one you pick on a terminal]";
 
-/// The thread a command reads, by `-t`, as [`pick`] resolves it.
+/// The thread a command reads, by `-a`, as [`pick`] resolves it.
 #[derive(Args, Debug)]
 struct Target {
-    #[arg(short = 't', long = "thread", value_name = "NAME", help = THREAD_HELP)]
-    thread: Option<String>,
+    #[arg(short = 'a', long = "agent", value_name = "NAME", help = AGENT_HELP)]
+    agent: Option<String>,
+    #[command(flatten)]
+    session: Session,
+}
+
+/// The threads a search reads: each `-a` once, in order, else [`pick`]'s one.
+#[derive(Args, Debug)]
+struct Targets {
+    #[arg(
+        short = 'a',
+        long = "agent",
+        value_name = "NAME",
+        help = "an agent to search; repeat it to search several [default: the one this session is attached to, else the project's only agent, else one you pick on a terminal]"
+    )]
+    agents: Vec<String>,
     #[command(flatten)]
     session: Session,
 }
 
 /// A session a command names.
+#[derive(Clone)]
 struct Current {
     harness: String,
     session: String,
@@ -301,7 +316,7 @@ impl Cli {
     /// Runs in `cwd`, printing to `out`; views, zooms and searches print whole on a `terminal`.
     pub fn run(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
-            thread: None,
+            agent: None,
             session: Session::default(),
             parts: Parts::default(),
         });
@@ -311,10 +326,10 @@ impl Cli {
             Command::Resume { name, args, .. } => resume(cwd, &name, &args),
             Command::List { session } => list(cwd, out, session),
             Command::View {
-                thread,
+                agent,
                 session,
                 parts,
-            } => view(cwd, out, thread, session, &parts, terminal),
+            } => view(cwd, out, agent, session, &parts, terminal),
             Command::Attach { name, session } => attach(cwd, out, &name, session),
             Command::Detach { session } => detach(cwd, out, session),
             Command::Zoom {
@@ -324,11 +339,11 @@ impl Cli {
                 tool_output,
             } => zoom(cwd, out, target, &id, &parts, terminal, tool_output),
             Command::Grep {
-                target,
+                targets,
                 pat,
                 tool_output,
                 parts,
-            } => grep(cwd, out, target, &pat, tool_output, &parts, terminal),
+            } => grep(cwd, out, targets, &pat, tool_output, &parts, terminal),
             Command::Build(a) => build_cmd(cwd, out, a),
             Command::SyncSession { session } => sync_session(cwd, session),
             Command::CompactSession { session } => compact_session(cwd, out, session),
@@ -487,7 +502,7 @@ fn ready(
     for f in failures(&snap, &built.failed)? {
         msg += &format!("\n{f}");
     }
-    bail!("{msg}\nWrite them, then try again: ai agent build -t {name}")
+    bail!("{msg}\nWrite them, then try again: ai agent build -a {name}")
 }
 
 /// Each failed line as `Failed <id>: <error>`, by its id in `snap`.
@@ -830,8 +845,8 @@ fn zoom(
     terminal: bool,
     tool_output: bool,
 ) -> Result<ExitCode> {
-    let usage = "ai agent zoom -t <name> <id>";
-    let (_, t, session) = pick(cwd, target.thread, target.session.current(), usage)?;
+    let usage = "ai agent zoom -a <name> <id>";
+    let (_, t, session) = pick(cwd, target.agent, target.session.current(), usage)?;
     let Some(parsed) = Id::parse(id) else {
         bail!(
             "'{id}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.3 (an item)."
@@ -845,47 +860,77 @@ fn zoom(
     let (mark, flag) = (snap.mark(), if tool_output { " --tool-output" } else { "" });
     page::print(out, &text, page::pick(parts.part, terminal), |k| {
         format!(
-            "ai agent zoom -t {} {parsed} --part {k} --at {mark}{flag}",
+            "ai agent zoom -a {} {parsed} --part {k} --at {mark}{flag}",
             t.name()
         )
     })?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// The matches of `pat` on the picked thread's branch (the session's, else the newest), oldest
-/// first: all on a `terminal`, else in parts newest first, each cut from the state the first
-/// read.
+/// The matches of `pat` on each picked thread's branch (the session's, else the newest), thread
+/// by thread in the order named, oldest first within each, and each line led by its agent's
+/// name when there are several: all on a `terminal`, else in parts newest first, each cut from
+/// the states the first read.
 fn grep(
     cwd: &Path,
     out: &mut dyn Write,
-    target: Target,
+    targets: Targets,
     pat: &Pattern,
     tool_output: bool,
     parts: &Parts,
     terminal: bool,
 ) -> Result<ExitCode> {
-    let usage = "ai agent grep -t <name> <pattern>";
-    let (_, t, session) = pick(cwd, target.thread, target.session.current(), usage)?;
-    let re = pat.regex()?;
-    let snap = parts.snapshot(&t)?;
-    let hits = match read_branch(&snap, session.as_ref())? {
-        Some(b) => b.grep(&re, tool_output),
-        None => Vec::new(),
+    let usage = "ai agent grep -a <name> <pattern>";
+    let c = targets.session.current();
+    let mut names: Vec<String> = Vec::new();
+    for n in targets.agents {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    let picked = match names.is_empty() {
+        true => vec![pick(cwd, None, c, usage)?],
+        false => names
+            .into_iter()
+            .map(|n| pick(cwd, Some(n), c.clone(), usage))
+            .collect::<Result<_>>()?,
     };
+    let re = pat.regex()?;
+    let ats: Vec<Option<&str>> = match &parts.at {
+        None => vec![None; picked.len()],
+        Some(at) if at.split(',').count() == picked.len() => at.split(',').map(Some).collect(),
+        Some(at) => bail!("'{at}' does not name one state for each agent searched."),
+    };
+    let several = picked.len() > 1;
+    let (mut hits, mut marks, mut agents) = (Vec::new(), Vec::new(), Vec::new());
+    for ((_, t, session), at) in picked.iter().zip(ats) {
+        let snap = match at {
+            Some(at) => t.snapshot_at(at.parse()?)?,
+            None => t.snapshot()?,
+        };
+        if let Some(b) = read_branch(&snap, session.as_ref())? {
+            hits.extend(b.grep(&re, tool_output).into_iter().map(|h| match several {
+                true => format!("{} {}", t.name(), h.line),
+                false => h.line,
+            }));
+        }
+        marks.push(snap.mark().to_string());
+        agents.push(format!("-a {}", t.name()));
+    }
     if hits.is_empty() {
         writeln!(out, "No match.")?;
         return Ok(ExitCode::SUCCESS);
     }
     let a = pat.args();
-    let mut cmd = format!("ai agent grep -t {} {}", t.name(), quote(&a[0]));
+    let mut cmd = format!("ai agent grep {} {}", agents.join(" "), quote(&a[0]));
     for v in &a[1..] {
         cmd += &format!(" {}", word(v));
     }
     if tool_output {
         cmd += " --tool-output";
     }
-    let sizes: Vec<u64> = hits.iter().map(|h| h.line.len() as u64 + 1).collect();
-    let mark = snap.mark();
+    let sizes: Vec<u64> = hits.iter().map(|h| h.len() as u64 + 1).collect();
+    let mark = marks.join(",");
     let (shown, footer) = page::search(
         &sizes,
         hits.len() as u64,
@@ -893,7 +938,7 @@ fn grep(
         |k| format!("{cmd} --part {k} --at {mark}"),
     )?;
     for h in &hits[shown] {
-        writeln!(out, "{}", h.line)?;
+        writeln!(out, "{h}")?;
     }
     writeln!(out, "{footer}")?;
     Ok(ExitCode::SUCCESS)
@@ -922,8 +967,8 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         background,
     } = a;
     let (id, model) = (id.as_deref(), model.as_deref());
-    let usage = "ai agent build -t <name>";
-    let (store, t, session) = pick(cwd, target.thread, target.session.current(), usage)?;
+    let usage = "ai agent build -a <name>";
+    let (store, t, session) = pick(cwd, target.agent, target.session.current(), usage)?;
     let line = match id {
         Some(v) => {
             let id = Id::parse(v).with_context(|| {
@@ -958,7 +1003,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
             if r.above > 0 {
                 writeln!(
                     out,
-                    "The next ai agent build -t {} writes the {} above {id} again.",
+                    "The next ai agent build -a {} writes the {} above {id} again.",
                     t.name(),
                     plural(r.above as u64, "line")
                 )?;

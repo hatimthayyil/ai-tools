@@ -457,7 +457,7 @@ fn a_thread_is_named_else_attached_else_the_only_one_else_listed() {
     assert!(dev.starts_with("# Thread `dev`\n"), "{dev}");
     ok(s.ai(&["view"]), &dev);
     ok(s.ai_in("s-2", &["view"]), &dev);
-    let zoom = stdout(&s.ai(&["zoom", "-t", "dev", "0"]));
+    let zoom = stdout(&s.ai(&["zoom", "-a", "dev", "0"]));
     ok(s.ai_in("s-2", &["zoom", "0"]), &zoom);
 
     s.transcript("s-3", &talk(3, |k| format!("other {k}")));
@@ -474,7 +474,7 @@ fn a_thread_is_named_else_attached_else_the_only_one_else_listed() {
     fails(
         s.ai_in("s-2", &["zoom", "0"]),
         &format!(
-            "This session is not attached to an agent. Attach it with `ai agent attach <name>`, or name one: ai agent zoom -t <name> <id>. {rows}"
+            "This session is not attached to an agent. Attach it with `ai agent attach <name>`, or name one: ai agent zoom -a <name> <id>. {rows}"
         ),
     );
     ok(s.ai_in("s-1", &["view"]), &dev);
@@ -964,7 +964,7 @@ fn zoom_opens_lines_and_items() {
     s.line("dev", 1, 3, "second");
     s.line("dev", 2, 3, "first two");
     ok(s.ai_in("s-1", &["zoom", "0+2"]), "0|first\n1|second\n");
-    ok(s.ai(&["zoom", "-t", "dev", "0+2"]), "0|first\n1|second\n");
+    ok(s.ai(&["zoom", "-a", "dev", "0+2"]), "0|first\n1|second\n");
     ok(
         s.ai_in("s-1", &["zoom", "0+4"]),
         "0|first\n1|second\n2|(not summarised yet)\n3|(not summarised yet)\n",
@@ -997,13 +997,13 @@ fn zoom_opens_lines_and_items() {
     assert_eq!(
         next(
             &["zoom", "4.0"],
-            r"^zoom -t dev 4\.0 --part 2 --at \d+\.\d+\.\d+\n$"
+            r"^zoom -a dev 4\.0 --part 2 --at \d+\.\d+\.\d+\n$"
         ),
         format!("4.0|user: {}\n", "paste ".repeat(5_000).trim_end())
     );
     next(
         &["zoom", "4", "--tool-output"],
-        r"^zoom -t dev 4 --part 2 --at \S+ --tool-output\n$",
+        r"^zoom -a dev 4 --part 2 --at \S+ --tool-output\n$",
     );
     for (id, err) in [
         (
@@ -1035,7 +1035,7 @@ fn grep_pages_the_newest_matches_first() {
         "7.1|ai: reply 7\n1 match.\n",
     );
     ok(
-        s.ai(&["grep", "-t", "dev", "reply 7$"]),
+        s.ai(&["grep", "-a", "dev", "reply 7$"]),
         "7.1|ai: reply 7\n1 match.\n",
     );
     ok(s.ai_in("s-1", &["grep", "nothing"]), "No match.\n");
@@ -1057,7 +1057,7 @@ fn grep_pages_the_newest_matches_first() {
         assert!(footer.starts_with(&head), "{footer}");
         match footer.split_once(" Next: ai agent ") {
             Some((_, next)) => {
-                let want = format!(r"^grep -t dev 'Question' -i --part {} --at \S+$", k + 1);
+                let want = format!(r"^grep -a dev 'Question' -i --part {} --at \S+$", k + 1);
                 assert!(Regex::new(&want).unwrap().is_match(next), "{next}");
                 args = next
                     .split(' ')
@@ -1082,6 +1082,75 @@ fn grep_pages_the_newest_matches_first() {
     fails(
         s.ai_in("s-1", &["grep", "Question", "-i", "--part", "99"]),
         &format!("No part 99: it has {k}.\n"),
+    );
+}
+
+#[test]
+fn grep_searches_each_agent_named() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &talk(2, |k| format!("dev asks {k}")));
+    s.transcript("s-2", &talk(2, |k| format!("ops asks {k}")));
+    let long = |who: &'static str| move |k| format!("{who} says {k} {}", "w".repeat(100));
+    s.transcript("s-3", &talk(150, long("one")));
+    s.transcript("s-4", &talk(150, long("two")));
+    for (session, name) in [
+        ("s-1", "dev"),
+        ("s-2", "ops"),
+        ("s-3", "one"),
+        ("s-4", "two"),
+    ] {
+        stdout(&s.ai_in(session, &["new", name]));
+        ok(
+            s.ai_in(session, &["attach", name]),
+            &format!("Attached to {name}.\n"),
+        );
+    }
+    ok(
+        s.ai(&["grep", "-a", "ops", "-a", "dev", "asks 1"]),
+        "ops 1.0|user: ops asks 1\ndev 1.0|user: dev asks 1\n2 matches.\n",
+    );
+    ok(
+        s.ai(&["grep", "-a", "dev", "-a", "dev", "asks 1"]),
+        "1.0|user: dev asks 1\n1 match.\n",
+    );
+    fails(
+        s.ai(&["grep", "-a", "dev", "-a", "qa", "asks"]),
+        "No agent qa in this project. Create it: ai agent new qa\n",
+    );
+    let mut args: Vec<String> = ["grep", "-a", "one", "-a", "two", "says"]
+        .map(String::from)
+        .into();
+    let mut seen = Vec::new();
+    let mut parts = 0;
+    for k in 1.. {
+        parts = k;
+        let out = stdout(&s.ai(&args.iter().map(String::as_str).collect::<Vec<_>>()));
+        let (body, footer) = out.trim_end().rsplit_once('\n').unwrap();
+        seen.splice(
+            0..0,
+            body.lines()
+                .map(|l| l.split('|').next().unwrap().to_string()),
+        );
+        let Some((_, next)) = footer.split_once(" Next: ai agent ") else {
+            break;
+        };
+        let want = format!(r"^grep -a one -a two 'says' --part {} --at \S+,\S+$", k + 1);
+        assert!(Regex::new(&want).unwrap().is_match(next), "{next}");
+        args = next
+            .split(' ')
+            .map(|a| a.trim_matches('\'').to_string())
+            .collect();
+    }
+    let want: Vec<String> = ["one", "two"]
+        .iter()
+        .flat_map(|a| (0..150).map(move |k| format!("{a} {k}.0")))
+        .collect();
+    assert!(parts > 1);
+    assert_eq!(seen, want, "every match once, agent by agent");
+    let at = s.ai(&["grep", "-a", "dev", "-a", "ops", "asks", "--at", "0.0.0"]);
+    fails(
+        at,
+        "'0.0.0' does not name one state for each agent searched.\n",
     );
 }
 
@@ -1372,10 +1441,10 @@ fn threads_resolve_in_the_current_repository_only() {
     let list = |dir: &Path| stdout(&s.cmd(dir).arg("list").output().unwrap());
     assert!(list(&s.repo()).contains("  s-1  ") && !list(&s.repo()).contains("s-2"));
     assert!(list(&other).contains("  s-2  ") && !list(&other).contains("s-1"));
-    let here = stdout(&s.ai(&["zoom", "-t", "dev", "0.0"]));
+    let here = stdout(&s.ai(&["zoom", "-a", "dev", "0.0"]));
     let there = stdout(
         &s.cmd(&other)
-            .args(["zoom", "-t", "dev", "0.0"])
+            .args(["zoom", "-a", "dev", "0.0"])
             .output()
             .unwrap(),
     );
@@ -1426,7 +1495,7 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
         s.ai_in("s-1", &["build"]),
         "Wrote 4 lines, 0 by the model.\n",
     );
-    ok(s.ai(&["build", "-t", "dev"]), "Nothing to write.\n");
+    ok(s.ai(&["build", "-a", "dev"]), "Nothing to write.\n");
     let o = s.ai_in("s-1", &["build", "--rebuild", "--dry-run"]);
     let dry = stdout(&o);
     assert!(
@@ -1474,7 +1543,7 @@ fn build_writes_or_rewrites_one_line() {
         "0.1|ai: reply 0\n0|user: question 0 ai: reply 0\n  was: by hand\n\
          Dry run: 2 lines, 0 by the model; nothing stored.\n",
     );
-    let dry = stdout(&s.ai(&["build", "-t", "dev", "2+2", "--dry-run"]));
+    let dry = stdout(&s.ai(&["build", "-a", "dev", "2+2", "--dry-run"]));
     let ids: Vec<&str> = dry.lines().map(|l| l.split('|').next().unwrap()).collect();
     assert_eq!(
         ids,
@@ -1495,7 +1564,7 @@ fn build_writes_or_rewrites_one_line() {
     ok(
         s.ai_in("s-1", &["build", "0", "--rebuild"]),
         "Dropped 3 lines; wrote 1, 0 by the model.\n\
-         The next ai agent build -t dev writes the 2 lines above 0 again.\n",
+         The next ai agent build -a dev writes the 2 lines above 0 again.\n",
     );
     let t = s.store().thread("dev").unwrap();
     let snap = t.snapshot().unwrap();
@@ -1572,13 +1641,13 @@ fn build_stops_at_the_first_line_that_fails() {
 fn the_background_summariser_builds_past_a_failed_line() {
     let s = Sandbox::new();
     let ends = failing(&s, 10);
-    let o = s.ai(&["build", "-t", "dev", "--background"]);
+    let o = s.ai(&["build", "-a", "dev", "--background"]);
     assert_eq!(code(&o), 1, "{}", stderr(&o));
     assert_eq!(
         built(&s, &ends, 10),
         [false, true, true, true, true, true, true, true, true, true]
     );
-    let o = s.ai(&["build", "-t", "dev", "--background", "--rebuild"]);
+    let o = s.ai(&["build", "-a", "dev", "--background", "--rebuild"]);
     assert_eq!(code(&o), 2, "only for the background run");
 }
 
@@ -1625,7 +1694,7 @@ fn a_failed_line_stops_compaction_and_start() {
     failing(&s, 20);
     let failed = "Cannot build the view of thread dev: 1 line failed.\n\
                   Failed 0: claude: overloaded\n\
-                  Write them, then try again: ai agent build -t dev\n";
+                  Write them, then try again: ai agent build -a dev\n";
     fails(s.ai(&["compact-session", "--session", "s-1"]), failed);
     fails(s.ai(&["start", "dev"]), failed);
     assert!(

@@ -105,9 +105,9 @@ ai agent resume dev [-- claude args]  # continue dev's newest session, in the di
                                       # both take --harness; claude is the only one yet
 ai agent list                         # the agents here, newest first, and their sessions
 ai agent view dev                     # dev's view, from the summaries written so far
-ai agent zoom -t dev <id>             # open a line of it; --tool-output adds tool output
-ai agent grep -t dev <regex>          # search it
-ai agent build -t dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
+ai agent zoom -a dev <id>             # open a line of it; --tool-output adds tool output
+ai agent grep -a dev <regex>          # search it; repeat -a to search several agents
+ai agent build -a dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
 Only `new` creates an agent; `start`, `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<project id>`, or under `$AI_CHAT_DIR` if set, so every clone and worktree of a project shares them.

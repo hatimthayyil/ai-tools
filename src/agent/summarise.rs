@@ -66,14 +66,14 @@ impl Store {
             .backend(model, &thread.calls_dir())
     }
 
-    /// Starts `ai agent build -t <name> --background`, unless `ai.toml` sets `chat.background`
+    /// Starts `ai agent build -a <name> --background`, unless `ai.toml` sets `chat.background`
     /// false; whether it started.
     pub fn spawn_summariser(&self, thread: &Thread) -> Result<bool> {
         if !self.config()?.background() {
             return Ok(false);
         }
         log::spawn(&thread.log_path()?, |c| {
-            c.args(["chat", "build", "-t", thread.name(), "--background"])
+            c.args(["agent", "build", "-a", thread.name(), "--background"])
                 .current_dir(&self.project().dir)
         })?;
         Ok(true)
