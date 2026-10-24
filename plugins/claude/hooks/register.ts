@@ -66,9 +66,8 @@ async function compress($: EngineInterface): Promise<string | undefined> {
   await $.clock.sleep(FLUSH_MS)
   const args = await session($)
   const ready = await agent($, ['compact-session', ...args], LONG_MS)
-  if (ready.exitCode === NOT_ATTACHED) return reply(ready)
-  if (ready.exitCode !== 0) return `Not compacted: ${reply(ready)}`
-  if (ready.stdout === '') return 'Not compacted: the thread holds nothing yet.'
+  if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not compacted: ${reply(ready)}`
+  if (ready.exitCode === 0 && ready.stdout === '') return 'Not compacted: the thread holds nothing yet.'
   const shown = await ai($, ['view', '--whole', ...args])
   if (shown.exitCode !== 0) return `Not compacted: ${reply(shown)}`
   await $.state.set(prepared, shown.stdout)
@@ -85,13 +84,13 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ai',
-      description: "ai: compact into your memory and the thread's view; new <name>, attach <name>, detach",
+      description: "ai: compact into your memory, and the thread's view when attached; new <name>, attach <name>, detach",
       argumentHint: '[new <name> | attach <name> | detach]',
     })
     await $.tool.register({
       name: 'compress',
       description:
-        "Compact this session into your memory and its thread's view when the current turn ends. Works only in a session attached to an agent.",
+        "Compact this session into your memory, and its thread's view when it is attached to an agent, when the current turn ends.",
       inputSchema: { type: 'object', properties: {} },
     })
     return next(e)
@@ -149,7 +148,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__ai__compress' }, async $ => {
     if (await isWithheld($)) return { result: WITHHELD }
     const ran = await agent($, ['sync-session', ...(await session($))])
-    if (ran.exitCode !== 0) return { result: reply(ran) }
+    if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) return { result: reply(ran) }
     await $.state.set(requested, true)
     return { result: 'Compaction queued for the end of this turn.' }
   })

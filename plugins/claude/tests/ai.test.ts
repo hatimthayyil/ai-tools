@@ -103,13 +103,27 @@ test('/compact and auto-compaction stay Claude Code’s, without ai agent', asyn
   expect(world.calls).toEqual([])
 })
 
-test('/ai compacts nothing and says why when ai fails, the session is unattached or the thread is empty', async ($, on) => {
+test('/ai in an unattached session compacts into the memory alone', async ($, on) => {
+  const MEMORY = '# Memory\n\nYou are awake.\n'
+  const world = engine(on, args => (sub(args) === 'view' ? [0, MEMORY, ''] : [3, '', '']))
+  await start($, 'resume')
+  expect(await compress($, world)).toBe('Compacting.')
+  expect(world.calls).toEqual([
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+    ['ai', 'view', '--whole', ...ALL_ARGS],
+  ])
+  expect(world.compacts).toEqual(['/compact'])
+  expect(await compact($)).toEqual([{ role: 'user', text: MEMORY, toolUses: [] }])
+  expect(world.logs).toEqual([])
+})
+
+test('/ai compacts nothing and says why when ai fails or the thread is empty', async ($, on) => {
   let answer: Answer = [1, '', 'Failed 12: empty reply\n']
   const world = engine(on, args => (sub(args) === 'view' ? [1, '', 'memory locked\n'] : answer))
   await start($, 'resume')
   expect(await compress($, world)).toBe('Not compacted: Failed 12: empty reply')
   answer = [3, '', '']
-  expect(await compress($, world)).toBe('This session is not attached to an agent. Attach it with /ai attach <name>.')
+  expect(await compress($, world)).toBe('Not compacted: memory locked')
   answer = [0, '', '']
   expect(await compress($, world)).toBe('Not compacted: the thread holds nothing yet.')
   answer = [0, VIEW, '']
@@ -200,13 +214,10 @@ async function turnEnd($: Engine, world: World) {
   await world.clock.advance(0)
 }
 
-test('the agent tool compacts as /ai does at the end of the turn, only when attached', async ($, on) => {
-  let isAttached = false
-  const world = engine(on, args => (!isAttached ? [3, '', ''] : sub(args) === 'sync-session' ? [0, '', ''] : views(args)))
+test('the agent tool compacts as /ai does at the end of the turn', async ($, on) => {
+  const world = engine(on, args => (sub(args) === 'sync-session' ? [0, '', ''] : views(args)))
   const call = () => $.tool.call({ tool: 'mcp__ai__compress', input: {} })
   await start($, 'resume')
-  expect(await call()).toMatchObject({ result: 'This session is not attached to an agent. Attach it with /ai attach <name>.' })
-  isAttached = true
   expect(await call()).toMatchObject({ result: 'Compaction queued for the end of this turn.' })
   expect(world.compacts).toEqual([])
   await turnEnd($, world)
@@ -216,11 +227,23 @@ test('the agent tool compacts as /ai does at the end of the turn, only when atta
   expect(world.compacts).toEqual(['/compact'])
   expect(world.calls).toEqual([
     ['ai', 'agent', 'sync-session', ...ALL_ARGS],
-    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
     ['ai', 'agent', 'sync-session', ...ALL_ARGS],
   ])
+  expect(world.logs).toEqual([])
+})
+
+test('the agent tool in an unattached session compacts into the memory alone', async ($, on) => {
+  const MEMORY = '# Memory\n\nYou are awake.\n'
+  const world = engine(on, args => (sub(args) === 'view' ? [0, MEMORY, ''] : [3, '', '']))
+  await start($, 'resume')
+  expect(await $.tool.call({ tool: 'mcp__ai__compress', input: {} })).toMatchObject({
+    result: 'Compaction queued for the end of this turn.',
+  })
+  await turnEnd($, world)
+  expect(world.compacts).toEqual(['/compact'])
+  expect(await compact($)).toEqual([{ role: 'user', text: MEMORY, toolUses: [] }])
   expect(world.logs).toEqual([])
 })
 
