@@ -53,6 +53,7 @@ fn runtime(backend: Arc<dyn Backend>) -> Runtime {
         terminal: false,
         opts: opts(VIEW, 8),
         config: Config::default(),
+        summariser: Default::default(),
         summarise_on_note: false,
         before_release: Box::new(|| {}),
         stdin: Box::new(|| Ok(String::new())),

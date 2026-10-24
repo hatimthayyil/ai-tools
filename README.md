@@ -128,8 +128,11 @@ id = "project_…"   # written by ai init
 name = "widget"    # its name; default the directory's
 
 [chat]
-model = "sonnet"   # the summariser's model; default $AI_MEMORY_MODEL, else Sonnet
 background = true  # summarise in the background after each turn
+
+[summariser]       # what writes every summary: chat, memory, notes, files
+backend = "claude" # claude -p; the only backend yet
+model = "sonnet"   # in the backend's own spelling
 
 [memory]
 view-lines = 96    # how many lines `ai memory view` prints

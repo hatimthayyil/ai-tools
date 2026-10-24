@@ -2,21 +2,21 @@ use std::{
     io::{self, Write},
     path::Path,
     process::{self, ExitCode},
-    sync::Arc,
     thread,
     time::Instant,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use tracing::{error, info, info_span, warn};
 
 use crate::{
+    config::Settings,
     file::pretty,
     git::hash,
     memory::{
-        Backend, CALLS, ClaudeCode, JOBS, MakeBackend, PLACEHOLDER, Pattern, broken_pipe, claude,
-        excerpt, log, plural, spawn_summariser, store_dir,
+        Backend, CALLS, JOBS, MakeBackend, PLACEHOLDER, Pattern, broken_pipe, excerpt, log, plural,
+        spawn_summariser, store_dir,
     },
     notes::{
         leaf::{Confidence, Front, Leaf, check_body, check_title, is_id, new_id},
@@ -24,6 +24,7 @@ use crate::{
         summary::{Job, Summary, due, input, only_child, summarise},
         topic::Topic,
     },
+    summariser,
 };
 
 const DIR_VAR: &str = "AI_NOTES_DIR";
@@ -100,6 +101,8 @@ struct Add {
 /// How commands reach the summariser's model and stdin; tests swap in their own.
 pub struct Runtime {
     pub backend: Box<MakeBackend>,
+    /// What `ai.toml` sets for the summariser, which `backend` makes.
+    pub summariser: summariser::Config,
     /// Whether changes start a background `build`.
     pub summarise_on_change: bool,
     pub stdin: Box<dyn Fn() -> io::Result<String>>,
@@ -108,7 +111,8 @@ pub struct Runtime {
 impl Default for Runtime {
     fn default() -> Runtime {
         Runtime {
-            backend: Box::new(|calls| Ok(Arc::new(ClaudeCode::compactor(calls)?))),
+            backend: summariser::Config::default().maker(),
+            summariser: summariser::Config::default(),
             summarise_on_change: std::env::var_os("AI_NOTES_SUMMARISE").is_none_or(|v| v != "0"),
             stdin: Box::new(|| io::read_to_string(io::stdin())),
         }
@@ -116,9 +120,17 @@ impl Default for Runtime {
 }
 
 impl Cli {
-    /// Runs against the default store, printing to stdout.
+    /// Runs against the default store, with the summariser `ai.toml` sets here, printing to
+    /// stdout.
     pub fn exec(self) -> Result<ExitCode> {
-        match self.run(&store_dir(DIR_VAR, "notes")?, &mut io::stdout().lock()) {
+        let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
+        let summariser = Settings::find(&cwd)?.summariser;
+        let rt = Runtime {
+            backend: summariser.clone().maker(),
+            summariser,
+            ..Runtime::default()
+        };
+        match self.run_with(&store_dir(DIR_VAR, "notes")?, &mut io::stdout().lock(), &rt) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
             r => r,
         }
@@ -433,7 +445,7 @@ fn build_cmd(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     let _span = info_span!(
         "summarise",
         pid = process::id(),
-        model = %claude::model(),
+        model = %rt.summariser.model(),
         dir = ?pretty(s.dir())
     )
     .entered();

@@ -105,6 +105,7 @@ fn runtime(fake: &Arc<Fake>, stdin: &str) -> Runtime {
     let stdin = stdin.to_string();
     Runtime {
         backend: Box::new(move |_| Ok(backend.clone())),
+        summariser: Default::default(),
         summarise_on_change: false,
         stdin: Box::new(move || Ok(stdin.clone())),
     }

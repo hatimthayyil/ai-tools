@@ -152,7 +152,7 @@ struct Build {
     rebuild: bool,
     #[arg(
         long,
-        help = "the model for this run [default: chat.model in ai.toml, else sonnet]"
+        help = "the model for this run [default: summariser.model in ai.toml, else sonnet]"
     )]
     model: Option<String>,
     #[arg(

@@ -3,7 +3,6 @@ use std::{
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{self, ExitCode},
-    sync::Arc,
     time::Instant,
 };
 
@@ -16,7 +15,7 @@ use crate::{
     file::{AtPath, pretty},
     memory::{
         backend::MakeBackend,
-        claude::{self, CALLS, ClaudeCode},
+        claude::CALLS,
         compact::{Compactor, GaveUp, Options, Spend},
         config::{Config, Knob},
         cover::cover,
@@ -35,6 +34,7 @@ use crate::{
     },
     page,
     project::Project,
+    summariser,
 };
 
 const TEMPLATE: &str = "\
@@ -228,6 +228,8 @@ pub struct Runtime {
     pub opts: Options,
     /// The sizes `ai.toml` sets.
     pub config: Config,
+    /// What `ai.toml` sets for the summariser, which `backend` makes.
+    pub summariser: summariser::Config,
     /// Whether `note` starts a background `build`.
     pub summarise_on_note: bool,
     /// Called by `build` when a round is done, while it still holds the compactor lock.
@@ -238,10 +240,11 @@ pub struct Runtime {
 impl Default for Runtime {
     fn default() -> Runtime {
         Runtime {
-            backend: Box::new(|calls| Ok(Arc::new(ClaudeCode::compactor(calls)?))),
+            backend: summariser::Config::default().maker(),
             terminal: false,
             opts: Options::default(),
             config: Config::default(),
+            summariser: summariser::Config::default(),
             summarise_on_note: std::env::var_os("AI_MEMORY_SUMMARISE").is_none_or(|v| v != "0"),
             before_release: Box::new(|| {}),
             stdin: Box::new(|| io::read_to_string(io::stdin())),
@@ -288,9 +291,12 @@ impl Cli {
     /// Runs against the default memory, with the sizes `ai.toml` sets here, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
+        let settings = Settings::find(&cwd)?;
         let rt = Runtime {
+            backend: settings.summariser.clone().maker(),
             terminal: io::stdout().is_terminal(),
-            config: Settings::find(&cwd)?.memory,
+            config: settings.memory,
+            summariser: settings.summariser,
             ..Runtime::default()
         };
         match self.run_with(&default_dir()?, &mut io::stdout().lock(), &rt) {
@@ -546,7 +552,7 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     let _span = info_span!(
         "summarise",
         pid = process::id(),
-        model = %claude::model(),
+        model = %rt.summariser.model(),
         dir = ?pretty(s.dir())
     )
     .entered();

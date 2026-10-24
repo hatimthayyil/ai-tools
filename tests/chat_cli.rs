@@ -1475,7 +1475,7 @@ fn an_ai_toml_without_an_id_has_no_threads() {
     let s = Sandbox::new();
     let bare = s.root.join("bare");
     fs::create_dir(&bare).unwrap();
-    fs::write(bare.join("ai.toml"), "[chat]\nmodel = \"haiku\"\n").unwrap();
+    fs::write(bare.join("ai.toml"), "[summariser]\nmodel = \"haiku\"\n").unwrap();
     let out = s.ai_at(&bare, "s-1", &["attach", "dev"]);
     assert!(!out.status.success());
     assert_eq!(

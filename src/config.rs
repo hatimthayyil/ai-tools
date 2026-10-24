@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::{
     chat,
     file::{AtPath, pretty},
-    memory, project,
+    memory, project, summariser,
 };
 
 /// The settings file: the user's in [`home`], a project's at or above where `ai` runs.
@@ -59,6 +59,7 @@ pub(crate) struct File {
     pub project: Option<project::Table>,
     pub chat: chat::Config,
     pub memory: memory::Config,
+    pub summariser: summariser::Config,
 }
 
 /// The `ai.toml` at `p`, `None` without the file; a bad key or value names both.
@@ -79,6 +80,7 @@ pub(crate) fn read(p: &Path) -> Result<Option<File>> {
 pub struct Settings {
     pub chat: chat::Config,
     pub memory: memory::Config,
+    pub summariser: summariser::Config,
 }
 
 impl Settings {
@@ -126,6 +128,7 @@ impl Settings {
         Ok(Some(Settings {
             chat: f.chat,
             memory: f.memory,
+            summariser: f.summariser,
         }))
     }
 
@@ -133,6 +136,7 @@ impl Settings {
         Settings {
             chat: self.chat.over(base.chat),
             memory: self.memory.over(base.memory),
+            summariser: self.summariser.over(base.summariser),
         }
     }
 }

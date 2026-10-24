@@ -55,11 +55,6 @@ pub fn find() -> Result<OsString> {
     Ok(found.into())
 }
 
-/// The compactor's model: `$AI_MEMORY_MODEL`, default Sonnet.
-pub fn model() -> String {
-    std::env::var("AI_MEMORY_MODEL").unwrap_or_else(|_| "sonnet".into())
-}
-
 /// `claude -p` with the flags every call shares: stream-json both ways, isolated from the
 /// user's settings, 5-minute cache marks. Callers add their own flags after `--tools`.
 pub fn command(program: &OsStr, model: &str, effort: &str, system: &Path, tools: &str) -> Command {
@@ -391,12 +386,7 @@ pub struct ClaudeCode {
 }
 
 impl ClaudeCode {
-    /// The compactor: `$AI_MEMORY_MODEL` (default Sonnet) at medium effort, through the
-    /// `claude` on `PATH`, keeping its calls in `calls`.
-    pub fn compactor(calls: &Path) -> Result<ClaudeCode> {
-        ClaudeCode::compactor_at(find()?, &model(), calls)
-    }
-
+    /// The compactor: `model` at medium effort, through `program`, keeping its calls in `calls`.
     pub fn compactor_at(program: OsString, model: &str, calls: &Path) -> Result<ClaudeCode> {
         Ok(ClaudeCode {
             program,

@@ -1026,14 +1026,17 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     let project = fs::read_to_string(&toml).unwrap();
     fs::write(
         &toml,
-        format!("{project}\n[chat]\nmodel = \"haiku\"\nbackground = false\n"),
+        format!("{project}\n[chat]\nbackground = false\n\n[summariser]\nmodel = \"haiku\"\n"),
     )
     .unwrap();
     let sub = r.path().join("src");
     fs::create_dir(&sub).unwrap();
     let chat = Chat::find_in(&r.base(), &sub).unwrap().unwrap();
-    let c = chat.config().unwrap();
-    assert_eq!((c.model().as_str(), c.background()), ("haiku", false));
+    let s = chat.settings().unwrap();
+    assert_eq!(
+        (s.summariser.model().as_str(), s.chat.background()),
+        ("haiku", false)
+    );
     let mut s = Script::new();
     s.user("hi");
     let t = r.thread(&s);

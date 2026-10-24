@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use indicatif::ProgressBar;
 use jiff::Timestamp;
-use serde::{Deserialize, Deserializer, de::Error};
+use serde::Deserialize;
 use tracing::{Span, dispatcher, info, info_span, warn};
 
 use crate::{
@@ -23,34 +23,18 @@ use crate::{
         store::{Chat, Mark, Thread},
     },
     config::Settings,
-    memory::{Backend, Block, ClaudeCode, JOBS, Spend, TRIES, Who, claude, limit, log, write_line},
+    memory::{Backend, Block, JOBS, Spend, TRIES, Who, limit, log, write_line},
 };
 
-/// `[chat]` in `ai.toml`: the summariser's settings.
+/// `[chat]` in `ai.toml`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Default the memory compactor's.
-    #[serde(deserialize_with = "model")]
-    pub model: Option<String>,
     /// Whether `sync-session` starts the background summariser; default true.
     pub background: Option<bool>,
 }
 
-fn model<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    match String::deserialize(d)?.trim() {
-        "" => Err(D::Error::custom(
-            "is empty: name a model, or leave the key out",
-        )),
-        m => Ok(Some(m.into())),
-    }
-}
-
 impl Config {
-    pub fn model(&self) -> String {
-        self.model.clone().unwrap_or_else(claude::model)
-    }
-
     pub fn background(&self) -> bool {
         self.background.unwrap_or(true)
     }
@@ -58,30 +42,28 @@ impl Config {
     /// These settings, then `base`'s for those unset here.
     pub fn over(self, base: Config) -> Config {
         Config {
-            model: self.model.or(base.model),
             background: self.background.or(base.background),
         }
     }
 }
 
 impl Chat {
-    /// What `ai.toml` sets for chat where this store was found.
-    pub fn config(&self) -> Result<Config> {
-        Ok(Settings::find(self.cwd())?.chat)
+    /// What `ai.toml` sets where this store was found.
+    pub fn settings(&self) -> Result<Settings> {
+        Settings::find(self.cwd())
     }
 
-    /// `model`, else the configured one, through the `claude` on `PATH`, keeping its calls in
-    /// `thread`'s [`Thread::calls_dir`].
+    /// What `ai.toml` sets for chat where this store was found.
+    pub fn config(&self) -> Result<Config> {
+        Ok(self.settings()?.chat)
+    }
+
+    /// The `[summariser]` backend, with `model` over its model, keeping its calls in `thread`'s
+    /// [`Thread::calls_dir`].
     pub fn backend(&self, thread: &Thread, model: Option<&str>) -> Result<Arc<dyn Backend>> {
-        let model = match model {
-            Some(m) => m.to_string(),
-            None => self.config()?.model(),
-        };
-        Ok(Arc::new(ClaudeCode::compactor_at(
-            claude::find()?,
-            &model,
-            &thread.calls_dir(),
-        )?))
+        self.settings()?
+            .summariser
+            .backend(model, &thread.calls_dir())
     }
 
     /// Starts `ai chat build -t <name> --background`, unless `ai.toml` sets `chat.background`

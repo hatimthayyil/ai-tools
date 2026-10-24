@@ -8,9 +8,8 @@ use std::{
 use ai_tools::project::Project;
 use tempfile::TempDir;
 
-const ISOLATE: [&str; 6] = [
+const ISOLATE: [&str; 5] = [
     "AI_FILES_DIR",
-    "AI_MEMORY_MODEL",
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_AUTHOR_NAME",

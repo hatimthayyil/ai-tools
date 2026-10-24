@@ -100,7 +100,7 @@ fn init_keeps_what_the_file_already_says() {
     let s = Sandbox::new();
     let toml = s.work().join("ai.toml");
     let before =
-        "# settings\n[chat]\nmodel = \"haiku\"   # cheap\n\n[project]\nname = \"widget\"\n";
+        "# settings\n[summariser]\nmodel = \"haiku\"   # cheap\n\n[project]\nname = \"widget\"\n";
     fs::write(&toml, before).unwrap();
     let id = ok(&s.ai(&s.work(), &["init"]));
     assert_eq!(
@@ -125,7 +125,11 @@ fn a_project_is_found_from_below_and_named_by_its_directory() {
         (p.id.as_str(), p.name.as_str(), p.dir.as_path()),
         (id.as_str(), "work", s.work().as_path())
     );
-    fs::write(s.work().join("a/ai.toml"), "[chat]\nmodel = \"haiku\"\n").unwrap();
+    fs::write(
+        s.work().join("a/ai.toml"),
+        "[summariser]\nmodel = \"haiku\"\n",
+    )
+    .unwrap();
     assert_eq!(
         Project::find(&deep).unwrap(),
         None,
@@ -155,11 +159,11 @@ fn a_bad_id_names_its_file() {
 fn the_users_own_file_is_never_a_project_file() {
     let s = Sandbox::new();
     let user = s.user().join("ai.toml");
-    fs::write(&user, "[chat]\nmodel = \"opus\"\n").unwrap();
+    fs::write(&user, "[summariser]\nmodel = \"opus\"\n").unwrap();
     let below = s.user().join("chat");
     fs::create_dir_all(&below).unwrap();
     let settings = Settings::load(Some(&user), &below).unwrap();
-    assert_eq!(settings.chat.model(), "opus");
+    assert_eq!(settings.summariser.model(), "opus");
     assert_eq!(
         fails(&s.ai(&below, &["chat", "list"])),
         "Not in a project: no ai.toml here or above. Run `ai init` in the project's top \

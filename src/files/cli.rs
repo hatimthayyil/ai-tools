@@ -11,6 +11,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 use crate::{
+    config::Settings,
     file::{AtPath, pretty},
     files::{
         Node, Store,
@@ -18,9 +19,10 @@ use crate::{
         walk,
     },
     git::hash,
-    memory::{Backend, CALLS, ClaudeCode, JOBS, Spend, broken_pipe, log::usd, plural, store_dir},
+    memory::{Backend, CALLS, JOBS, Spend, broken_pipe, log::usd, plural, store_dir},
     progress,
     project::Project,
+    summariser,
 };
 
 #[derive(Parser, Debug)]
@@ -68,7 +70,7 @@ impl Cli {
     pub fn run(self, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
         let (root, store) = open(cwd)?;
         match self.command {
-            Command::Build => build(&root, &store, out),
+            Command::Build => build(&root, &store, &Settings::find(cwd)?.summariser, out),
             Command::View { path } => view(cwd, &root, &store, path.as_deref(), out),
         }
     }
@@ -84,7 +86,12 @@ fn open(cwd: &Path) -> Result<(PathBuf, Store)> {
 /// Summarises every node of the project at `root` whose hash has no summary, deepest first, up
 /// to [`JOBS`] calls at once. The first failure stops it, once the calls beside it end; what
 /// they wrote is kept.
-fn build(root: &Path, store: &Store, out: &mut dyn Write) -> Result<ExitCode> {
+fn build(
+    root: &Path,
+    store: &Store,
+    summariser: &summariser::Config,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let Some(_lock) = store.build_lock()? else {
         bail!("Another ai files build is running on this project.");
     };
@@ -100,7 +107,7 @@ fn build(root: &Path, store: &Store, out: &mut dyn Write) -> Result<ExitCode> {
         .map(|(k, s)| (k, s.text))
         .collect();
     bar.set_length(missing(&tree, &known, &mut HashSet::new()));
-    let backend = ClaudeCode::compactor(&store.dir().join(CALLS))?;
+    let backend = summariser.backend(None, &store.dir().join(CALLS))?;
     let (mut built, mut spent) = (0, Spend::default());
     loop {
         let mut now = Vec::new();
@@ -110,7 +117,7 @@ fn build(root: &Path, store: &Store, out: &mut dyn Write) -> Result<ExitCode> {
         }
         for batch in now.chunks(JOBS) {
             bar.set_message(format!("{} running", plural(batch.len() as u64, "call")));
-            let made = make(&backend, root, batch, &known);
+            let made = make(backend.as_ref(), root, batch, &known);
             let mut failed = None;
             for (n, (made, s)) in batch.iter().zip(made) {
                 spent += s;
