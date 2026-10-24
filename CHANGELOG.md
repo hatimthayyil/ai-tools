@@ -1,5 +1,107 @@
 # Changelog
 
+## v0.15.0 - 2026-10-24
+
+### Upgrading
+
+From 0.14, do these once, before any `ai` command of this release runs. Close agent sessions first, so no hook runs `ai` halfway through. Where `$AI_CHAT_DIR` or `$AI_FILES_DIR` is set, use it in place of `~/.ai/chat` or `~/.ai/files`; neither is read any more.
+
+1. **Move the summariser's model to `[summariser]`.** In `~/.ai/ai.toml`, and in any project's `ai.toml` that sets `model` under `[chat]`:
+
+   ```toml
+   [summariser]
+   model = "sonnet"
+   ```
+
+   A `model` left under `[chat]` fails every command as an unknown key. `$AI_MEMORY_MODEL` is no longer read; set `[summariser] model` instead.
+
+2. **Move `view-lines` to `[memory.view] lines`.** In the same files, replace
+
+   ```toml
+   [memory]
+   view-lines = 96
+   ```
+
+   with
+
+   ```toml
+   [memory.view]
+   lines = 96
+   ```
+
+   A file that still sets `view-lines` fails to load.
+
+3. **Move each project's agents into the project.** Threads move from `~/.ai/chat/<project id>/` to `.ai/local/agents/` in the project's main checkout. In the main checkout of every project that has threads (not in a linked worktree):
+
+   ```sh
+   id=$(ai init)
+   mv ~/.ai/chat/"$id" .ai/local/agents
+   ```
+
+   `ai init` prints the project's id, creates `.ai/local/ai.toml`, links `ai.local.toml` to it, and adds `/.ai/local/` and `/ai.local.toml` to `.gitignore`. Commit the `.gitignore` change. Once every project's threads are moved, remove `~/.ai/chat`.
+
+4. **Convert each project's agents to format 4.** Each growing file of an agent's thread is now a directory of 1 MiB segments, and a format-3 store is refused, by hooks and `/ai` too, until it is converted. In each project with agents, run any `ai agent` command on a terminal, such as `ai agent list`, and answer `y` when it asks to convert. It converts the store, checking every byte, and commits `.ai/local` once as `ai agent: convert to format 4`. Answering `n` leaves the store unchanged.
+
+5. **Delete the file summaries.** `ai files` is gone, so nothing reads them:
+
+   ```sh
+   rm -rf ~/.ai/files
+   ```
+
+6. **Use `ai agent` in place of `ai chat`** in scripts and shell aliases, with `-a <name>` in place of `-t <name>`, and `ai agent resume <name>` in place of `start`.
+
+### Breaking changes
+
+- **config:** `[summariser]` chooses the backend and model for every summary
+- **agent:** `ai agent` replaces `ai chat`, and only `ai agent new` creates an agent
+
+> `ai chat` is removed; run `ai agent` wherever you ran
+`ai chat`, in scripts and shell aliases too. Existing threads are agents
+already; create a new one with `ai agent new <name>` before
+`/ai attach <name>` or `ai agent resume <name>`.
+
+- **agent:** `-a/--agent` names the agent, and `grep` takes several
+
+> use `-a <name>` where you used `-t <name>`.
+
+- **agent:** an agent's thread lives in its project, shared by its worktrees
+
+> threads are no longer read from `~/.ai/chat`; the upgrade
+steps move them into each project. `$AI_CHAT_DIR` is no longer read.
+
+- **agent:** `ai agent resume` starts a new session when there is none to continue
+
+> `start` is gone; `ai agent resume <name>` takes its place.
+
+- **memory:** `ai memory view`'s size is `[memory.view] lines`
+- remove `ai files`
+- **agent:** an agent's growing files are kept in 1 MiB segments
+- **page:** paged output continues with `ai page <view>:<part>`
+
+### Bug fixes
+
+- **plugin:** /ai refuses where Claude Code withholds its session events
+
+### Features
+
+- **plugin:** the package ships a Claude Code marketplace for its plugin
+- **config:** `ai.local.toml` overrides a project's settings for one user
+- **config:** `[agents.<name>]` names an agent's instructions and worktree
+- **config:** an agent's instructions resolve from the file that names them
+- **agent:** an agent's sessions run in its worktree with its instructions
+- **plugin:** `/ai new <name>` creates an agent and attaches the session to it
+- **plugin:** `/ai` compacts an unattached session into the memory alone
+- **config:** an agent's instructions add up across settings files
+- **config:** a linked worktree reads the main checkout's `ai.local.toml`
+- `ai resume <name>` is `ai agent resume <name>`
+- **agent:** `[agent.view] lines` sets how many lines the view folds older turns into
+- a project's private store is a git repository
+- **agent:** a project's private store commits on events, such as `/ai` or a session's end
+- **project:** a project's private data lives in `.ai/local`, and `ai.local.toml` links there
+- **memory:** a note may run 40 characters past `entry-chars`
+- text limits count characters, not bytes
+- **agent:** `/ai` waits however long its lines take, and Esc stops it
+
 ## v0.14.0 - 2026-10-22
 
 ### Upgrading
