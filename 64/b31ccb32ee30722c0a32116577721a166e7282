@@ -1,0 +1,47 @@
+plugins/claude/tests/ai.test.ts
+  s_77b04d9838f161::t_76a06c71b41315 287-289,292-301
+ai/research/20261021T224734--storage.md
+  s_77b04d9838f161::t_d67efbc6b1d8d8 45
+ai/comments/src/view.rs.md
+  s_77b04d9838f161::t_ca4803c9d10564 9
+ai/comments/src/agent/cli.rs.md
+  s_77b04d9838f161::t_f29e2d95faea8b 8
+ai/comments/plugins/claude/hooks/register.ts.md
+  s_77b04d9838f161::t_3ad8efe39324e6 16
+ai/comments/tests/agent_cli.rs.md
+  s_77b04d9838f161::t_4ec28d77cdd631 23
+src/view.rs
+  s_77b04d9838f161::t_d185a2cf9a5e11 12
+  s_77b04d9838f161::t_ec4e09e18c3437 97
+ai/glossary.md
+  s_77b04d9838f161::t_45b020a2d352ee 69
+plugins/claude/hooks/register.ts
+  s_77b04d9838f161::t_3d1aaa488d438d 45-47
+  s_77b04d9838f161::t_0ba3e813da6cfe 123,129
+tests/agent_cli.rs
+  s_77b04d9838f161::t_57d064d1b98402 533-539
+  s_77b04d9838f161::t_733f898e93864d 1826
+  s_77b04d9838f161::t_82536fbaa4307d 1873
+  s_77b04d9838f161::t_dd5c290aaacad9 1869-1872,1874-1921,1923
+  s_77b04d9838f161::t_33e9cff44831ef 1922,1924
+src/agent/cli.rs
+  s_77b04d9838f161::t_0e510ecbd72bf6 130-137
+  s_77b04d9838f161::t_b263b793e1837c 392-394
+  s_77b04d9838f161::t_d027d986df3204 332-334,345,350,353,355-357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "64b31ccb32ee30722c0a32116577721a166e7282",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
