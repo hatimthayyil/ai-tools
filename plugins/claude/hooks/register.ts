@@ -42,9 +42,9 @@ async function view($: EngineInterface, args: string[], fallback: string): Promi
   return undefined
 }
 
-async function sync($: EngineInterface, args: string[]): Promise<void> {
-  const ran = await agent($, ['sync-session', ...args])
-  if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) $.ui.log(`ai agent sync-session failed: ${ran.stderr.trim()}`)
+async function sync($: EngineInterface, command: 'sync-session' | 'end-session', args: string[]): Promise<void> {
+  const ran = await agent($, [command, ...args])
+  if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) $.ui.log(`ai agent ${command} failed: ${ran.stderr.trim()}`)
 }
 
 function reply(ran: Ran): string {
@@ -120,13 +120,13 @@ export const register: Register = on => {
       return next(e)
     }
     const args = sessionArgs(e.session_id, e.transcript_path)
-    $.clock.after(FLUSH_MS, () => sync($, args))
+    $.clock.after(FLUSH_MS, () => sync($, 'sync-session', args))
     return next(e)
   })
 
   on('session.end', async ($, e, next) => {
     const ended = await next(e)
-    await sync($, sessionArgs(e.sessionId, (await $.state.get(transcript)).value))
+    await sync($, 'end-session', sessionArgs(e.sessionId, (await $.state.get(transcript)).value))
     return ended
   })
 

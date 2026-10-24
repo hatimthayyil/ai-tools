@@ -127,6 +127,14 @@ enum Command {
         #[command(flatten)]
         session: Session,
     },
+    #[command(
+        hide = true,
+        about = "plumbing: copy the ended session's last entries into its thread, then commit the store."
+    )]
+    EndSession {
+        #[command(flatten)]
+        session: Session,
+    },
 }
 
 /// What `build` writes, and how.
@@ -321,6 +329,9 @@ impl Cli {
     }
 
     /// Runs in `cwd`, printing to `out`; views, zooms and searches print whole on a `terminal`.
+    /// Events commit the store: creating an agent, attaching, detaching, resuming, a build but
+    /// the background summariser's, a compaction and a session's end. A turn's sync and a view
+    /// leave what they wrote for the next event's commit.
     pub fn run(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             agent: None,
@@ -331,17 +342,19 @@ impl Cli {
             Command::New { name } => format!("ai agent new {name}"),
             Command::Attach { name, .. } => format!("ai agent attach {name}"),
             Command::Detach { .. } => "ai agent detach".into(),
-            Command::View { .. } => "ai agent view".into(),
-            Command::Build(b) => match &b.target.agent {
+            Command::Build(b) if !b.background => match &b.target.agent {
                 Some(name) => format!("ai agent build {name}"),
                 None => "ai agent build".into(),
             },
-            Command::SyncSession { .. } => "ai agent sync-session".into(),
             Command::CompactSession { .. } => "ai agent compact-session".into(),
+            Command::EndSession { .. } => "ai agent end-session".into(),
             Command::Resume(_)
             | Command::List { .. }
+            | Command::View { .. }
             | Command::Zoom { .. }
-            | Command::Grep { .. } => {
+            | Command::Grep { .. }
+            | Command::Build(_)
+            | Command::SyncSession { .. } => {
                 return command.dispatch(cwd, out, terminal);
             }
         };
@@ -376,7 +389,9 @@ impl Command {
                 parts,
             } => grep(cwd, out, targets, &pat, tool_output, &parts, terminal),
             Command::Build(a) => build_cmd(cwd, out, a),
-            Command::SyncSession { session } => sync_session(cwd, session),
+            Command::SyncSession { session } | Command::EndSession { session } => {
+                sync_session(cwd, session)
+            }
             Command::CompactSession { session } => compact_session(cwd, out, session),
         }
     }

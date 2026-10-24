@@ -6,4 +6,4 @@
 - One state for every part (`Mark`): the memory's commit, then the thread's name and `agent::Mark`, `<commit>:<thread>:<items.lines.sessions>`, or the commit alone when no thread is shown. Notes and syncs between parts would otherwise shift the page boundaries. The first read takes the memory's head before reading the view at it, so the text and the mark agree; a later part reads both states unsynced. A state without a thread shows none, even if the session has since been attached.
 - Read-only: it writes no summary line (spec: reading never calls the model). `/ai` first runs `ai agent compact-session`, which writes the lines the thread's view needs and fails visibly; then `ai view --whole`, whose thread part now has them.
 - The memory and chat modules stay unaware of each other: this module composes them.
-- The synced read (no `--at`) runs inside `project::committing`, so a sync it makes is committed as `ai view`; a read at a state syncs nothing and commits nothing.
+- No read commits: a sync the synced read (no `--at`) makes waits for the next event's commit (agent/cli.rs.md); a read at a state syncs nothing.

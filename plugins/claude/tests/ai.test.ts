@@ -284,9 +284,19 @@ test('turn end syncs once the transcript is flushed, and only a real failure is 
   expect(world.logs).toEqual(['ai agent sync-session failed: store locked'])
 })
 
-test('a session syncs as it ends', async ($, on) => {
-  const world = engine(on, () => [0, '', ''])
+test('a session syncs and commits as it ends, and only a real failure is shown', async ($, on) => {
+  let answer: Answer = [0, '', '']
+  const world = engine(on, () => answer)
   await start($, 'resume')
   await $.session.end({ reason: 'prompt_input_exit', sessionId: SESSION, resume: { id: SESSION } })
-  expect(world.calls).toEqual([['ai', 'agent', 'sync-session', ...ALL_ARGS]])
+  answer = [3, '', '']
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  answer = [1, '', 'Cannot commit .ai: locked\n']
+  await $.session.end({ reason: 'other', sessionId: SESSION, resume: { id: SESSION } })
+  expect(world.calls).toEqual([
+    ['ai', 'agent', 'end-session', ...ALL_ARGS],
+    ['ai', 'agent', 'end-session', ...ALL_ARGS],
+    ['ai', 'agent', 'end-session', ...ALL_ARGS],
+  ])
+  expect(world.logs).toEqual(['ai agent end-session failed: Cannot commit .ai: locked'])
 })

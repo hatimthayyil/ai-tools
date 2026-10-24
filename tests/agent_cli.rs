@@ -530,7 +530,13 @@ fn plumbing_is_hidden_from_help() {
     ] {
         assert!(help.contains(&format!("\n  {cmd} ")), "{cmd}: {help}");
     }
-    for cmd in ["sync-session", "compact-session", "nap", "claude"] {
+    for cmd in [
+        "sync-session",
+        "compact-session",
+        "end-session",
+        "nap",
+        "claude",
+    ] {
         assert!(!help.contains(cmd), "{cmd}: {help}");
     }
     for cmd in ["list", "view", "attach", "detach", "zoom", "grep", "build"] {
@@ -1817,7 +1823,7 @@ fn an_ai_toml_without_an_id_has_no_threads() {
 }
 
 #[test]
-fn the_store_is_a_git_repository_with_a_commit_per_write() {
+fn the_store_is_a_git_repository_committed_on_events() {
     let s = Sandbox::new();
     let store = s.repo().join(".ai");
     ok(
@@ -1838,7 +1844,6 @@ fn the_store_is_a_git_repository_with_a_commit_per_write() {
 
     s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
-    ok(s.ai_in("s-1", &["sync-session"]), "");
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     assert_eq!(
         log(),
@@ -1859,6 +1864,62 @@ fn the_store_is_a_git_repository_with_a_commit_per_write() {
         "{}",
         stderr(&o)
     );
+}
+
+#[test]
+fn a_turns_sync_waits_for_the_next_event_to_be_committed() {
+    let s = Sandbox::new();
+    s.fake_compactor("0");
+    assert_eq!(code(&s.top(None, &["memory", "init"])), 0);
+    let store = s.repo().join(".ai");
+    let log = || git(&store, &["log", "--format=%s"]);
+    let clean = || git(&store, &["status", "--porcelain"]).is_empty();
+    let turns = |n| s.transcript("s-1", &talk(n, |k| long("ok", k)));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    turns(1);
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let events = log();
+
+    turns(3);
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    turns(4);
+    assert!(s.ai_in("s-1", &["view"]).status.success());
+    turns(5);
+    assert!(s.top(Some("s-1"), &["view", "--whole"]).status.success());
+    assert!(
+        s.ai(&["build", "-a", "dev", "--background"])
+            .status
+            .success()
+    );
+    assert!(s.has_line("dev", 1, turn_ends(&s, "dev")[0]));
+    assert_eq!(
+        log(),
+        events,
+        "a turn's sync, a view and the background summariser commit nothing"
+    );
+    assert!(!clean(), "what they wrote waits on disk");
+    ok(s.ai_in("s-1", &["end-session"]), "");
+    assert_eq!(log(), format!("ai agent end-session\n{events}"));
+    assert!(clean(), "the next event commits it");
+
+    let top = || log().lines().next().unwrap().to_string();
+    for (n, args, msg) in [
+        (6, &["compact-session"][..], "ai agent compact-session"),
+        (7, &["build"], "ai agent build"),
+        (8, &["detach"], "ai agent detach"),
+    ] {
+        turns(n);
+        ok(s.ai_in("s-1", &["sync-session"]), "");
+        let o = s.ai_in("s-1", args);
+        assert!(o.status.success(), "{msg}: {}", stderr(&o));
+        assert_eq!(top(), msg);
+        assert!(clean(), "{msg} commits the turn synced before it");
+    }
+    s.ai(&["resume", "dev"]);
+    assert_eq!(top(), "ai agent resume dev");
 }
 
 #[test]
