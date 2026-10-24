@@ -82,7 +82,63 @@ The plan's `ai.toml` list in gitignore syntax matches Repomix's `ignore.customPa
 ## Not in the plan, seen elsewhere
 
 - **Steering notes:** DeepWiki's `repo_notes`, and TCS's business context in the prompt, which improved relevance.
-- **References between files:** Aider ranks by references, and RepoAgent and CodeWiki add caller and callee context. The plan rolls up along directories only.
+- **References between files:** Aider ranks by references, and RepoAgent and CodeWiki add caller and callee context. The plan rolls up along directories only. See below.
+
+## Cross-cutting context
+
+A summary tree rolls up along directories, so it misses what lives in other or lateral files: the caller three folders away, the config that sets a value, the doc that must change with the code. How established tools give an agent that context, for `ai summary` (the future name of `ai files`).
+
+### The tools
+
+| Tool | Finds related files by | Stores | Builds | Stays fresh by |
+|---|---|---|---|---|
+| Aider repo map | tree-sitter definitions and references; PageRank personalised to the chat's files and mentioned names | tags per file | every request, map cached | file mtime |
+| RepoAgent | Jedi references: callers and callees per object | Markdown per object | Git pre-commit hook | regenerates an object when its code changes or its referrers change |
+| CodeWiki | tree-sitter graph (calls, inheritance, attribute access, imports), split into feature modules | Markdown, module tree, registry of documented components | full build | not described |
+| DeepWiki | "cluster-based planning", or pages listed in `.devin/wiki.json` | wiki pages | on connect, or by hand | regeneration by hand |
+| Cursor | embeddings trained on agent traces, plus grep | chunk embeddings | background | Merkle tree of hashes |
+| Sourcegraph Cody | BM25-style keyword search plus open files; embeddings dropped | server search index | server | server indexing |
+| Augment | custom retrieval models, one index per user and branch | embeddings, "easily" 10 GB for large codebases | real time | "within a few seconds of any change" |
+| Claude Code | agentic search: grep, glob, read | nothing | never | always current |
+| Agentless | repo tree to the LLM, plus embeddings of 512-token chunks; then skeletons (signatures only) | nothing | per issue | not needed |
+| LocAgent | graph of directories, files, classes, functions; edges contain, import, invoke, inherit; BM25 over entity ids; agent traverses | graph and sparse index | "a few seconds per codebase" | rebuild |
+| CodeGraph 1.6.2 | tree-sitter graph (calls, imports, extends, implements, dynamic dispatch), FTS5 | `.codegraph/codegraph.db` (SQLite) | `codegraph init` | file watcher, 2 s debounce |
+| Serena | language servers (40+ languages) or JetBrains: find symbol, referencing symbols, implementations | the language server's state | on demand | the language server |
+| SCIP | per-language indexers (rust-analyzer, scip-python, …) emit symbol occurrences | Protobuf index | CI or auto-indexing | per upload |
+| ROSE (co-change) | files changed together in version history | association rules | from history | every commit |
+
+### Cost
+
+- **Graphs are cheap.** No LLM. LocAgent builds in seconds. CodeGraph indexes the Swift compiler (about 27k files) in about 100 s, re-syncs a one-file edit in about 4 s, and spends about 0.3 s per save on a 4,400-file project.
+- **LLM prose is not.** RepoAgent spent 4.1M prompt and 0.9M completion tokens (GPT-4) on AutoGPT. DeepWiki costs 5–10 ACUs at medium effort, 20–40 at high.
+- **Narrow views pay.** Agentless's skeletons held the code to change 58.33% of the time against 53.67% for whole files, at $0.02 against $0.15.
+
+### What the evidence says
+
+- **Context nobody asked for hurts.** Context files, LLM-generated or developer-written, "do not generally improve task success rates" and raise inference cost "by over 20% on average"; repository overviews are "not helpful" (Evaluating AGENTS.md, ICLR 2026).
+- **Structure beats similarity for localisation.** File-level Acc@5 on SWE-bench Lite: BM25 61.68, CodeRankEmbed 84.67, Agentless 79.56, LocAgent 94.16 (Claude 3.5). Without its entity search, LocAgent drops to 68.98.
+- **Retrieval beside grep helps.** Cursor reports 12.5% higher answer accuracy (6.5–23.5% by model) with semantic search than grep alone, and best results with both.
+- **Agentic search alone is a strong baseline.** Claude Code dropped its code index; agentic search "outperformed everything else by a lot", judged mostly by "vibes", and an index "drifts out of sync", must "live somewhere" and leaks code to a third party.
+- **A graph tool cuts exploration.** CodeGraph reports, self-measured, 88% fewer tool calls, 62% fewer tokens and 44% lower cost for Claude Code across seven repos, with about 80% more retrieval context left in the window.
+- **Code graphs miss lateral prose.** In multi-file localisation, "documentation evolution is a latent dependency that no approach resolves". History catches some of it: ROSE predicted 26% of further files to change after a first change, with a correct location in its top three 64% of the time.
+
+### Usual practice
+
+1. **No tool relies on a directory tree for cross-cutting context.** Related files come from a symbol graph (Aider, RepoAgent, CodeWiki, LocAgent, CodeGraph, Serena, SCIP), from retrieval at question time (Cursor, Cody, Augment), or from the agent searching (Claude Code).
+2. **Agent-facing tools hand over structure and verbatim code;** LLM prose is for human-facing docs (RepoAgent, CodeWiki, DeepWiki, Code Wiki).
+3. **Graphs are built by parsing and kept fresh per file change;** LLM summaries are built rarely and incrementally.
+4. **Where prose uses neighbours,** it limits the cascade. RepoAgent puts callers and callees in the prompt, builds bottom-up, drops cycles, and does not regenerate an object when what it references changes. CodeWiki cross-references other modules instead of copying them.
+
+### Recommendation for `ai summary`
+
+- **Keep file summaries keyed by the file's content alone.** Neighbour summaries in the prompt would make each summary depend on its neighbours, so one edit would invalidate every dependent's summary, and builds would need a dependency order and cycle handling. RepoAgent shows the price, and still limits its cascade. The prompt already asks what a file depends on and what depends on it.
+- **Record related files as links, built without an LLM, and show them in the view** (`related: …` under each summary), so the agent knows where to read next. In order of cost:
+  1. paths the summary itself cites: free, already written;
+  2. co-change from git history through gix: language-agnostic, and catches the lateral prose, config and tests a code graph misses;
+  3. static imports and calls: read from a code graph when one is there, rather than building one.
+- **Leave concepts to `ai note`.** A concept spanning five folders is a note that links its files, written when an agent learns it. Generated concept pages (DeepWiki, CodeWiki) serve humans browsing, and generated overviews did not help agents.
+- **Don't build a code graph.** CodeGraph, language servers (Serena) and SCIP indexers already answer code-to-code questions at question time, fresh to the second. `ai summary` covers what they can't: purpose, prose, config, and decisions.
+- **Keep summaries pulled, never pushed.** The agent reads them through view and zoom when it chooses. Measure any change on real tasks before adopting it, as the AGENTS.md study advises.
 
 ## Sources
 
@@ -98,3 +154,17 @@ The plan's `ai.toml` list in gitignore syntax matches Repomix's `ignore.customPa
 - Repomix configuration: https://repomix.com/guide/configuration
 - LlamaIndex response synthesizers: https://developers.llamaindex.ai/python/framework/module_guides/querying/response_synthesizers/
 - LIFEBench (Zhang et al., NeurIPS 2025): https://arxiv.org/abs/2505.16234
+- RepoAgent, Sections 3 and 4, Table 3: https://arxiv.org/html/2402.16667
+- CodeWiki, Section 3: https://arxiv.org/html/2510.24428
+- Cursor, Improving agent with semantic search: https://cursor.com/en-US/blog/semsearch
+- Sourcegraph, How Cody understands your codebase: https://sourcegraph.com/blog/how-cody-understands-your-codebase
+- Augment, A real-time index for your codebase: https://www.augmentcode.com/blog/a-real-time-index-for-your-codebase-secure-personal-scalable
+- Boris Cherny on Claude Code's search, as reported by OfficeChai (2025-05-27): https://officechai.com/ai/claude-researcher-explains-how-agentic-search-performed-better-than-rag-for-code-generation/
+- Agentless (Xia et al. 2024), Sections 3.1 and 4, Tables 1 and 2: https://arxiv.org/html/2407.01489
+- LocAgent (Chen et al., ACL 2025), Sections 3 and 5, Tables 4 and 9: https://arxiv.org/html/2503.09089v2
+- CodeGraph: https://github.com/colbymchenry/codegraph; version from `codegraph version` (1.6.2)
+- Serena: https://github.com/oraios/serena
+- SCIP: https://github.com/sourcegraph/scip; design: https://github.com/sourcegraph/scip/blob/main/docs/DESIGN.md; indexers: https://sourcegraph.com/docs/code-search/code-navigation/precise_code_navigation
+- Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents? (ICLR 2026): https://arxiv.org/abs/2602.11988
+- Exploration Structure in LLM Agents for Multi-File Change Localization (2026): https://arxiv.org/abs/2606.11976
+- Zimmermann et al., Mining Version Histories to Guide Software Changes (ICSE 2004): https://www.st.cs.uni-saarland.de/papers/icse2004/
