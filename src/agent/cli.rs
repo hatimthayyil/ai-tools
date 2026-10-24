@@ -22,7 +22,7 @@ use crate::{
         record::{Binding, Key},
         rollup::Rollup,
         store::{Snapshot, Store, Thread, ThreadInfo},
-        summarise::{OnFail, build, dry_run, first, rebuild, rewrite, summarise},
+        summarise::{Built, OnFail, build, dry_run, first, rebuild, rewrite, summarise},
         sync::Synced,
         upgrade,
         view::Branch,
@@ -36,8 +36,7 @@ use crate::{
 
 /// The exit code of plumbing for a session attached to no thread; it prints nothing.
 pub const NOT_ATTACHED: u8 = 3;
-/// How long `compact-session` waits for the lines its view needs, and `build --rebuild`
-/// for a running summariser.
+/// How long `build --rebuild` waits for a running summariser.
 pub const WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Parser, Debug)]
@@ -509,46 +508,47 @@ fn view_in(t: &Thread, s: &Snapshot, c: Option<&Current>, fold: usize) -> Result
 }
 
 /// The thread's latest snapshot, once the lines the view of `branch` (read in it) needs are
-/// written: built within [`WAIT`], waiting first for a running summariser, stopping at the
-/// first line that fails. Else an error naming each failed line, or how many lines are missing.
+/// written: built, waiting first for a running summariser, however long either takes, again
+/// while a build writes some and the branch still needs more. Else an error naming each line
+/// that failed, or how many lines a build could not write.
 fn ready(
     store: &Store,
     t: &Thread,
     branch: impl Fn(&Snapshot) -> Result<Option<Branch>>,
 ) -> Result<Snapshot> {
-    let snap = t.snapshot()?;
-    let keys = branch(&snap)?.map_or_else(Vec::new, |b| b.needed());
-    if keys.is_empty() {
-        return Ok(snap);
+    let mut built: Option<Built> = None;
+    loop {
+        let snap = t.snapshot()?;
+        let keys = branch(&snap)?.map_or_else(Vec::new, |b| b.needed());
+        if keys.is_empty() {
+            return Ok(snap);
+        }
+        if let Some(b) = &built
+            && (b.lines == 0 || !b.failed.is_empty())
+        {
+            let name = t.name();
+            let mut msg = match b.failed.len() {
+                0 => format!(
+                    "Cannot build the view of thread {name}: it still lacks {}.",
+                    plural(keys.len() as u64, "line")
+                ),
+                n => format!(
+                    "Cannot build the view of thread {name}: {} failed.",
+                    plural(n as u64, "line")
+                ),
+            };
+            for f in failures(&snap, &b.failed)? {
+                msg += &format!("\n{f}");
+            }
+            bail!("{msg}\nWrite them, then try again: ai agent build -a {name}")
+        }
+        built = Some(build(
+            t,
+            store.backend(t, None)?,
+            &keys,
+            &ProgressBar::hidden(),
+        )?);
     }
-    let built = build(
-        t,
-        store.backend(t, None)?,
-        &keys,
-        Instant::now() + WAIT,
-        &ProgressBar::hidden(),
-    )?;
-    let snap = t.snapshot()?;
-    let missing = branch(&snap)?.map_or(0, |b| b.needed().len());
-    if missing == 0 {
-        return Ok(snap);
-    }
-    let name = t.name();
-    let mut msg = match built.failed.len() {
-        0 => format!(
-            "Cannot build the view of thread {name}: after {} s it still lacks {}.",
-            WAIT.as_secs(),
-            plural(missing as u64, "line")
-        ),
-        n => format!(
-            "Cannot build the view of thread {name}: {} failed.",
-            plural(n as u64, "line")
-        ),
-    };
-    for f in failures(&snap, &built.failed)? {
-        msg += &format!("\n{f}");
-    }
-    bail!("{msg}\nWrite them, then try again: ai agent build -a {name}")
 }
 
 /// Each failed line as `Failed <id>: <error>`, by its id in `snap`.
@@ -812,8 +812,9 @@ fn synced(cwd: &Path, s: Session) -> Result<Option<(Store, Thread, Current)>> {
         .map(|(t, _)| (store, t, c)))
 }
 
-/// Sync, the lines the view needs built within [`WAIT`], then the view; nothing for a session
-/// whose branch holds no item yet. An error, and no view, if a line it needs is not written.
+/// Sync, the lines the view needs built however long they take, then the view; nothing for a
+/// session whose branch holds no item yet. An error, and no view, if a line it needs is not
+/// written.
 fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
     let Some((store, t, c)) = synced(cwd, s)? else {
         return not_attached();
@@ -1044,7 +1045,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
             r.built
         }
         (false, false, Some((id, key))) => {
-            let b = build(&t, backend, &[key], Instant::now() + WAIT, &bar)?;
+            let b = build(&t, backend, &[key], &bar)?;
             match b.lines {
                 0 if b.failed.is_empty() => {
                     writeln!(out, "{id} is written already. Rewrite it with --rebuild.")?

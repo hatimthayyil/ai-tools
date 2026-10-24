@@ -375,6 +375,13 @@ impl Thread {
         file::try_lock(&self.lock_path())
     }
 
+    /// The compactor's lock on this thread, waiting for it however long another process holds
+    /// it.
+    pub fn lock(&self) -> Result<file::Lock> {
+        Store::ensure(&self.root)?;
+        file::lock(&self.lock_path())
+    }
+
     /// The compactor's lock on this thread, waiting for it until `deadline`; `None` if another
     /// process still holds it then.
     pub fn lock_before(&self, deadline: Instant) -> Result<Option<file::Lock>> {

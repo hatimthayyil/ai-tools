@@ -114,7 +114,8 @@ impl Sandbox {
     }
 
     /// A `claude` that also answers as the compactor (`-p`), by the first message it gets: one
-    /// holding `BAD` fails, one holding `LONG` gets a 600-byte line each time, any other gets
+    /// holding `BAD` fails, one holding `LONG` gets a 600-byte line each time, one holding
+    /// `SLOW` never answers while `out/hang` exists (its pid in `out/slow.pid`), any other gets
     /// a short line after `delay` seconds. Started as Claude Code, it records as
     /// [`Sandbox::fake_claude`].
     fn fake_compactor(&self, delay: &str) {
@@ -138,17 +139,23 @@ while IFS= read -r l; do
     case "$l" in
       *BAD*) mode=bad ;;
       *LONG*) mode=long ;;
+      *SLOW*) mode=slow ;;
       *) mode=good ;;
     esac
+  fi
+  if [ $mode = slow ] && [ -e {out}/hang ]; then
+    echo $$ > {out}/slow.pid
+    exec sleep 600
   fi
   case $mode in
     bad) printf '%s\n' '{{"type":"result","is_error":true,"result":"overloaded"}}' ;;
     long) printf '{{"type":"result","result":"%s"}}\n' "$long" ;;
-    good) sleep {delay}; printf '%s\n' '{{"type":"result","result":"a line"}}' ;;
+    good|slow) sleep {delay}; printf '%s\n' '{{"type":"result","result":"a line"}}' ;;
   esac
 done
 "#,
             bash = bash.display(),
+            out = out.display(),
             argv = out.join("argv").display(),
             cwd = out.join("cwd").display(),
         );
@@ -1796,6 +1803,78 @@ fn a_failed_line_stops_compaction_and_a_new_session() {
         1,
         "no session was bound"
     );
+}
+
+/// Whether process `pid` runs, a zombie not counted.
+fn running(pid: i32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .is_ok_and(|s| s.split_whitespace().nth(2).is_none_or(|state| state != "Z"))
+}
+
+/// Waits for `child` up to `secs` seconds; its exit code.
+fn exits_within(mut child: std::process::Child, secs: u64) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status.code().unwrap_or(-1);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("it still ran after {secs} s");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_killed_compact_session_stops_its_calls_and_the_next_goes_on() {
+    let s = Sandbox::new();
+    s.fake_compactor("0");
+    let tag = |k| if k == 1 { "SLOW" } else { "ok" };
+    s.transcript("s-1", &talk(21, |k| long(tag(k), k)));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let ends = turn_ends(&s, "dev");
+    let (hang, pid) = (s.root.join("out/hang"), s.root.join("out/slow.pid"));
+    fs::write(&hang, "").unwrap();
+    let compact = || {
+        s.cmd(&s.repo())
+            .args(["compact-session", "--session", "s-1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let child = compact();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !(pid.exists() && s.has_line("dev", 1, ends[0])) {
+        assert!(Instant::now() < deadline, "the slow call never started");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let slow: i32 = fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
+    assert!(running(slow));
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    assert_eq!(exits_within(child, 5), -1, "ended by the signal");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while running(slow) {
+        assert!(
+            Instant::now() < deadline,
+            "the call outlived compact-session"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(s.has_line("dev", 1, ends[0]), "a written line stays");
+    assert!(!s.has_line("dev", 1, ends[1]));
+    fs::remove_file(&hang).unwrap();
+    assert_eq!(
+        exits_within(compact(), 30),
+        0,
+        "the next compaction goes on"
+    );
+    assert!(s.has_line("dev", 1, ends[1]));
 }
 
 #[test]

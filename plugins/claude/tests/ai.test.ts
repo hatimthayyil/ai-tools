@@ -30,6 +30,9 @@ function ai($: Engine, args: string) {
 function engine(on: On, answer: (args: readonly string[]) => Answer) {
   const clock = mock.clock(on)
   const calls: (readonly string[])[] = []
+  const spawns: (readonly string[])[] = []
+  const killed: (readonly string[])[] = []
+  const spawning = { hangs: false }
   const compacts: string[] = []
   const logs: string[] = []
   on('session.id', async () => ({ value: SESSION }))
@@ -40,6 +43,19 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
     calls.push(e.argv)
     const [exitCode, stdout, stderr] = answer(e.argv.slice(1))
     return { value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('process.spawn', async function* (_$, e, next) {
+    calls.push(e.argv)
+    spawns.push(e.argv)
+    if (spawning.hangs) {
+      await new Promise<void>(stopped => next.signal.addEventListener('abort', stopped, { once: true }))
+      killed.push(e.argv)
+      return { value: { code: null, signal: 'SIGTERM' } }
+    }
+    const [code, stdout, stderr] = answer(e.argv.slice(1))
+    if (stdout !== '') yield { stream: 'stdout' as const, text: stdout }
+    if (stderr !== '') yield { stream: 'stderr' as const, text: stderr }
+    return { value: { code, signal: null } }
   })
   on('session.compact', async (_$, e) => {
     compacts.push(e.trigger)
@@ -53,7 +69,7 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
     logs.push(e.text)
     return { value: undefined }
   })
-  return { clock, calls, compacts, logs }
+  return { clock, calls, spawns, killed, spawning, compacts, logs }
 }
 
 function start($: Engine, source: 'startup' | 'resume' | 'clear' = 'startup') {
@@ -88,11 +104,47 @@ test('/ai builds the view once the transcript is flushed, then compacts into mem
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
   ])
+  expect(world.spawns).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
   expect(world.compacts).toEqual(['/compact'])
   expect(await compact($)).toEqual([{ role: 'user', text: WOKE, toolUses: [] }])
   expect(await compact($)).toEqual(NATIVE)
   expect(world.compacts).toEqual(['/compact', 'manual'])
 })
+
+test(
+  'cancelling /ai stops ai agent compact-session and compacts nothing',
+  {
+    plugins: [
+      {
+        name: 'cancel',
+        tier: 'prepend',
+        register(on) {
+          on('command.run', { command: 'ai' }, async ($, e, next) => {
+            void next(e).catch(() => undefined)
+            await $.clock.sleep(5_000)
+            return { text: 'Cancelled.' }
+          })
+        },
+      },
+    ],
+  },
+  async ($, on) => {
+    const world = engine(on, views)
+    world.spawning.hangs = true
+    await start($, 'resume')
+    const ran = ai($, '')
+    await world.clock.advance(FLUSH_MS)
+    expect(world.spawns).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+    expect(world.killed).toEqual([])
+    await world.clock.advance(5_000)
+    expect((await ran).text).toBe('Cancelled.')
+    await world.clock.advance(0)
+    expect(world.killed).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+    expect(world.calls).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+    expect(world.compacts).toEqual([])
+    expect(await compact($)).toEqual(NATIVE)
+  },
+)
 
 test('/compact and auto-compaction stay Claude Code’s, without ai agent', async ($, on) => {
   const world = engine(on, () => [0, VIEW, ''])

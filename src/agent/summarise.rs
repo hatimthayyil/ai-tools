@@ -4,7 +4,7 @@ use std::{
     process,
     sync::{
         Arc,
-        mpsc::{Receiver, RecvTimeoutError, Sender, channel},
+        mpsc::{Receiver, Sender, channel},
     },
     thread,
     time::{Duration, Instant},
@@ -120,16 +120,14 @@ pub struct DryLine {
     pub was: Option<String>,
 }
 
-/// Under the thread's lock, waiting for it until `deadline`, builds `keys` and the unbuilt
-/// lines they are made from, up to [`JOBS`] calls at once, until they are built, `deadline`
-/// passes, or a line fails; logs to [`Thread::log_path`]. Calls still running at the deadline
-/// are stopped through `backend`. A key that is no line of the thread is an error. Shows its
+/// Under the thread's lock, waiting for it however long, builds `keys` and the unbuilt lines
+/// they are made from, up to [`JOBS`] calls at once, until they are built or a line fails;
+/// logs to [`Thread::log_path`]. A key that is no line of the thread is an error. Shows its
 /// progress on `bar`.
 pub fn build(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     keys: &[Key],
-    deadline: Instant,
     bar: &ProgressBar,
 ) -> Result<Built> {
     let _log = log::init(&thread.log_path()?)?;
@@ -138,15 +136,11 @@ pub fn build(
         Some(lock) => lock,
         None => {
             info!("busy: waiting for the compactor that holds the lock");
-            let Some(lock) = thread.lock_before(deadline)? else {
-                warn!("the lock was still held at the deadline; built nothing");
-                return Ok(Built::default());
-            };
-            lock
+            thread.lock()?
         }
     };
     let mut run = Run::new(thread, backend, OnFail::Stop, bar);
-    run.pass(Some(keys), Some(deadline))?;
+    run.pass(Some(keys))?;
     let built = run.built.clone();
     drop(run);
     drop(lock);
@@ -185,7 +179,7 @@ pub fn summarise(
         }
         let seen = loop {
             let tried = run.tried();
-            let seen = run.pass(None, None)?;
+            let seen = run.pass(None)?;
             if run.tried() == tried {
                 break seen;
             }
@@ -234,7 +228,7 @@ pub fn rebuild(
     let mut run = Run::new(thread, backend, OnFail::Stop, bar);
     loop {
         let tried = run.tried();
-        run.pass(None, None)?;
+        run.pass(None)?;
         if run.tried() == tried {
             break;
         }
@@ -302,7 +296,7 @@ pub fn rewrite(
     let mut run = Run::new(thread, backend, OnFail::Stop, bar);
     loop {
         let tried = run.tried();
-        run.pass(Some(&[key]), None)?;
+        run.pass(Some(&[key]))?;
         if run.tried() == tried {
             break;
         }
@@ -344,7 +338,7 @@ pub fn dry_run(
         (true, Some(k)) => Anew::Line(k),
     };
     let want = line.map(|k| vec![k]);
-    run.pass(want.as_deref(), None)?;
+    run.pass(want.as_deref())?;
     let snap = thread.snapshot()?;
     let roll = Rollup::new(&snap.tree()?);
     let old = snap.all_lines()?;
@@ -460,8 +454,8 @@ impl<'t> Run<'t> {
     }
 
     /// Builds on the latest snapshot what is ready, of `want` and what it is made from if
-    /// given, until nothing more can start or `deadline` passes; returns the state it read.
-    fn pass(&mut self, want: Option<&[Key]>, deadline: Option<Instant>) -> Result<Mark> {
+    /// given, until nothing more can start; returns the state it read.
+    fn pass(&mut self, want: Option<&[Key]>) -> Result<Mark> {
         let snap = self.thread.snapshot()?;
         let roll = Rollup::new(&snap.tree()?);
         let mut lines: HashMap<Key, String> = match self.anew {
@@ -491,17 +485,7 @@ impl<'t> Run<'t> {
             if self.busy.is_empty() {
                 return Ok(snap.mark());
             }
-            let done = match deadline {
-                Some(d) => match self
-                    .rx
-                    .recv_timeout(d.saturating_duration_since(Instant::now()))
-                {
-                    Ok(done) => done,
-                    Err(RecvTimeoutError::Timeout) => return Ok(snap.mark()),
-                    Err(RecvTimeoutError::Disconnected) => unreachable!("the run holds a sender"),
-                },
-                None => self.rx.recv().expect("the run holds a sender"),
-            };
+            let done = self.rx.recv().expect("the run holds a sender");
             self.finish(&roll, done, &mut lines, &mut todo)?;
             while let Ok(done) = self.rx.try_recv() {
                 self.finish(&roll, done, &mut lines, &mut todo)?;

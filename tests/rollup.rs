@@ -499,14 +499,7 @@ fn a_second_summariser_finds_nothing_to_build() {
     assert_eq!(again.calls(), 0);
     assert_eq!((texts(&t), state(&r)), (before, at), "no write");
     let keys: Vec<Key> = lines(&t).into_keys().collect();
-    let b = build(
-        &t,
-        again.backend(),
-        &keys,
-        Instant::now() + Duration::from_secs(5),
-        &ProgressBar::hidden(),
-    )
-    .unwrap();
+    let b = build(&t, again.backend(), &keys, &ProgressBar::hidden()).unwrap();
     assert_eq!((b, again.calls()), (Built::default(), 0));
 }
 
@@ -586,12 +579,10 @@ fn build_makes_the_lines_asked_and_what_they_need() {
     s.user("open");
     let t = r.thread(&s);
     let fake = Fake::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
     let b = build(
         &t,
         fake.backend(),
         &[key(2, e1), key(1, e2)],
-        deadline,
         &ProgressBar::hidden(),
     )
     .unwrap();
@@ -605,7 +596,6 @@ fn build_makes_the_lines_asked_and_what_they_need() {
         &t,
         fake.backend(),
         &[key(1, e0 + 1)],
-        deadline,
         &ProgressBar::hidden(),
     )
     .unwrap_err();
@@ -616,7 +606,7 @@ fn build_makes_the_lines_asked_and_what_they_need() {
 }
 
 #[test]
-fn build_returns_at_its_deadline() {
+fn build_waits_for_its_slow_calls() {
     let r = Repo::new();
     let mut s = Script::new();
     let e0 = s.turn(0);
@@ -624,24 +614,26 @@ fn build_returns_at_its_deadline() {
     let e1 = s.reply("hello");
     s.user("open");
     let t = r.thread(&s);
-    let slow = Fake::with(Duration::from_secs(3), |_| false);
+    let slow = Fake::with(Duration::from_millis(500), |_| false);
     let at = Instant::now();
     let b = build(
         &t,
         slow.backend(),
         &[key(1, e0), key(1, e1)],
-        at + Duration::from_millis(200),
         &ProgressBar::hidden(),
     )
     .unwrap();
-    assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
-    assert_eq!((b.lines, b.calls), (1, 0), "the free line only");
-    assert_eq!(slow.calls(), 1);
     assert!(
-        slow.stopped.load(Ordering::SeqCst),
-        "the running call is stopped"
+        at.elapsed() >= Duration::from_millis(500),
+        "{:?}",
+        at.elapsed()
     );
-    assert_eq!(lines(&t).into_keys().collect::<Vec<_>>(), [key(1, e1)]);
+    assert_eq!((b.lines, b.calls), (2, 1), "the free line and the slow one");
+    assert!(!slow.stopped.load(Ordering::SeqCst), "no call is stopped");
+    assert_eq!(
+        lines(&t).into_keys().collect::<Vec<_>>(),
+        [key(1, e0), key(1, e1)]
+    );
 }
 
 #[test]
@@ -695,14 +687,7 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
     }
     let fast = Fake::new();
     let at = Instant::now();
-    let b = build(
-        &t,
-        fast.backend(),
-        &keys,
-        at + Duration::from_secs(10),
-        &ProgressBar::hidden(),
-    )
-    .unwrap();
+    let b = build(&t, fast.backend(), &keys, &ProgressBar::hidden()).unwrap();
     assert!(
         at.elapsed() >= Duration::from_millis(200),
         "{:?}",
@@ -719,7 +704,7 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
 }
 
 #[test]
-fn build_gives_up_on_a_lock_held_past_its_deadline() {
+fn build_waits_for_a_held_lock_however_long() {
     let r = Repo::new();
     let mut s = Script::new();
     let e0 = s.turn(0);
@@ -732,26 +717,19 @@ fn build_gives_up_on_a_lock_held_past_its_deadline() {
         .try_lock()
         .unwrap()
         .expect("free");
+    let release = thread::spawn(move || {
+        thread::sleep(Duration::from_secs(2));
+        drop(held);
+    });
     let fake = Fake::new();
     let at = Instant::now();
-    let b = build(
-        &t,
-        fake.backend(),
-        &[key(1, e0)],
-        at + Duration::from_millis(200),
-        &ProgressBar::hidden(),
-    )
-    .unwrap();
-    let took = at.elapsed();
-    assert!(
-        took >= Duration::from_millis(200) && took < Duration::from_secs(2),
-        "{took:?}"
-    );
-    assert_eq!((b, fake.calls()), (Built::default(), 0));
-    assert!(lines(&t).is_empty());
+    let b = build(&t, fake.backend(), &[key(1, e0)], &ProgressBar::hidden()).unwrap();
+    assert!(at.elapsed() >= Duration::from_secs(2), "{:?}", at.elapsed());
+    assert_eq!((b.lines, b.calls, fake.calls()), (1, 1, 1));
+    assert_eq!(lines(&t).into_keys().collect::<Vec<_>>(), [key(1, e0)]);
     let log = fs::read_to_string(t.log_path().unwrap()).unwrap();
-    assert!(log.contains("waiting") && log.contains("deadline"), "{log}");
-    drop(held);
+    assert!(log.contains("waiting"), "{log}");
+    release.join().unwrap();
 }
 
 #[test]

@@ -25,6 +25,22 @@ function agent($: EngineInterface, args: string[], timeoutMs?: number): Promise<
   return ai($, ['agent', ...args], timeoutMs)
 }
 
+async function compactSession($: EngineInterface, args: string[], cancelled?: AbortSignal): Promise<Ran> {
+  const out = { stdout: '', stderr: '' }
+  const child = $.process.spawn({ argv: ['ai', 'agent', 'compact-session', ...args] })
+  const pieces: AsyncIterator<unknown> = child
+  const stop = () => void pieces.return?.().catch(() => undefined)
+  cancelled?.addEventListener('abort', stop, { once: true })
+  try {
+    for await (const { stream, text } of child) out[stream] += text
+    return { exitCode: (await child.result).code ?? -1, ...out }
+  } catch (err) {
+    return { exitCode: -1, stdout: out.stdout, stderr: String(err) }
+  } finally {
+    cancelled?.removeEventListener('abort', stop)
+  }
+}
+
 function sessionArgs(id: string, path: string | undefined): string[] {
   return ['--harness', 'claude', '--session', id, ...(path === undefined ? [] : ['--transcript', path])]
 }
@@ -34,7 +50,7 @@ async function session($: EngineInterface): Promise<string[]> {
 }
 
 async function view($: EngineInterface, args: string[], fallback: string): Promise<string | undefined> {
-  const ran = await agent($, ['compact-session', ...args], LONG_MS)
+  const ran = await compactSession($, args)
   if (ran.exitCode === 0 && ran.stdout !== '') return ran.stdout
   if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) {
     $.ui.log(`ai agent compact-session failed; ${fallback}. ${ran.stderr.trim()}`)
@@ -61,15 +77,16 @@ async function isWithheld($: EngineInterface): Promise<boolean> {
   return (await $.state.get(transcript)).value === undefined
 }
 
-async function compress($: EngineInterface): Promise<string | undefined> {
+async function compress($: EngineInterface, cancelled?: AbortSignal): Promise<string | undefined> {
   if (await isWithheld($)) return WITHHELD
   await $.clock.sleep(FLUSH_MS)
   const args = await session($)
-  const ready = await agent($, ['compact-session', ...args], LONG_MS)
+  const ready = await compactSession($, args, cancelled)
   if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not compacted: ${reply(ready)}`
   if (ready.exitCode === 0 && ready.stdout === '') return 'Not compacted: the thread holds nothing yet.'
   const shown = await ai($, ['view', '--whole', ...args])
   if (shown.exitCode !== 0) return `Not compacted: ${reply(shown)}`
+  if (cancelled?.aborted) return 'Not compacted: cancelled.'
   await $.state.set(prepared, shown.stdout)
   $.clock.after(0, () => $.command.run({ command: 'compact' }))
   return undefined
@@ -130,9 +147,9 @@ export const register: Register = on => {
     return ended
   })
 
-  on('command.run', { command: 'ai' }, async ($, e) => {
+  on('command.run', { command: 'ai' }, async ($, e, next) => {
     const [sub, ...rest] = e.args.trim().split(/\s+/)
-    if (sub === '' && rest.length === 0) return { text: (await compress($)) ?? 'Compacting.' }
+    if (sub === '' && rest.length === 0) return { text: (await compress($, next.signal)) ?? 'Compacting.' }
     if (sub === 'new' && rest.length === 1) {
       const made = await agent($, ['new', rest[0]!])
       if (made.exitCode !== 0) return { text: reply(made) }
