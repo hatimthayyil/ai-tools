@@ -9,7 +9,7 @@ Config (`Store::config`)
 Runs (`Run`)
 - One pass reads the latest snapshot: items (`Rollup::new`) and every built line (`all_lines`). Pending lines are ordered by (last item, level): oldest first, a line before the node above it that ends at the same item.
 - Each round first writes every ready free line in one commit (`put_lines`), repeating while new ones become ready, then starts the ready calls up to `memory::JOBS` (8). Each call runs `memory::write_line` under `PROMPT` on its own thread (same dispatcher and span as memory's pump; a panic becomes a failure so a pass never waits forever) and reports on a channel; each finished call is one commit (`put_line`, first write wins).
-- A failed call leaves its line unbuilt and is not retried in that run; lines above it wait. A reply still over its `limit` after `memory::TRIES` tries is a failure too, never stored: the byte limit is the view's budget, so it holds. Memory keeps the shortest try instead (compact.rs.md).
+- A failed call leaves its line unbuilt and is not retried in that run; lines above it wait. A reply still over its `limit` after `memory::TRIES` tries is a failure too, never stored: the limit is the view's budget, so it holds. Memory keeps the shortest try instead (compact.rs.md).
 - One failure rule, by who waits (`OnFail`). A request someone runs (`build`, `rebuild`, `rewrite`, `dry_run`, and `summarise` from the command line) stops: after the first failure no call starts, the calls running finish and their lines are kept, and the caller reports every failed line. Its retry is running the command again, which picks up from the lines written. The background summariser (`summarise --background`, spawned by `sync-session`) continues past a failure and only logs; after `JOBS` failures in a row no call starts, so a dead backend costs at most about two waves of calls per run (test: 8–15). The next summariser tries again; a line it could not write is built, or reported, by the next request that needs it. Memory's per-node backoff is not needed: a summariser ends instead of waiting, and the next sync starts another.
 - Dropping a run with calls in flight calls `Backend::stop`.
 
@@ -20,7 +20,7 @@ Runs (`Run`)
 - Logs to the thread's log like a summariser, under a `build` span, so a compaction's failed lines are on record.
 
 `summarise(thread, backend)` (for `ai agent build -a <name>`)
-- Logs to `Thread::log_path` (`log::init`; INFO `start`, `built` (line, bytes, secs), `end`; WARN `failed`; `busy`).
+- Logs to `Thread::log_path` (`log::init`; INFO `start`, `built` (line, chars, secs), `end`; WARN `failed`; `busy`).
 - Under the thread's lock (`try_lock`; `None` at once when held): passes until one starts nothing, then releases the lock and compares the head with the last pass's commit. Moved (a sync landed meanwhile): take the lock again and go on, or exit if another summariser has it. This closes the window in which a sync's summariser finds the lock held just before this one exits.
 - The lock is `unlock`ed before it is dropped: a process forked by another thread between our open and close (a `claude -p` call, a test's `git`) holds a copy of the descriptor until its exec, and the flock stays with it until then.
 

@@ -16,7 +16,7 @@ use crate::{
     memory::{Coord, excerpt, flat},
 };
 
-/// The most the recent turns print, in bytes.
+/// The most the recent turns print, in characters.
 pub const RECENT: usize = 16_000;
 /// The most of a message's words the fold prints for a turn not summarised yet.
 pub const LINE: usize = 512;
@@ -277,7 +277,7 @@ impl Branch {
     }
 
     /// The first recent turn: back from the one before the newest, the most whole turns that
-    /// fit in [`RECENT`] bytes at their [`Branch::most`].
+    /// fit in [`RECENT`] characters at their [`Branch::most`].
     fn recent(&self) -> usize {
         let mut first = self.xs.len().saturating_sub(1);
         let mut size = 0;
@@ -291,7 +291,7 @@ impl Branch {
         first
     }
 
-    /// The most bytes turn `e` prints as a recent turn, whatever is built: its message and
+    /// The most characters turn `e` prints as a recent turn, whatever is built: its message and
     /// final reply, and each work line at the most it is accepted at.
     fn most(&self, e: usize) -> usize {
         let x = &self.xs[e];
@@ -303,10 +303,10 @@ impl Branch {
             .iter()
             .map(|r| {
                 let id = self.items_id(r).to_string();
-                id.len() + 2 + work_limit(r.clone().map(|p| self.item(p)))
+                id.chars().count() + 2 + work_limit(r.clone().map(|p| self.item(p)))
             })
             .sum();
-        bytes(&ends) + work
+        chars(&ends) + work
     }
 
     /// The view's lines: the fold's, then each recent turn's and the newest turn's.
@@ -689,9 +689,9 @@ impl Branch {
     }
 }
 
-/// The bytes `lines` take, one newline each.
-fn bytes(lines: &[String]) -> usize {
-    lines.iter().map(|l| l.len() + 1).sum()
+/// The characters `lines` take, one newline each.
+fn chars(lines: &[String]) -> usize {
+    lines.iter().map(|l| l.chars().count() + 1).sum()
 }
 
 fn section(title: &str, lines: &[String]) -> String {
@@ -1015,15 +1015,15 @@ mod tests {
         assert_eq!(turn[0], format!("0.0|user: {}", text(0)), "word for word");
         assert_eq!(turn[1], "0.1+5|ran it");
         assert_eq!(turn[2], "0.6|ai: m6");
-        assert!(bytes(&turn) <= b.most(0));
+        assert!(chars(&turn) <= b.most(0));
 
         let b = branch(chain(spec, &text), &[]);
         assert_eq!(b.recent_turn(0)[1], "0.1+5|(not summarised yet)");
-        assert!(bytes(&b.recent_turn(0)) <= b.most(0));
+        assert!(chars(&b.recent_turn(0)) <= b.most(0));
         let longest = "w".repeat(work_limit(&chain(spec, &text)[1..6]));
         let b = branch(chain(spec, &text), &[(0, 5, &longest)]);
         assert!(
-            bytes(&b.recent_turn(0)) <= b.most(0),
+            chars(&b.recent_turn(0)) <= b.most(0),
             "a work line at its limit fits its turn's most"
         );
 
@@ -1102,8 +1102,8 @@ mod tests {
             branch(chain(&spec, big), &[]),
         ] {
             let v = b.view("dev");
-            let most = b.fold * 600 + RECENT + bytes(&b.newest(3000)) + 4_000;
-            assert!(v.len() <= most, "{}", v.len());
+            let most = b.fold * 600 + RECENT + chars(&b.newest(3000)) + 4_000;
+            assert!(v.chars().count() <= most, "{}", v.chars().count());
             assert!(v.starts_with("# Thread `dev`\n\nThis is the thread `dev`"));
             assert_eq!(v.matches("\n## ").count(), 1, "one list");
             let fold = b

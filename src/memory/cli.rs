@@ -54,7 +54,7 @@ then do exactly what it prints, to the end of its output.
 
 ### While working: register memories (mandatory)
 
-Call `{memo} note \"<1 line, max {chars} bytes>\"` whenever you learn
+Call `{memo} note \"<1 line, max {chars} characters>\"` whenever you learn
 something new, or something worth keeping happens. That covers a task
 worth real effort, a fact or insight the user teaches you, anything you
 learn about their life (even indirectly), any event of lasting effect.
@@ -422,10 +422,10 @@ fn check(text: &str, target: u64) -> Result<&str> {
             text.matches('\n').count() + 1
         );
     }
-    let (n, limit) = (text.len() as u64, note_limit(target));
+    let (n, limit) = (text.chars().count() as u64, note_limit(target));
     if n > limit {
         bail!(
-            "Too long: {n} bytes, limit {limit}. Aim for {target}; accented characters cost 2 bytes. Compress it, or split it into separate notes."
+            "Too long: {n} characters, limit {limit}. Aim for {target}. Compress it, or split it into separate notes."
         );
     }
     Ok(text)

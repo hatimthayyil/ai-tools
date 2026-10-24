@@ -51,7 +51,7 @@ fn target(size: usize) -> usize {
     (size / RATIO).clamp(WORDS, MAX_WORDS)
 }
 
-/// The most bytes a work line over `items` is accepted at.
+/// The most characters a work line over `items` is accepted at.
 pub fn work_limit<'a>(items: impl IntoIterator<Item = &'a Item>) -> usize {
     limit(target(items.into_iter().map(weight).sum()))
 }
@@ -439,7 +439,7 @@ impl Rollup {
     /// call; `None` when it needs one, or until every line it is made from is `built`.
     pub fn free<'a>(&self, key: Key, built: impl Fn(Key) -> Option<&'a str>) -> Option<String> {
         let max = limit(self.words(key));
-        let len = |s: &u64| self.text(*s).len();
+        let len = |s: &u64| self.text(*s).chars().count();
         let text = match self.lines.get(&key)? {
             Source::Chunk { items, .. } => {
                 if items.iter().map(len).sum::<usize>() > max {
@@ -454,7 +454,7 @@ impl Rollup {
             } => {
                 let lines = work.iter().map(|&k| built(k)).collect::<Option<Vec<_>>>()?;
                 let ends: usize = message.iter().chain(reply).map(len).sum();
-                if ends + lines.iter().map(|l| l.len() + 1).sum::<usize>() > max {
+                if ends + lines.iter().map(|l| l.chars().count() + 1).sum::<usize>() > max {
                     return None;
                 }
                 let mut s = message.map_or(String::new(), |m| bare(self.text(m)));
@@ -465,7 +465,7 @@ impl Rollup {
             }
             Source::Node(_) => self.input(key, built)?,
         };
-        (text.len() <= max).then(|| flat(text.trim_end()))
+        (text.chars().count() <= max).then(|| flat(text.trim_end()))
     }
 
     /// The message of the call that writes line `key`; `None` until every line it is made

@@ -619,12 +619,9 @@ impl<'t> Run<'t> {
                     let message = [Block::new(task)];
                     let (who, line) =
                         write_line(&*backend, PROMPT, &message, words, &k, &mut spent)?;
-                    let max = limit(words);
-                    if line.len() > max {
-                        bail!(
-                            "{} bytes after {TRIES} tries; this line holds at most {max}",
-                            line.len()
-                        );
+                    let (n, max) = (line.chars().count(), limit(words));
+                    if n > max {
+                        bail!("{n} characters after {TRIES} tries; this line holds at most {max}");
                     }
                     Ok((who, line))
                 }))
@@ -646,7 +643,7 @@ impl<'t> Run<'t> {
         let secs = log::secs(took);
         match r {
             Ok((who, text)) => {
-                log::spend!(info, spent, { line = %k, bytes = text.len(), secs }, "built");
+                log::spend!(info, spent, { line = %k, chars = text.chars().count(), secs }, "built");
                 let text = match &mut self.dry {
                     None => {
                         let kind = roll.source(k).expect("a planned line").kind();

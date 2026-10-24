@@ -1,12 +1,13 @@
 use std::fmt;
 
+/// The longest line of a memory view, in characters.
 pub const NODE: usize = 512;
 
-/// The length a summariser is asked for, the only one it sees: about 365 bytes at the 7.3 bytes
-/// a word summary lines average, so a model overshooting it still fits [`NODE`].
+/// The length a summariser is asked for, the only one it sees: about 365 characters at the 7.3
+/// characters a word summary lines average, so a model overshooting it still fits [`NODE`].
 pub const WORDS: usize = 50;
 
-/// The most bytes a line asked for in `words` words is accepted at: [`NODE`] for [`WORDS`], in
+/// The most characters a line asked for in `words` words is accepted at: [`NODE`] for [`WORDS`], in
 /// proportion, so every target keeps the same margin.
 pub fn limit(words: usize) -> usize {
     words * NODE / WORDS
@@ -77,9 +78,9 @@ impl fmt::Display for Coord {
     }
 }
 
-/// A source that fits in [`NODE`] bytes is its own node: `kind: text`, or two lines joined.
+/// A source that fits in [`NODE`] characters is its own node: `kind: text`, or two lines joined.
 pub fn free(text: String) -> Option<String> {
-    (text.len() <= NODE).then_some(text)
+    (text.chars().count() <= NODE).then_some(text)
 }
 
 /// `a` and `b` as one line; an empty side (hidden tool calls) adds nothing.
@@ -120,6 +121,7 @@ mod tests {
     fn free_nodes_fit() {
         assert_eq!(free("x".repeat(NODE)).map(|s| s.len()), Some(NODE));
         assert_eq!(free("x".repeat(NODE + 1)), None);
+        assert!(free("é".repeat(NODE)).is_some());
         assert_eq!(joined("a", "b"), "a b");
     }
 }

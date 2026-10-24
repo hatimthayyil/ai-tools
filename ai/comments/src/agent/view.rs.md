@@ -9,7 +9,7 @@ Branch
 
 Levels
 - One list, oldest first, every turn once (spec.md), in four levels of detail, least first: oldest (merged lines `8+4`), older (one turn line), recent (message and final reply word for word, work lines between), newest (every item, as `zoom` lists a turn's items, tool output as its size). Each level holds what the one before it does, so detail never decreases toward the present; the test `every_turn_shows_once_in_order_and_detail_never_decreases` checks both on varied branches. `levels` decides each turn's; `view`, `needed` and the tests read it.
-- `recent`: back from the turn before the newest, whole turns while their `most` sum fits `RECENT` (16,000 bytes); the first that does not fit ends them, so the levels stay in order. `most` is what a recent turn prints at worst, from the items alone: message and final reply as printed, each work line at its `rollup::work_limit` plus its id. Building lines never moves a turn between levels, so the lines `needed` asks for are the lines the view shows once built, and `ready` (cli.rs) finds none missing after the build.
+- `recent`: back from the turn before the newest, whole turns while their `most` sum fits `RECENT` (16,000 characters); the first that does not fit ends them, so the levels stay in order. `most` is what a recent turn prints at worst, from the items alone: message and final reply as printed, each work line at its `rollup::work_limit` plus its id. Building lines never moves a turn between levels, so the lines `needed` asks for are the lines the view shows once built, and `ready` (cli.rs) finds none missing after the build.
 - The newest turn is the branch's last, closed or open: `/ai` runs once the turn has ended, and the reply the user answers next must be in the view whole. It needs no line, so `/ai` never summarises the turn that just ended. Its items print whole, built work lines or not: the newest level shows every reply, which a work line would hide.
 - No section per level and no "in progress" heading: a seeded session's last turn is the previous session's, and a heading that called it current was taken for the session's own request.
 
@@ -26,7 +26,7 @@ Chunks
 - A turn's chunks are the roll-up's own cut (`Part::chunks`, every chunk, the open last one included): the view shows the built chunk lines consecutive from the first, each with its exact range, so the compactor may write them in any order. A chunk line after an unbuilt one is left out until the gap is built.
 
 Budgets
-- The fold at most `[agent.view] lines` lines, the recent turns at most `RECENT` bytes; the newest turn whole, however long. The CLI reads the setting once per command (`fold_lines`) and hands it to the branch, so zoom, grep and build read the same branch as the view.
+- The fold at most `[agent.view] lines` lines, the recent turns at most `RECENT` characters; the newest turn whole, however long. The CLI reads the setting once per command (`fold_lines`) and hands it to the branch, so zoom, grep and build read the same branch as the view.
 - Item lines: `render::item_line`, the one renderer the compactor's input uses too (render.rs.md). Fold fallbacks cut words to 512 bytes (`SHORT`); recent turns print message and reply whole; the newest turn and zoom share `LISTING`.
 - The instruction names the four levels, least detail first, with an id of each, so a reader knows what a line covers before zooming it.
 - The instruction says a summary cites the item holding a detail as `[12.3]`, as the compactor's prompt asks.

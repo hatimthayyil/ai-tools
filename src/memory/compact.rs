@@ -79,7 +79,7 @@ pub fn message(job: &Job) -> Vec<Block> {
 /// [`limit`] in fewer: as many as fill the room `target` words take on average.
 pub fn retry_text(line: &str, target: usize) -> String {
     let words = line.split_whitespace().count();
-    let want = (words * target * 73 / 10 / line.len()).clamp(1, target);
+    let want = (words * target * 73 / 10 / line.chars().count()).clamp(1, target);
     format!(
         "That line is {words} words, too long. Rewrite it whole, as one complete line of at most {want} words: shorten the minor items, never cut it off."
     )
@@ -133,7 +133,7 @@ fn ask(
 }
 
 /// The line the model writes for `message`, which asks for `words` words, under the system
-/// prompt `system`, retried in the same conversation while over their [`limit`] in bytes, up
+/// prompt `system`, retried in the same conversation while over their [`limit`] in characters, up
 /// to [`TRIES`]; the shortest try wins.
 /// Returns who wrote it, and the line; `node` names it in the log. What every request took
 /// goes into `spent`, even when the line fails.
@@ -151,11 +151,12 @@ pub fn write_line(
     let mut tries: Vec<String> = Vec::new();
     loop {
         let line = flat(reply.trim());
-        if line.len() > max {
+        let n = line.chars().count();
+        if n > max {
             let u = conv.used();
             warn!(
                 node = %node,
-                bytes = line.len(),
+                chars = n,
                 attempt = tries.len() + 1,
                 input = u.input,
                 cache_write = u.cache_write,
@@ -168,7 +169,7 @@ pub fn write_line(
         if line.is_empty() {
             bail!("empty reply");
         }
-        if line.len() <= max || tries.len() + 1 >= TRIES {
+        if n <= max || tries.len() + 1 >= TRIES {
             tries.push(line);
             break;
         }
@@ -187,7 +188,7 @@ pub fn write_line(
     };
     let line = tries
         .into_iter()
-        .min_by_key(String::len)
+        .min_by_key(|l| l.chars().count())
         .expect("one try at least");
     Ok((who, line))
 }
@@ -364,7 +365,7 @@ impl<'s> Compactor<'s> {
         self.spent += spent;
         match r {
             Ok((who, text)) => {
-                log::spend!(info, spent, { node = %c, bytes = text.len(), secs = log::secs(took) }, "built");
+                log::spend!(info, spent, { node = %c, chars = text.chars().count(), secs = log::secs(took) }, "built");
                 let (built, snap) = self.store.put_node(c, &who, &text)?;
                 for (k, t) in built {
                     self.mem.set(k, t);

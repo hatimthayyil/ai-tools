@@ -74,7 +74,7 @@ struct Add {
     topic: String,
     #[arg(
         allow_hyphen_values = true,
-        help = "the claim, at most 1024 bytes; read from stdin if absent or -"
+        help = "the claim, at most 1024 characters; read from stdin if absent or -"
     )]
     text: Option<String>,
     #[arg(

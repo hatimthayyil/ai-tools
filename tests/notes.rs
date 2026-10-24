@@ -297,7 +297,7 @@ fn bodies_come_from_the_argument_or_stdin_and_are_checked() {
             "--confidence",
             "verified"
         ])
-        .starts_with("Too long: 1025 bytes")
+        .starts_with("Too long: 1025 characters")
     );
     assert!(
         n.fail(&["add", "a", " ", "--title", "T", "--confidence", "verified"])
@@ -507,7 +507,7 @@ fn the_model_sees_children_and_retries_overlong_replies() {
     let retries = n.fake.retries.lock().unwrap().clone();
     assert_eq!(retries.len(), 2);
     assert!(
-        retries[0].starts_with("The scope is 161 bytes (limit 160)"),
+        retries[0].starts_with("The scope is 161 characters (limit 160)"),
         "{}",
         retries[0]
     );

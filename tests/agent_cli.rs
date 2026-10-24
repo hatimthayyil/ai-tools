@@ -1771,7 +1771,8 @@ fn a_line_still_over_the_limit_fails_and_is_not_stored() {
     let o = s.ai_in("s-1", &["build"]);
     assert_eq!(code(&o), 1, "{}", stderr(&o));
     assert!(
-        stdout(&o).ends_with("Failed 0: 600 bytes after 5 tries; this line holds at most 512\n"),
+        stdout(&o)
+            .ends_with("Failed 0: 600 characters after 5 tries; this line holds at most 512\n"),
         "{}",
         stdout(&o)
     );

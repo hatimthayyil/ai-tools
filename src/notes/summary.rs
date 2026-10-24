@@ -7,9 +7,9 @@ use crate::{
 };
 
 pub const PROMPT: &str = include_str!("prompts/summary.txt");
-/// The longest scope line, in bytes.
+/// The longest scope line, in characters.
 pub const SCOPE_MAX: usize = 160;
-/// The longest gist, in bytes.
+/// The longest gist, in characters.
 pub const GIST_MAX: usize = NODE;
 
 /// A topic's `_summary.md`: what is below it (`scope`), its key claims (`gist`), and the hash of
@@ -117,7 +117,7 @@ pub fn due(root: &Node) -> Result<Vec<Job>> {
 
 fn ask(input: &str) -> String {
     format!(
-        "Summarise this topic: a scope of at most {SCOPE_MAX} bytes, then a gist of at most {GIST_MAX} bytes.\n{input}"
+        "Summarise this topic: a scope of at most {SCOPE_MAX} characters, then a gist of at most {GIST_MAX} characters.\n{input}"
     )
 }
 
@@ -126,17 +126,16 @@ fn split(reply: &str) -> ((String, String), Option<String>) {
     let reply = reply.trim();
     let (scope, gist) = reply.split_once('\n').unwrap_or((reply, ""));
     let (scope, gist) = (scope.trim().to_string(), gist.trim().to_string());
+    let (s, g) = (scope.chars().count(), gist.chars().count());
     let problem = if scope.is_empty() || gist.is_empty() {
         Some(
             "Reply in the format asked: the scope on the first line, a blank line, then the gist."
                 .to_string(),
         )
-    } else if scope.len() > SCOPE_MAX || gist.len() > GIST_MAX {
+    } else if s > SCOPE_MAX || g > GIST_MAX {
         Some(format!(
-            "The scope is {} bytes (limit {SCOPE_MAX}) and the gist {} bytes (limit {GIST_MAX}). \
-             Rewrite both whole within their limits: shorten the minor items, never cut them off.",
-            scope.len(),
-            gist.len()
+            "The scope is {s} characters (limit {SCOPE_MAX}) and the gist {g} characters (limit {GIST_MAX}). \
+             Rewrite both whole within their limits: shorten the minor items, never cut them off."
         ))
     } else {
         None
@@ -162,7 +161,10 @@ pub fn summarise(backend: &dyn Backend, input: &str) -> Result<(String, String)>
             reply = conv.say(&[Block::new(problem)])?;
         }
     }
-    match tries.into_iter().min_by_key(|(s, g)| s.len() + g.len()) {
+    match tries
+        .into_iter()
+        .min_by_key(|(s, g)| s.chars().count() + g.chars().count())
+    {
         Some(sg) => Ok(sg),
         None => bail!("no summary in the format asked after {TRIES} tries"),
     }
@@ -206,7 +208,7 @@ mod tests {
             split(&long)
                 .1
                 .unwrap()
-                .starts_with("The scope is 161 bytes")
+                .starts_with("The scope is 161 characters")
         );
     }
 

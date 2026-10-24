@@ -508,7 +508,7 @@ fn a_projects_ai_toml_overrides_the_users_key_by_key() {
     assert_eq!(
         text(&config(&sub).stdout),
         "view.lines   50      how many lines view prints (96 is about 8k tokens) (default 96)\n\
-         entry-chars  10      the length a note aims for, in bytes; 40 more are accepted (default 280)\n"
+         entry-chars  10      the length a note aims for, in characters; 40 more are accepted (default 280)\n"
     );
     assert!(text(&config(s.path()).stdout).contains("entry-chars  100 "));
 

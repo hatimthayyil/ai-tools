@@ -33,5 +33,4 @@ numbers, and who claims what. Record faithfully: never answer, judge,
 correct or add to the notes.
 
 Reply with the scope on the first line, then a blank line, then the
-gist. No labels, no headings, no markdown. Non-ASCII characters cost 2-4
-bytes.
+gist. No labels, no headings, no markdown.

@@ -7,7 +7,7 @@ use regex::Regex;
 
 use crate::notes::topic::Topic;
 
-/// The longest note body, in bytes.
+/// The longest note body, in characters.
 pub const LEAF_MAX: usize = 1024;
 /// The longest note title, in characters.
 pub const TITLE_MAX: usize = 80;
@@ -265,16 +265,16 @@ pub fn check_title(title: &str) -> Result<&str> {
     Ok(title)
 }
 
-/// A note body: not empty, at most [`LEAF_MAX`] bytes.
+/// A note body: not empty, at most [`LEAF_MAX`] characters.
 pub fn check_body(text: &str) -> Result<&str> {
     let text = text.trim();
     if text.is_empty() {
-        bail!("Empty. A note is one claim, in at most {LEAF_MAX} bytes.");
+        bail!("Empty. A note is one claim, in at most {LEAF_MAX} characters.");
     }
-    let n = text.len();
+    let n = text.chars().count();
     if n > LEAF_MAX {
         bail!(
-            "Too long: {n} bytes, limit {LEAF_MAX}. A note is one claim: split it, or compress it further."
+            "Too long: {n} characters, limit {LEAF_MAX}. A note is one claim: split it, or compress it further."
         );
     }
     Ok(text)
@@ -388,6 +388,9 @@ mod tests {
         let e = check_body(&"x".repeat(LEAF_MAX + 1))
             .unwrap_err()
             .to_string();
-        assert!(e.starts_with("Too long: 1025 bytes, limit 1024."), "{e}");
+        assert!(
+            e.starts_with("Too long: 1025 characters, limit 1024."),
+            "{e}"
+        );
     }
 }
