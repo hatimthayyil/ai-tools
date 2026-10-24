@@ -9,6 +9,8 @@ ai/research/20261021T224734--storage.md
   s_77b04d9838f161::t_0c4185eda0a495 69
   s_77b04d9838f161::t_1b1cb21b466576 61,62
   s_77b04d9838f161::t_b1d647e09d52c0 31-39
+  s_77b04d9838f161::t_90bc13801581c0 42
+  s_77b04d9838f161::t_215098e0a7da81 18
 tests/project.rs
   s_77b04d9838f161::t_ca2bba99770a70 78,84,89,93-98
   s_77b04d9838f161::t_4ca40ea7dfcd50 109-142,144,150
@@ -36,6 +38,7 @@ README.md
   s_77b04d9838f161::t_e2eef790341ba2 105
   s_77b04d9838f161::t_eeedb311b5f9f8 117
   s_77b04d9838f161::t_5f38bbf10ddc08 147
+  s_77b04d9838f161::t_cb2dc04f11548e 88
 ai/comments/src/config.rs.md
   s_77b04d9838f161::t_810fcd3a380971 6
   s_77b04d9838f161::t_1052aeddff6a50 5
@@ -52,14 +55,17 @@ ai/comments/src/project.rs.md
   s_77b04d9838f161::t_c050a530cf520a 8,12,14-15
 ai/comments/src/repo.rs.md
   s_77b04d9838f161::t_c99e8c3ec394d8 5
+  s_77b04d9838f161::t_93fabc81f28dbd 6
 ai/comments/tests/agent_cli.rs.md
   s_77b04d9838f161::t_d63ae91f23e80e 24
+  s_77b04d9838f161::t_68aa2e2e3e1f3b 23
 ai/comments/tests/config.rs.md
   s_77b04d9838f161::t_c7ff3b57d5ad6d 4-5
 ai/comments/tests/project.rs.md
   s_77b04d9838f161::t_52215511963f7d 3
 ai/glossary.md
   s_77b04d9838f161::t_41b6867ff30ea8 24,44
+  s_77b04d9838f161::t_0da4a72e59fea4 29-30
 ai/research/20261024T084514--agents.md
   s_77b04d9838f161::t_aa961aa4010ca6 13,71,73,77
 src/agent/cli.rs
@@ -68,6 +74,8 @@ tests/agent.rs
   s_77b04d9838f161::t_120fb20807bbbf 139
 tests/agent_cli.rs
   s_77b04d9838f161::t_366e52a725fb56 1828,1833,1938
+ai/comments/src/lib.rs.md
+  s_77b04d9838f161::t_682eeff34d512d 3
 ---
 {
   "schema_version": "authorship/3.0.0",
