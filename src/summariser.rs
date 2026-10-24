@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, de::Error};
 
 use crate::memory::{Backend, ClaudeCode, MakeBackend, claude};
 
-/// `[summariser]` in `ai.toml`: what writes every summary, for chat, memory, notes and files.
+/// `[summariser]` in `ai.toml`: what writes every summary, for agents, memory and notes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {

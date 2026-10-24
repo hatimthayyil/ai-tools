@@ -4,7 +4,6 @@ The `ai` CLI: an all-in-one AI tool.
 
 - `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory view` prints the whole memory as one short view.
 - `ai notes`: a global knowledge store for AI agents. Each note is one claim, filed in a tree of topics; Claude Code summarises every topic from its children, so an agent can browse the tree or search it.
-- `ai files`: summaries of a project's files, rolled up its directory tree, so an agent can read a project from the top down.
 - `ai agent`: named agents, each with one thread that spans its sessions. The thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
 
 ## Install
@@ -84,19 +83,9 @@ Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_
 ai init  # make this directory a project, once: mints its id into ai.toml, ignores ai.local.toml and .ai/ in .gitignore, prints the id
 ```
 
-`ai files` and `ai agent` work in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
+`ai agent` works in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
 
-A project's agents and file summaries live in `.ai/` in its main checkout, which the project's git ignores. `.ai/` is a git repository of its own, made on its first write, so they keep their history: each `ai` command that writes there commits once, naming the command, as `ai agent attach dev` or `ai files build`, and makes no commit when nothing changed. Its `.gitignore` leaves out locks and logs. A command that fails still commits what it wrote; a commit that fails is an error.
-
-### ai files
-
-```sh
-ai files build          # summarise what changed since the last build, with a progress bar on a terminal
-ai files view           # the project's summary
-ai files view src/agent  # a directory's or a file's
-```
-
-A file's summary is asked for a tenth of its bytes, at least 512; a directory's is written from its children's summaries in passes that each halve the last, down to their mean size, at least 512. A summary may run a quarter over what it was asked for. What git ignores and files that are not text are left out. `build` runs only when you run it, up to 8 calls at once, each directory after its children; a summary is kept under the hash of what it covers, so the next build summarises only what changed, and a file or directory changed since shows no summary. A failed call stops the build, naming the path and the cause; the summaries written before it are kept. Summaries live in `.ai/files/` in the project's main checkout, shared by its linked worktrees and private to you; ai's own `.ai/` is never summarised. Every call to the model is kept byte for byte in `calls/`.
+A project's agents live in `.ai/` in its main checkout, which the project's git ignores. `.ai/` is a git repository of its own, made on its first write, so they keep their history: each `ai` command that writes there commits once, naming the command, as `ai agent attach dev`, and makes no commit when nothing changed. Its `.gitignore` leaves out locks and logs. A command that fails still commits what it wrote; a commit that fails is an error.
 
 ### ai agent
 
@@ -138,7 +127,7 @@ background = true  # summarise in the background after each turn
 [agent.view]
 lines = 64         # the most lines the view folds the older turns into
 
-[summariser]       # what writes every summary: chat, memory, notes, files
+[summariser]       # what writes every summary: agents, memory, notes
 backend = "claude" # claude -p; the only backend yet
 model = "sonnet"   # in the backend's own spelling
 

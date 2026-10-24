@@ -19,8 +19,6 @@ enum Command {
     Agent(ai_tools::agent::Cli),
     #[command(about = "Continue an agent's newest session, else start one: ai agent resume.")]
     Resume(ai_tools::agent::Resume),
-    #[command(about = "Summaries of a project's files, rolled up its directory tree.")]
-    Files(ai_tools::files::Cli),
     #[command(about = "Your whole memory, then a thread's view: one read to wake on.")]
     View(ai_tools::view::Cli),
     #[command(about = "Make this directory a project: mint its id into its ai.toml, once.")]
@@ -33,7 +31,6 @@ fn main() -> ExitCode {
         Command::Notes(cli) => cli.exec(),
         Command::Agent(cli) => cli.exec(),
         Command::Resume(cli) => cli.exec(),
-        Command::Files(cli) => cli.exec(),
         Command::View(cli) => cli.exec(),
         Command::Init(cli) => cli.exec(),
     };

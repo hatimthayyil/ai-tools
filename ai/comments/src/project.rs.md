@@ -1,6 +1,6 @@
 # project.rs
 
-The project at a directory, for chat and files. Design: the Projects section of `ai/research/20261021T194314--ids-handles-and-paths.md`; ids: `20261021T194500--durable-id-alternatives.md`.
+The project at a directory, for agents. Design: the Projects section of `ai/research/20261021T194314--ids-handles-and-paths.md`; ids: `20261021T194500--durable-id-alternatives.md`.
 
 - A project is the directory of the nearest `ai.toml` at or above a directory, never the user's (`config::project_file`). A git repository is not needed, and nothing of `ai` goes in a repository's `.git`.
 - `[project] id`: a TypeID of type `project` (`mti`, the UUID in Crockford base-32), minted as UUIDv7 by `ai init`. An id of another type or not a TypeID fails, naming the file. A committed `ai.toml` makes every clone and worktree the same project.

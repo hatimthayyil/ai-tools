@@ -8,4 +8,4 @@
 - A missing file sets nothing. An unreadable one, a TOML error, an unknown table or key, or a bad value fails the command with the file's path before the TOML error, which shows the line and the key (`main` prints only the outermost message, so the path is part of it, not a context).
 - Only `ai init` writes `ai.toml`, and only `[project] id` (project.rs).
 - `Settings::find` is the CLI's; `Settings::load` takes the user's file as an argument, for tests.
-- Who loads it: `ai memory` and `ai view` at the command's start (`memory::Runtime::config`), `ai notes` at the command's start for `[summariser]` (`notes::Runtime::summariser`), `ai files build` for `[summariser]`, `ai agent` when a command needs its settings (`Store::settings`, from the directory the store was found from), and `Project::find` for `[project]`.
+- Who loads it: `ai memory` and `ai view` at the command's start (`memory::Runtime::config`), `ai notes` at the command's start for `[summariser]` (`notes::Runtime::summariser`), `ai agent` when a command needs its settings (`Store::settings`, from the directory the store was found from), and `Project::find` for `[project]`.

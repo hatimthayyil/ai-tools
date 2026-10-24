@@ -145,41 +145,12 @@ pub fn write_line(
     node: &dyn fmt::Display,
     spent: &mut Spend,
 ) -> Result<(Who, String)> {
+    let max = limit(words);
     let mut conv = backend.open(system)?;
-    let line = fit(
-        &mut *conv,
-        message,
-        limit(words),
-        |r| flat(r.trim()),
-        |l| retry_text(l, words),
-        node,
-        spent,
-    )?;
-    let who = Who {
-        agent: backend.agent().into(),
-        model: backend.model().into(),
-        session: conv.session(),
-    };
-    Ok((who, line))
-}
-
-/// `conv`'s reply to `message` as `shape` makes it, asked again in the same conversation with
-/// `retry` of the last try while over `max` bytes, up to [`TRIES`]; the shortest try wins, over
-/// `max` or not. `node` names it in the log. What every request took goes into `spent`, even
-/// when the reply fails.
-pub fn fit(
-    conv: &mut dyn Conversation,
-    message: &[Block],
-    max: usize,
-    shape: impl Fn(&str) -> String,
-    retry: impl Fn(&str) -> String,
-    node: &dyn fmt::Display,
-    spent: &mut Spend,
-) -> Result<String> {
-    let mut reply = ask(conv, message, false, spent)?;
+    let mut reply = ask(&mut *conv, message, false, spent)?;
     let mut tries: Vec<String> = Vec::new();
     loop {
-        let line = shape(&reply);
+        let line = flat(reply.trim());
         if line.len() > max {
             let u = conv.used();
             warn!(
@@ -201,13 +172,24 @@ pub fn fit(
             tries.push(line);
             break;
         }
-        reply = ask(conv, &[Block::new(retry(&line))], true, spent)?;
+        reply = ask(
+            &mut *conv,
+            &[Block::new(retry_text(&line, words))],
+            true,
+            spent,
+        )?;
         tries.push(line);
     }
-    Ok(tries
+    let who = Who {
+        agent: backend.agent().into(),
+        model: backend.model().into(),
+        session: conv.session(),
+    };
+    let line = tries
         .into_iter()
         .min_by_key(String::len)
-        .expect("one try at least"))
+        .expect("one try at least");
+    Ok((who, line))
 }
 
 #[derive(Clone, Copy, Debug)]

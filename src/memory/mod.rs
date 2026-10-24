@@ -23,7 +23,7 @@ pub use claude::{CALLS, ClaudeCode};
 pub use cli::{Cli, Runtime, broken_pipe, default_dir, plural, spawn_summariser, store_dir};
 pub use compact::{
     COMPACT, Compactor, GaveUp, JOBS, Job, Options, RETRIES, RETRY, RETRY_MAX, SCALE, Spend, Step,
-    TRIES, fit, ruler, summarize, write_line,
+    TRIES, ruler, summarize, write_line,
 };
 pub use config::{Config, Knob, View};
 pub use cover::cover;
