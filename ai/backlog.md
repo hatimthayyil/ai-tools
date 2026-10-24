@@ -30,7 +30,7 @@
 
 ## Chat
 
-- `ai chat` layer 1 runs end to end in Claude Code (register.ts.md, End to end). To enable: `CLAUDE_CODE_PLUGIN_DIRS` in the `env` of `~/.claude/settings.json` (README). Open from that run:
+- `ai chat` layer 1 runs end to end in Claude Code (register.ts.md, End to end). To enable: install the Claude Code plugin (README). Open from that run:
   - Haiku overruns the 512-byte line often (6 retries in 16 calls); Sonnet stays the default model.
   - A native summary is a marker: after `detach`, native `/compact`, `attach`, its text is neither in the view nor in `zoom`.
   - After an `ai chat` compaction, nested `CLAUDE.md`/`AGENTS.md` files are not re-attached (register.ts.md). Not tested: the run had `CLAUDE_CODE_DISABLE_CLAUDE_MDS`.

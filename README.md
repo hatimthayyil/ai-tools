@@ -19,6 +19,37 @@ or with Nix:
 nix profile add github:hatimthayyil/ai-tools
 ```
 
+### Claude Code plugin
+
+`ai chat` needs the Claude Code plugin `ai@ai`. The Nix package ships it in a plugin marketplace, `share/ai/plugins` (`plugins/` here), whose `.claude-plugin/marketplace.json` lists it as `./claude`. Below, `<prefix>` is where the package is installed, such as `~/.nix-profile`.
+
+Without a Team or Enterprise login, on a machine with no managed settings:
+
+```sh
+claude plugin marketplace add <prefix>/share/ai/plugins
+claude plugin install ai@ai
+```
+
+Under a Team or Enterprise login, or on a machine with managed settings, Claude Code runs a built-in policy plugin ahead of every plugin a user installs, and it withholds from them the session start, turn end and compaction events `ai chat` needs. Only a plugin that managed settings install receives them. As root, add these managed settings:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "ai": { "source": { "source": "directory", "path": "<prefix>/share/ai/plugins" } }
+  },
+  "enabledPlugins": { "ai@ai": true },
+  "appendPlugins": ["ai@ai"]
+}
+```
+
+either to `managed-settings.json` or as a file of their own in `managed-settings.d/` beside it, in:
+
+- Linux and WSL: `/etc/claude-code/`
+- macOS: `/Library/Application Support/ClaudeCode/`
+- Windows: `C:\Program Files\ClaudeCode\`
+
+Claude Code installs the plugin at the next session start. `<prefix>` must be absolute: `/home/<you>/.nix-profile` on your own machine, or for a fleet a path every machine has and only administrators can write, such as the NixOS system profile `/run/current-system/sw` with `environment.pathsToLink = [ "/share/ai" ];`. Where the organization also delivers server-managed settings from the claude.ai console, Claude Code ignores this file unless that source sets `"managedSourcesBehavior": "merge"`.
+
 ## Use
 
 ```sh
@@ -85,13 +116,7 @@ Each turn's work, the agent's steps between your message and its final reply, is
 
 A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Earlier states are prefixes of those files (`--at`). A newer store format is refused. Re-attaching a session rebuilds its thread from the transcript.
 
-This needs the Claude Code plugin in `share/ai/plugins/claude` of the package (`plugins/claude` here). Load it in every session with the `env` block of `~/.claude/settings.json`:
-
-```json
-"env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/<you>/.nix-profile/share/ai/plugins/claude" }
-```
-
-or for one session with `claude --plugin-dir <dir>`.
+This needs the [Claude Code plugin](#claude-code-plugin).
 
 ### Settings
 
