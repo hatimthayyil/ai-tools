@@ -1,0 +1,29 @@
+plugins/claude/tests/ai.test.ts
+  s_ee00bfa94c2ce8::t_11943df6bc6491 187
+  s_ee00bfa94c2ce8::t_2f819c882a11b3 151
+  s_ee00bfa94c2ce8::t_e264cd1409238a 209,216-224
+  s_ee00bfa94c2ce8::t_2decca0e8b6eac 198-201
+  s_ee00bfa94c2ce8::t_c1efc33e58d170 225-226
+plugins/claude/hooks/register.ts
+  s_ee00bfa94c2ce8::t_ecd7e80f4b0f29 56-59,61
+  s_ee00bfa94c2ce8::t_aad1823f419d1c 143
+  s_ee00bfa94c2ce8::t_4d873c680ec536 7-8
+ai/comments/plugins/claude/hooks/register.ts.md
+  s_ee00bfa94c2ce8::t_0a6b59ed5e3f89 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "45b299b600e9962b2b8ed94513f534c3b7bf5b5f",
+  "prompts": {},
+  "sessions": {
+    "s_ee00bfa94c2ce8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9ab77f1-6152-42f3-9d4e-6ac684554509",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
