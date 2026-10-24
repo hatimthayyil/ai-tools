@@ -148,6 +148,7 @@ test('a failed seed starts without the view and says why', async ($, on) => {
 
 test('a subagent compacts natively, leaving the view /ai built for the main conversation', async ($, on) => {
   const world = engine(on, views)
+  await start($, 'resume')
   const ran = ai($, '')
   await world.clock.advance(FLUSH_MS)
   expect((await ran).text).toBe('Compacting.')
@@ -183,6 +184,7 @@ test('the agent tool compacts as /ai does at the end of the turn, only when atta
   let isAttached = false
   const world = engine(on, args => (!isAttached ? [3, '', ''] : sub(args) === 'sync-session' ? [0, '', ''] : views(args)))
   const call = () => $.tool.call({ tool: 'mcp__ai__compress', input: {} })
+  await start($, 'resume')
   expect(await call()).toMatchObject({ result: 'This session is not attached to a thread. Attach it with /ai attach <name>.' })
   isAttached = true
   expect(await call()).toMatchObject({ result: 'Compaction queued for the end of this turn.' })
@@ -193,10 +195,10 @@ test('the agent tool compacts as /ai does at the end of the turn, only when atta
   await turnEnd($, world)
   expect(world.compacts).toEqual(['/compact'])
   expect(world.calls).toEqual([
-    ['ai', 'chat', 'sync-session', ...SESSION_ARGS],
-    ['ai', 'chat', 'sync-session', ...SESSION_ARGS],
-    ['ai', 'chat', 'compact-session', ...SESSION_ARGS],
-    ['ai', 'view', '--whole', ...SESSION_ARGS],
+    ['ai', 'chat', 'sync-session', ...ALL_ARGS],
+    ['ai', 'chat', 'sync-session', ...ALL_ARGS],
+    ['ai', 'chat', 'compact-session', ...ALL_ARGS],
+    ['ai', 'view', '--whole', ...ALL_ARGS],
     ['ai', 'chat', 'sync-session', ...ALL_ARGS],
   ])
   expect(world.logs).toEqual([])
@@ -204,10 +206,22 @@ test('the agent tool compacts as /ai does at the end of the turn, only when atta
 
 test('a compaction the agent asked for that fails says why and compacts nothing', async ($, on) => {
   const world = engine(on, args => (sub(args) === 'compact-session' ? [1, '', 'Failed 12: empty reply\n'] : [0, '', '']))
+  await start($, 'resume')
   await $.tool.call({ tool: 'mcp__ai__compress', input: {} })
   await turnEnd($, world)
   expect(world.compacts).toEqual([])
   expect(world.logs).toEqual(['Not compacted: Failed 12: empty reply'])
+})
+
+test('/ai and the agent tool compact nothing and say why when the session’s start never reached the plugin', async ($, on) => {
+  const world = engine(on, views)
+  const text = (await ai($, '')).text
+  expect(text).toMatch(/^Not compacted: this session's start never reached the ai plugin/)
+  expect(await $.tool.call({ tool: 'mcp__ai__compress', input: {} })).toMatchObject({ result: text })
+  await world.clock.advance(FLUSH_MS)
+  expect(world.calls).toEqual([])
+  expect(world.compacts).toEqual([])
+  expect(await compact($)).toEqual(NATIVE)
 })
 
 test('turn end syncs once the transcript is flushed, and only a real failure is shown', async ($, on) => {

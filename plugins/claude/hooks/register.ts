@@ -4,6 +4,8 @@ const NOT_ATTACHED = 3
 const LONG_MS = 600_000
 const FLUSH_MS = 1_100
 const USAGE = 'Usage: /ai | /ai attach <name> | /ai detach'
+const WITHHELD =
+  "Not compacted: this session's start never reached the ai plugin, so its compaction would not either and /compact would summarise natively. Where an organization manages Claude Code, only a plugin its managed settings install receives these events."
 
 const transcript = { plugin: 'ai', key: 'transcript' } as const
 const prepared = { plugin: 'ai', key: 'view' } as const
@@ -51,7 +53,12 @@ function reply(ran: Ran): string {
   return ran.stderr.trim() || `ai chat exited with code ${ran.exitCode}.`
 }
 
+async function isWithheld($: EngineInterface): Promise<boolean> {
+  return (await $.state.get(transcript)).value === undefined
+}
+
 async function compress($: EngineInterface): Promise<string | undefined> {
+  if (await isWithheld($)) return WITHHELD
   await $.clock.sleep(FLUSH_MS)
   const args = await session($)
   const ready = await chat($, ['compact-session', ...args], LONG_MS)
@@ -133,6 +140,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'mcp__ai__compress' }, async $ => {
+    if (await isWithheld($)) return { result: WITHHELD }
     const ran = await chat($, ['sync-session', ...(await session($))])
     if (ran.exitCode !== 0) return { result: reply(ran) }
     await $.state.set(requested, true)
