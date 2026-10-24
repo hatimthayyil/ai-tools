@@ -11,7 +11,7 @@ mod summarise;
 mod sync;
 mod view;
 
-pub use cli::{AGENT_HELP, Cli, NOT_ATTACHED, Session, thread_view};
+pub use cli::{AGENT_HELP, Cli, NOT_ATTACHED, Resume, Session, thread_view};
 pub use id::Id;
 pub use model::{Item, Kind, Marker, Place, SourceId, Tree, Turn, turns};
 pub use record::{Agent, Binding, Head, Key, Line, LineKind};

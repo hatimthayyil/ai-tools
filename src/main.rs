@@ -17,6 +17,8 @@ enum Command {
     Notes(ai_tools::notes::Cli),
     #[command(about = "Agents: named threads that span harness sessions, kept in this project.")]
     Agent(ai_tools::agent::Cli),
+    #[command(about = "Continue an agent's newest session, else start one: ai agent resume.")]
+    Resume(ai_tools::agent::Resume),
     #[command(about = "Summaries of a project's files, rolled up its directory tree.")]
     Files(ai_tools::files::Cli),
     #[command(about = "Your whole memory, then a thread's view: one read to wake on.")]
@@ -30,6 +32,7 @@ fn main() -> ExitCode {
         Command::Memory(cli) => cli.exec(),
         Command::Notes(cli) => cli.exec(),
         Command::Agent(cli) => cli.exec(),
+        Command::Resume(cli) => cli.exec(),
         Command::Files(cli) => cli.exec(),
         Command::View(cli) => cli.exec(),
         Command::Init(cli) => cli.exec(),

@@ -55,18 +55,7 @@ enum Command {
         #[arg(help = "the agent: letters, digits, '-' and '_'")]
         name: String,
     },
-    #[command(
-        about = "continue the agent's newest Claude Code session, else start a new one.",
-        after_help = "A session resumes where it ran. A new one runs in the agent's worktree when ai.toml's [agents.<name>] names one, after writing the summary lines its view needs; if one fails, Claude Code does not start. Either way it gets the agent's instructions."
-    )]
-    Resume {
-        #[arg(help = "the agent")]
-        name: String,
-        #[arg(long, default_value = claude::HARNESS, value_parser = [claude::HARNESS], help = "the harness to run it in")]
-        harness: String,
-        #[arg(last = true, help = "arguments for claude, after --")]
-        args: Vec<String>,
-    },
+    Resume(Resume),
     #[command(about = "list this project's agents and their sessions.")]
     List {
         #[command(flatten)]
@@ -193,6 +182,29 @@ impl Parts {
     }
 }
 
+/// An agent's newest session continued, else a new one started.
+#[derive(Args, Debug)]
+#[command(
+    about = "continue the agent's newest Claude Code session, else start a new one.",
+    after_help = "A session resumes where it ran. A new one runs in the agent's worktree when ai.toml's [agents.<name>] names one, after writing the summary lines its view needs; if one fails, Claude Code does not start. Either way it gets the agent's instructions."
+)]
+pub struct Resume {
+    #[arg(help = "the agent")]
+    name: String,
+    #[arg(long, default_value = claude::HARNESS, value_parser = [claude::HARNESS], help = "the harness to run it in")]
+    harness: String,
+    #[arg(last = true, help = "arguments for claude, after --")]
+    args: Vec<String>,
+}
+
+impl Resume {
+    /// Runs in the current directory.
+    pub fn exec(self) -> Result<ExitCode> {
+        let cwd = env::current_dir().context("Cannot read the current directory.")?;
+        resume(&cwd, &self.name, &self.args)
+    }
+}
+
 /// The harness session a command is for: its flags, else the harness's environment.
 #[derive(Args, Debug)]
 pub struct Session {
@@ -310,7 +322,7 @@ impl Cli {
         });
         match command {
             Command::New { name } => new(cwd, out, &name),
-            Command::Resume { name, args, .. } => resume(cwd, &name, &args),
+            Command::Resume(r) => resume(cwd, &r.name, &r.args),
             Command::List { session } => list(cwd, out, session),
             Command::View {
                 agent,

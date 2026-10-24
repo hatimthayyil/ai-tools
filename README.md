@@ -103,6 +103,7 @@ ai agent new dev                      # create agent dev, with an empty thread
 ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in,
                                       # else a new one, whose context is the thread's view;
                                       # --harness: claude is the only one yet
+ai resume dev [-- claude args]        # the same, shorter
 ai agent list                         # the agents here, newest first, and their sessions
 ai agent view dev                     # dev's view, from the summaries written so far
 ai agent zoom -a dev <id>             # open a line of it; --tool-output adds tool output

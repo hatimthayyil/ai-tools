@@ -1312,6 +1312,29 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
 }
 
 #[test]
+fn ai_resume_is_ai_agent_resume() {
+    let s = Sandbox::new();
+    let o = s.top(None, &["resume", "dev"]);
+    assert_eq!(code(&o), 1);
+    assert_eq!(
+        stderr(&o),
+        "No agent dev in this project. Create it: ai agent new dev\n"
+    );
+    s.transcript("s-1", &ran_in(&fixture("plain.jsonl"), &s.repo()));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    ok(s.ai_in("s-1", &["detach"]), "Detached from dev.\n");
+
+    let o = s.top(None, &["resume", "dev", "--", "--model", "haiku"]);
+    assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
+    assert_eq!(s.argv(), ["--resume", "s-1", "--model", "haiku"]);
+    assert_eq!(s.claude_dir(), s.repo());
+}
+
+#[test]
 fn an_agent_runs_in_its_worktree_with_its_instructions() {
     let s = Sandbox::new();
     let toml = s.repo().join("ai.toml");
