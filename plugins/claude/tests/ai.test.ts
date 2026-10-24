@@ -15,7 +15,7 @@ const FLUSH_MS = 1_100
 type Answer = [exitCode: number, stdout: string, stderr: string]
 type World = ReturnType<typeof engine>
 
-const sub = (args: readonly string[]) => (args[0] === 'chat' ? args[1] : args[0])
+const sub = (args: readonly string[]) => (args[0] === 'agent' ? args[1] : args[0])
 const views = (args: readonly string[]): Answer => [0, sub(args) === 'view' ? WOKE : VIEW, '']
 
 function ai($: Engine, args: string) {
@@ -85,7 +85,7 @@ test('/ai builds the view once the transcript is flushed, then compacts into mem
   await world.clock.advance(1)
   expect((await ran).text).toBe('Compacting.')
   expect(world.calls).toEqual([
-    ['ai', 'chat', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
   ])
   expect(world.compacts).toEqual(['/compact'])
@@ -94,7 +94,7 @@ test('/ai builds the view once the transcript is flushed, then compacts into mem
   expect(world.compacts).toEqual(['/compact', 'manual'])
 })
 
-test('/compact and auto-compaction stay Claude Code’s, without ai chat', async ($, on) => {
+test('/compact and auto-compaction stay Claude Code’s, without ai agent', async ($, on) => {
   const world = engine(on, () => [0, VIEW, ''])
   await start($, 'resume')
   expect(await compact($, 'manual')).toEqual(NATIVE)
@@ -109,7 +109,7 @@ test('/ai compacts nothing and says why when ai fails, the session is unattached
   await start($, 'resume')
   expect(await compress($, world)).toBe('Not compacted: Failed 12: empty reply')
   answer = [3, '', '']
-  expect(await compress($, world)).toBe('This session is not attached to a thread. Attach it with /ai attach <name>.')
+  expect(await compress($, world)).toBe('This session is not attached to an agent. Attach it with /ai attach <name>.')
   answer = [0, '', '']
   expect(await compress($, world)).toBe('Not compacted: the thread holds nothing yet.')
   answer = [0, VIEW, '']
@@ -123,7 +123,7 @@ test('a new session of a thread starts with its view', async ($, on) => {
   const world = engine(on, () => [0, VIEW, ''])
   const result = await start($)
   expect(result.additionalContext).toEqual([PROJECT, VIEW])
-  expect(world.calls).toEqual([['ai', 'chat', 'compact-session', ...ALL_ARGS]])
+  expect(world.calls).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
 })
 
 test('a resumed, cleared, unattached or empty session starts as it would', async ($, on) => {
@@ -143,7 +143,7 @@ test('a resumed, cleared, unattached or empty session starts as it would', async
 test('a failed seed starts without the view and says why', async ($, on) => {
   const world = engine(on, () => [1, '', 'no claude on PATH\n'])
   expect((await start($)).additionalContext).toEqual([PROJECT])
-  expect(world.logs).toEqual(["ai chat compact-session failed; starting without the thread's view. no claude on PATH"])
+  expect(world.logs).toEqual(["ai agent compact-session failed; starting without the thread's view. no claude on PATH"])
 })
 
 test('a subagent compacts natively, leaving the view /ai built for the main conversation', async ($, on) => {
@@ -157,19 +157,19 @@ test('a subagent compacts natively, leaving the view /ai built for the main conv
   expect(await compact($)).toEqual([{ role: 'user', text: WOKE, toolUses: [] }])
 })
 
-test('/ai attach and detach run ai chat with the session and show its answer', async ($, on) => {
+test('/ai attach and detach run ai agent with the session and show its answer', async ($, on) => {
   const world = engine(on, args =>
-    sub(args) === 'attach' ? [0, 'Attached to dev.\n', ''] : [1, '', 'This session is not attached to a thread.\n'],
+    sub(args) === 'attach' ? [0, 'Attached to dev.\n', ''] : [1, '', 'This session is not attached to an agent.\n'],
   )
   await start($)
   expect((await ai($, 'attach dev')).text).toBe('Attached to dev.')
-  expect((await ai($, ' detach ')).text).toBe('This session is not attached to a thread.')
+  expect((await ai($, ' detach ')).text).toBe('This session is not attached to an agent.')
   expect((await ai($, 'attach')).text).toMatch(/^Usage/)
   expect((await ai($, 'compress')).text).toMatch(/^Usage/)
   expect(world.calls).toEqual([
-    ['ai', 'chat', 'compact-session', ...ALL_ARGS],
-    ['ai', 'chat', 'attach', 'dev', ...ALL_ARGS],
-    ['ai', 'chat', 'detach', ...ALL_ARGS],
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'attach', 'dev', ...ALL_ARGS],
+    ['ai', 'agent', 'detach', ...ALL_ARGS],
   ])
 })
 
@@ -185,7 +185,7 @@ test('the agent tool compacts as /ai does at the end of the turn, only when atta
   const world = engine(on, args => (!isAttached ? [3, '', ''] : sub(args) === 'sync-session' ? [0, '', ''] : views(args)))
   const call = () => $.tool.call({ tool: 'mcp__ai__compress', input: {} })
   await start($, 'resume')
-  expect(await call()).toMatchObject({ result: 'This session is not attached to a thread. Attach it with /ai attach <name>.' })
+  expect(await call()).toMatchObject({ result: 'This session is not attached to an agent. Attach it with /ai attach <name>.' })
   isAttached = true
   expect(await call()).toMatchObject({ result: 'Compaction queued for the end of this turn.' })
   expect(world.compacts).toEqual([])
@@ -195,11 +195,11 @@ test('the agent tool compacts as /ai does at the end of the turn, only when atta
   await turnEnd($, world)
   expect(world.compacts).toEqual(['/compact'])
   expect(world.calls).toEqual([
-    ['ai', 'chat', 'sync-session', ...ALL_ARGS],
-    ['ai', 'chat', 'sync-session', ...ALL_ARGS],
-    ['ai', 'chat', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
+    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
-    ['ai', 'chat', 'sync-session', ...ALL_ARGS],
+    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
   ])
   expect(world.logs).toEqual([])
 })
@@ -235,15 +235,15 @@ test('turn end syncs once the transcript is flushed, and only a real failure is 
   await stop($)
   await world.clock.advance(FLUSH_MS)
   expect(world.calls).toEqual([
-    ['ai', 'chat', 'sync-session', ...ALL_ARGS],
-    ['ai', 'chat', 'sync-session', ...ALL_ARGS],
+    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
+    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
   ])
-  expect(world.logs).toEqual(['ai chat sync-session failed: store locked'])
+  expect(world.logs).toEqual(['ai agent sync-session failed: store locked'])
 })
 
 test('a session syncs as it ends', async ($, on) => {
   const world = engine(on, () => [0, '', ''])
   await start($, 'resume')
   await $.session.end({ reason: 'prompt_input_exit', sessionId: SESSION, resume: { id: SESSION } })
-  expect(world.calls).toEqual([['ai', 'chat', 'sync-session', ...ALL_ARGS]])
+  expect(world.calls).toEqual([['ai', 'agent', 'sync-session', ...ALL_ARGS]])
 })

@@ -165,7 +165,7 @@ fn the_users_own_file_is_never_a_project_file() {
     let settings = Settings::load(Some(&user), &below).unwrap();
     assert_eq!(settings.summariser.model(), "opus");
     assert_eq!(
-        fails(&s.ai(&below, &["chat", "list"])),
+        fails(&s.ai(&below, &["agent", "list"])),
         "Not in a project: no ai.toml here or above. Run `ai init` in the project's top \
          directory.\n"
     );

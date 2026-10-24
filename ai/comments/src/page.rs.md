@@ -1,6 +1,6 @@
 # page.rs
 
-One paging rule and one part size for every paged output: `ai view`, and the views, zooms and greps of `ai memory` and `ai chat`.
+One paging rule and one part size for every paged output: `ai view`, and the views, zooms and greps of `ai memory` and `ai agent`.
 
 - `PART` = 20,000 bytes: under Claude Code's 30,000-character cap on a command's output, with room for a footer. A constant, not a knob: an agent harness's cap does not vary per machine.
 - `pick`: an asked-for part wins; else whole on a terminal (`IsTerminal` on stdout, checked only in each `exec`, so tests and library callers default to parts); else part 1. A person reads the whole view in the terminal; an agent's Bash tool output is never a terminal.

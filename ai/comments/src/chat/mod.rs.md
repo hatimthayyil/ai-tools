@@ -1,3 +1,0 @@
-# chat/mod.rs
-
-`ai chat`, design `ai/research/20261014T002322--chat-design.md`. `model` is the harness-neutral data model; one module per harness adapter (`claude`); `store` keeps threads as JSON Lines files in `~/.ai/chat/<project id>`, `record` defines their records, `sync` binds sessions and ingests them; `rollup` plans a thread's lines (pure), `summarise` builds them (`build`, `summarise`, `Chat::spawn_summariser`, `Chat::config`); `view` folds a branch into the view and opens its lines, `cli` is `ai chat` and its launcher; `render` is the one item renderer of the view and the compactor. Re-exports the model, the store API and the CLI so callers write `chat::Item`, `chat::Chat`.

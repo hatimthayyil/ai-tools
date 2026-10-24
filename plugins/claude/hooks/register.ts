@@ -21,8 +21,8 @@ async function ai($: EngineInterface, args: string[], timeoutMs?: number): Promi
   }
 }
 
-function chat($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
-  return ai($, ['chat', ...args], timeoutMs)
+function agent($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
+  return ai($, ['agent', ...args], timeoutMs)
 }
 
 function sessionArgs(id: string, path: string | undefined): string[] {
@@ -34,23 +34,23 @@ async function session($: EngineInterface): Promise<string[]> {
 }
 
 async function view($: EngineInterface, args: string[], fallback: string): Promise<string | undefined> {
-  const ran = await chat($, ['compact-session', ...args], LONG_MS)
+  const ran = await agent($, ['compact-session', ...args], LONG_MS)
   if (ran.exitCode === 0 && ran.stdout !== '') return ran.stdout
   if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) {
-    $.ui.log(`ai chat compact-session failed; ${fallback}. ${ran.stderr.trim()}`)
+    $.ui.log(`ai agent compact-session failed; ${fallback}. ${ran.stderr.trim()}`)
   }
   return undefined
 }
 
 async function sync($: EngineInterface, args: string[]): Promise<void> {
-  const ran = await chat($, ['sync-session', ...args])
-  if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) $.ui.log(`ai chat sync-session failed: ${ran.stderr.trim()}`)
+  const ran = await agent($, ['sync-session', ...args])
+  if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) $.ui.log(`ai agent sync-session failed: ${ran.stderr.trim()}`)
 }
 
 function reply(ran: Ran): string {
   if (ran.exitCode === 0) return ran.stdout.trim()
-  if (ran.exitCode === NOT_ATTACHED) return 'This session is not attached to a thread. Attach it with /ai attach <name>.'
-  return ran.stderr.trim() || `ai chat exited with code ${ran.exitCode}.`
+  if (ran.exitCode === NOT_ATTACHED) return 'This session is not attached to an agent. Attach it with /ai attach <name>.'
+  return ran.stderr.trim() || `ai agent exited with code ${ran.exitCode}.`
 }
 
 async function isWithheld($: EngineInterface): Promise<boolean> {
@@ -61,7 +61,7 @@ async function compress($: EngineInterface): Promise<string | undefined> {
   if (await isWithheld($)) return WITHHELD
   await $.clock.sleep(FLUSH_MS)
   const args = await session($)
-  const ready = await chat($, ['compact-session', ...args], LONG_MS)
+  const ready = await agent($, ['compact-session', ...args], LONG_MS)
   if (ready.exitCode === NOT_ATTACHED) return reply(ready)
   if (ready.exitCode !== 0) return `Not compacted: ${reply(ready)}`
   if (ready.stdout === '') return 'Not compacted: the thread holds nothing yet.'
@@ -87,7 +87,7 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'compress',
       description:
-        "Compact this session into your memory and its ai chat thread's view when the current turn ends. Works only in a session attached to a thread.",
+        "Compact this session into your memory and its thread's view when the current turn ends. Works only in a session attached to an agent.",
       inputSchema: { type: 'object', properties: {} },
     })
     return next(e)
@@ -131,17 +131,17 @@ export const register: Register = on => {
     const [sub, ...rest] = e.args.trim().split(/\s+/)
     if (sub === '' && rest.length === 0) return { text: (await compress($)) ?? 'Compacting.' }
     if (sub === 'attach' && rest.length === 1) {
-      return { text: reply(await chat($, ['attach', rest[0]!, ...(await session($))], LONG_MS)) }
+      return { text: reply(await agent($, ['attach', rest[0]!, ...(await session($))], LONG_MS)) }
     }
     if (sub === 'detach' && rest.length === 0) {
-      return { text: reply(await chat($, ['detach', ...(await session($))])) }
+      return { text: reply(await agent($, ['detach', ...(await session($))])) }
     }
     return { text: USAGE }
   })
 
   on('tool.call', { tool: 'mcp__ai__compress' }, async $ => {
     if (await isWithheld($)) return { result: WITHHELD }
-    const ran = await chat($, ['sync-session', ...(await session($))])
+    const ran = await agent($, ['sync-session', ...(await session($))])
     if (ran.exitCode !== 0) return { result: reply(ran) }
     await $.state.set(requested, true)
     return { result: 'Compaction queued for the end of this turn.' }

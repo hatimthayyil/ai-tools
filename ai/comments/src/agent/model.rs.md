@@ -1,0 +1,14 @@
+# agent/model.rs
+
+Design: `ai/research/20261014T002322--chat-design.md`, Data model.
+
+- Harness-neutral and pure. An adapter (`claude.rs`) turns a session into items; the store, roll-up and view see items only.
+- `SourceId` names the entry an item came from. One entry can give several items (a Claude Code tool result with the user's mid-run words appended); the adapter gives each its own entry id.
+- `Item::ends_turn`: the harness marked it as the end of the assistant's turn (Claude Code: `stop_reason` `end_turn`). It closes the newest turn before the next message arrives, so the turn has its final reply and its work lines once it is no longer the newest.
+- `Kind` holds content only. Thinking is dropped: on Opus 5.5 about 93% of thinking blocks are empty signatures. Compaction points, native summaries and interrupts are `Marker`s, never content; their text stays in the archived source files (store.rs.md).
+- Dropped entries (attachments, thinking, metadata lines) are not kept: they are most of a transcript's bytes (skill listings, prompt snapshots, re-read files) and repeat every turn.
+- `Tree` links a parent only if it comes earlier, as an append-only source and store give. An unknown or later parent makes a root, so malformed input cannot make a cycle. The last tip is the newest item, the end of the active branch. `branch` gives the positions of a path, which for a thread's main tree are sequence numbers (lines are keyed by them).
+- `Work` is a message from another agent (a hand-back, a peer's report, a coordinator's instruction), with its sender. The assistant answers it, so it opens a turn like a user message.
+- `turns` splits a path before each user message or work item. Items before the first one form a turn without one (a graft, a session that starts mid-run). Steps are cut before each assistant text: tool calls before any text form the first step, and a marker stays in the step it follows. `closed`: a later user message or work item exists on the path, or the turn's last item that is not a marker has `ends_turn`. `last` is the position its lines are keyed by: that ending item, so the markers a `/compact` appends after it change no key and the line built at compaction stays; else the span's last item. `reply`: that ending item when it is the assistant's text, the turn's final reply; only markers follow it, so it starts the last step. `work()`: the steps before it, every step when there is none (rollup.rs.md, Turns in three parts).
+- `Place`: an item's turn (from 0) and its number in the turn (0 for the message), computed once in `Tree::new` from its parent: a message starts the next turn, anything else follows its parent. It agrees with `turns` on every path from a root (test `places_count_turns_along_each_branch`). Ids print from it (id.rs.md).
+- `Kind::opens`: a user message or work item; the one check `turns`, `Place`, the roll-up and the view share.

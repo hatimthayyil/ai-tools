@@ -1,6 +1,6 @@
 {
   "name": "ai",
   "version": "0.1.0",
-  "description": "ai chat in Claude Code: /ai compacts an attached session into its thread's view",
+  "description": "ai agent in Claude Code: /ai compacts an attached session into its thread's view",
   "types": "./types/index.d.ts"
 }

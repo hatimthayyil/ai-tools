@@ -5,7 +5,7 @@ The `ai` CLI: an all-in-one AI tool.
 - `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory view` prints the whole memory as one short view.
 - `ai notes`: a global knowledge store for AI agents. Each note is one claim, filed in a tree of topics; Claude Code summarises every topic from its children, so an agent can browse the tree or search it.
 - `ai files`: summaries of a project's files, rolled up its directory tree, so an agent can read a project from the top down.
-- `ai chat`: named conversations that span agent sessions. A thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
+- `ai agent`: named agents, each with one thread that spans its sessions. The thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
 
 ## Install
 
@@ -21,7 +21,7 @@ nix profile add github:hatimthayyil/ai-tools
 
 ### Claude Code plugin
 
-`ai chat` needs the Claude Code plugin `ai@ai`. The Nix package ships it in a plugin marketplace, `share/ai/plugins` (`plugins/` here), whose `.claude-plugin/marketplace.json` lists it as `./claude`. Below, `<prefix>` is where the package is installed, such as `~/.nix-profile`.
+`ai agent` needs the Claude Code plugin `ai@ai`. The Nix package ships it in a plugin marketplace, `share/ai/plugins` (`plugins/` here), whose `.claude-plugin/marketplace.json` lists it as `./claude`. Below, `<prefix>` is where the package is installed, such as `~/.nix-profile`.
 
 Without a Team or Enterprise login, on a machine with no managed settings:
 
@@ -30,7 +30,7 @@ claude plugin marketplace add <prefix>/share/ai/plugins
 claude plugin install ai@ai
 ```
 
-Under a Team or Enterprise login, or on a machine with managed settings, Claude Code runs a built-in policy plugin ahead of every plugin a user installs, and it withholds from them the session start, turn end and compaction events `ai chat` needs. Only a plugin that managed settings install receives them. As root, add these managed settings:
+Under a Team or Enterprise login, or on a machine with managed settings, Claude Code runs a built-in policy plugin ahead of every plugin a user installs, and it withholds from them the session start, turn end and compaction events `ai agent` needs. Only a plugin that managed settings install receives them. As root, add these managed settings:
 
 ```json
 {
@@ -84,35 +84,36 @@ Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_
 ai init  # make this directory a project, once: mints its id into ai.toml, ignores ai.local.toml in .gitignore, prints the id
 ```
 
-`ai files` and `ai chat` work in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
+`ai files` and `ai agent` work in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
 
 ### ai files
 
 ```sh
 ai files build          # summarise what changed since the last build, with a progress bar on a terminal
 ai files view           # the project's summary
-ai files view src/chat  # a directory's or a file's
+ai files view src/agent  # a directory's or a file's
 ```
 
 A file's summary is asked for a tenth of its bytes, at least 512; a directory's is written from its children's summaries in passes that each halve the last, down to their mean size, at least 512. A summary may run a quarter over what it was asked for. What git ignores and files that are not text are left out. `build` runs only when you run it, up to 8 calls at once, each directory after its children; a summary is kept under the hash of what it covers, so the next build summarises only what changed, and a file or directory changed since shows no summary. A failed call stops the build, naming the path and the cause; the summaries written before it are kept. Summaries live in `~/.ai/files/<project id>`, or under `$AI_FILES_DIR` if set, with every call to the model kept byte for byte in `calls/`.
 
-### ai chat
+### ai agent
 
 ```sh
-ai chat start dev [-- claude args]   # Claude Code in a new session of thread dev; an existing thread's view is its context
-ai chat resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in
-ai chat list                         # the threads here, newest first, and their sessions
-ai chat view dev                     # dev's view, from the summaries written so far
-ai chat zoom -t dev <id>             # open a line of it; --tool-output adds tool output
-ai chat grep -t dev <regex>          # search it
-ai chat build -t dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
+ai agent new dev                      # create agent dev, with an empty thread
+ai agent start dev [-- claude args]   # Claude Code in a new session of dev; its thread's view is its context
+ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in
+ai agent list                         # the agents here, newest first, and their sessions
+ai agent view dev                     # dev's view, from the summaries written so far
+ai agent zoom -t dev <id>             # open a line of it; --tool-output adds tool output
+ai agent grep -t dev <regex>          # search it
+ai agent build -t dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
-Unnamed, a command reads the session's thread, else the project's only thread, else the one you pick on a terminal; elsewhere it lists the threads. Inside a session, `/ai attach <name>` and `/ai detach`, so the agent reads its thread with `ai chat view` and `ai chat zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<project id>`, or under `$AI_CHAT_DIR` if set, so every clone and worktree of a project shares them.
+Only `new` creates an agent; `start`, `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai attach <name>` and `/ai detach`, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. In an attached session, `/ai` replaces the context with `ai view`: the whole memory, then the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. `/compact` and auto-compaction stay Claude Code's own. Threads live in `~/.ai/chat/<project id>`, or under `$AI_CHAT_DIR` if set, so every clone and worktree of a project shares them.
 
-A session has one active thread. Detach it explicitly before attaching it elsewhere; its previous thread retains the recorded history.
+A session is attached to one agent at a time. Detach it explicitly before attaching it to another; the previous agent's thread keeps the recorded history.
 
-Each turn's work, the agent's steps between your message and its final reply, is summarised first; the turn's line is then written from your message, that summary and the final reply. A summary line is asked for 50 to 200 words, more where the AI wrote more and ran more tools, and holds at most 512 bytes per 50 words. A command you run, `/ai` included, writes the lines it needs and stops at the first that fails, naming each failed line with its error: `/ai` then compacts nothing, and `ai chat start` starts no session. The background summariser, started after each turn, builds what it can and only logs, to `<thread>.log` beside the threads.
+Each turn's work, the agent's steps between your message and its final reply, is summarised first; the turn's line is then written from your message, that summary and the final reply. A summary line is asked for 50 to 200 words, more where the AI wrote more and ran more tools, and holds at most 512 bytes per 50 words. A command you run, `/ai` included, writes the lines it needs and stops at the first that fails, naming each failed line with its error: `/ai` then compacts nothing, and `ai agent start` starts no session. The background summariser, started after each turn, builds what it can and only logs, to `<thread>.log` beside the threads.
 
 A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Earlier states are prefixes of those files (`--at`). A newer store format is refused. Re-attaching a session rebuilds its thread from the transcript.
 

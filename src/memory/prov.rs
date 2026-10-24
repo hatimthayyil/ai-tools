@@ -7,7 +7,7 @@ use std::{
 use gix::bstr::ByteSlice;
 
 use crate::{
-    chat::claude,
+    agent::claude,
     memory::record::{Place, Who},
 };
 

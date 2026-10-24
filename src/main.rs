@@ -15,8 +15,8 @@ enum Command {
     Memory(ai_tools::memory::Cli),
     #[command(about = "A global knowledge store for AI agents.")]
     Notes(ai_tools::notes::Cli),
-    #[command(about = "Named conversations that span agent sessions, kept in this project.")]
-    Chat(ai_tools::chat::Cli),
+    #[command(about = "Agents: named threads that span harness sessions, kept in this project.")]
+    Agent(ai_tools::agent::Cli),
     #[command(about = "Summaries of a project's files, rolled up its directory tree.")]
     Files(ai_tools::files::Cli),
     #[command(about = "Your whole memory, then a thread's view: one read to wake on.")]
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Memory(cli) => cli.exec(),
         Command::Notes(cli) => cli.exec(),
-        Command::Chat(cli) => cli.exec(),
+        Command::Agent(cli) => cli.exec(),
         Command::Files(cli) => cli.exec(),
         Command::View(cli) => cli.exec(),
         Command::Init(cli) => cli.exec(),

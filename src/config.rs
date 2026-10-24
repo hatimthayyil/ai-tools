@@ -8,7 +8,7 @@ use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Deserializer, de::Error as _};
 
 use crate::{
-    chat,
+    agent,
     file::{AtPath, pretty},
     memory, project, summariser,
 };
@@ -58,7 +58,7 @@ fn same(a: &Path, b: &Path) -> bool {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct File {
     pub project: Option<project::Table>,
-    pub chat: chat::Config,
+    pub chat: agent::Config,
     pub memory: memory::Config,
     pub summariser: summariser::Config,
     pub agents: BTreeMap<String, Agent>,
@@ -125,7 +125,7 @@ pub(crate) fn read(p: &Path) -> Result<Option<File>> {
 /// key; unset keys keep their defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
-    pub chat: chat::Config,
+    pub chat: agent::Config,
     pub memory: memory::Config,
     pub summariser: summariser::Config,
     agents: BTreeMap<String, Agent>,

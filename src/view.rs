@@ -9,13 +9,13 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 
-use crate::{chat, config::Settings, memory, page};
+use crate::{agent, config::Settings, memory, page};
 
 /// `ai view`: the memory's whole view, read as `ai memory view`, then a thread's view
-/// (`chat::thread_view`); whole on a terminal, else in parts from one state of both.
+/// (`agent::thread_view`); whole on a terminal, else in parts from one state of both.
 #[derive(Args, Debug)]
 pub struct Cli {
-    #[arg(help = chat::THREAD_HELP)]
+    #[arg(help = agent::THREAD_HELP)]
     thread: Option<String>,
     #[arg(long, hide = true, help = "the part of the view to print, as printed")]
     part: Option<u64>,
@@ -28,14 +28,14 @@ pub struct Cli {
     )]
     whole: bool,
     #[command(flatten)]
-    session: chat::Session,
+    session: agent::Session,
 }
 
 /// A state of `ai view`, printed for `--at`: the memory's, then the name and state of the thread
 /// it shows, if any, `:`-separated.
 struct Mark {
     memory: memory::Mark,
-    thread: Option<(String, chat::Mark)>,
+    thread: Option<(String, agent::Mark)>,
 }
 
 impl fmt::Display for Mark {
@@ -92,9 +92,9 @@ impl Cli {
         let thread = match at.as_ref().map(|at| at.thread.clone()) {
             Some(None) => None,
             Some(Some((name, mark))) => {
-                chat::thread_view(cwd, Some(name), self.session, Some(mark))?
+                agent::thread_view(cwd, Some(name), self.session, Some(mark))?
             }
-            None => chat::thread_view(cwd, self.thread, self.session, None)?,
+            None => agent::thread_view(cwd, self.thread, self.session, None)?,
         };
         let mem = match &at {
             Some(at) => at.memory,

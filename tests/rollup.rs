@@ -11,8 +11,8 @@ use std::{
 };
 
 use ai_tools::{
-    chat::{
-        Built, Chat, Id, Key, Line, LineKind, OnFail, Rollup, Source, Thread, build, dry_run,
+    agent::{
+        Built, Id, Key, Line, LineKind, OnFail, Rollup, Source, Store, Thread, build, dry_run,
         rebuild, rewrite, rollup, summarise,
     },
     memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage},
@@ -126,17 +126,18 @@ impl Repo {
         self.dir.path().join("chat")
     }
 
-    fn chat(&self) -> Chat {
-        Chat::find_in(&self.base(), &self.path()).unwrap().unwrap()
+    fn store(&self) -> Store {
+        Store::find_in(&self.base(), &self.path()).unwrap().unwrap()
     }
 
-    /// The thread `t`, with `s` attached as session `s1`.
+    /// The new agent `t`, with `s` attached as session `s1`.
     fn thread(&self, s: &Script) -> Thread {
         let p = self.dir.path().join("s1.jsonl");
         fs::write(&p, s.lines.concat()).unwrap();
-        let chat = self.chat();
-        chat.attach("t", "claude", "s1", Some(&p)).unwrap();
-        chat.thread("t").unwrap()
+        let store = self.store();
+        let t = store.create("t").unwrap();
+        store.attach("t", "claude", "s1", Some(&p)).unwrap();
+        t
     }
 }
 
@@ -272,8 +273,9 @@ fn summarised(t: &Thread, fake: &Arc<Fake>) -> Built {
 }
 
 fn state(r: &Repo) -> String {
-    let chat = r.chat();
-    chat.thread("t")
+    let store = r.store();
+    store
+        .thread("t")
         .unwrap()
         .snapshot()
         .unwrap()
@@ -667,7 +669,7 @@ fn a_held_lock_makes_a_second_summariser_exit_at_once() {
         None
     );
     assert_eq!(fake.calls(), 0);
-    let other = r.chat().thread("t").unwrap();
+    let other = r.store().thread("t").unwrap();
     assert!(other.try_lock().unwrap().is_none());
     drop(lock);
     assert_eq!(summarised(&t, &fake).calls, 1);
@@ -695,7 +697,7 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
     let summarising = {
         let (base, path, slow) = (r.base(), r.path(), slow.clone());
         thread::spawn(move || {
-            let t = Chat::find_in(&base, &path)
+            let t = Store::find_in(&base, &path)
                 .unwrap()
                 .unwrap()
                 .thread("t")
@@ -739,7 +741,7 @@ fn build_gives_up_on_a_lock_held_past_its_deadline() {
     s.user("open");
     let t = r.thread(&s);
     let held = r
-        .chat()
+        .store()
         .thread("t")
         .unwrap()
         .try_lock()
@@ -1031,8 +1033,8 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     .unwrap();
     let sub = r.path().join("src");
     fs::create_dir(&sub).unwrap();
-    let chat = Chat::find_in(&r.base(), &sub).unwrap().unwrap();
-    let s = chat.settings().unwrap();
+    let store = Store::find_in(&r.base(), &sub).unwrap().unwrap();
+    let s = store.settings().unwrap();
     assert_eq!(
         (s.summariser.model().as_str(), s.chat.background()),
         ("haiku", false)
@@ -1041,7 +1043,7 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     s.user("hi");
     let t = r.thread(&s);
     assert!(
-        !chat.spawn_summariser(&t).unwrap(),
+        !store.spawn_summariser(&t).unwrap(),
         "switched off: nothing starts"
     );
     fs::write(
@@ -1049,7 +1051,7 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
         format!("{project}\n[chat]\nbackground = \"maybe\"\n"),
     )
     .unwrap();
-    let err = format!("{:#}", chat.config().unwrap_err());
+    let err = format!("{:#}", store.config().unwrap_err());
     assert!(
         err.contains("ai.toml: ") && err.contains("background = \"maybe\""),
         "{err}"

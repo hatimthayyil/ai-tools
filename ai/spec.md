@@ -1,4 +1,4 @@
-- An older `ai chat` sync cannot undo a newer sync.
+- An older `ai agent` sync cannot undo a newer sync.
 - A session has at most one active thread attachment per repository.
 - Attaching a session to another thread requires an explicit detach first; a rejected attach leaves both threads unchanged.
 - The store retains complete, byte-for-byte copies of a thread's original session files, including subagent files.
@@ -9,12 +9,12 @@
 - History is an ordered sequence of turns; each opens at a message from the user or another agent, and closes at the next one or where the harness ends the assistant's turn.
 - A turn is its message, its work and its final reply: the item that ends it when that is the assistant's text. Its work, the steps in between (every step when there is no final reply), is summarised in its own lines; its turn line is written from the message, those lines and the final reply. No message is ever part of a turn's work.
 - A thread's view is one list of its branch's turns, oldest first, whose ids cover turns 0..N once each, in order; detail never decreases toward the present: merged lines, then turn lines, then recent turns (message and final reply word for word, work lines between), then the newest turn with every item.
-- Only `compact-session`, `ai chat start` and `ai chat build` write summary lines; reading a thread never calls the model.
+- Only `compact-session`, `ai agent start` and `ai agent build` write summary lines; reading a thread never calls the model.
 - Only `/ai` compacts a session, into `ai view`: the memory's whole view, then its thread's view. It does so only once the thread's view is built; otherwise it compacts nothing. `/compact` and automatic compaction stay Claude Code's own.
-- `ai view` and the views, zooms and searches of `ai memory` and `ai chat` print whole on a terminal; otherwise in parts of at most 20,000 bytes, each ending with `--part N --at <state>` for the next, which reads the state the first part showed. A search's parts run newest first. `/ai` reads `ai view --whole`. `ai view` records its memory read as an `ai memory view`.
+- `ai view` and the views, zooms and searches of `ai memory` and `ai agent` print whole on a terminal; otherwise in parts of at most 20,000 bytes, each ending with `--part N --at <state>` for the next, which reads the state the first part showed. A search's parts run newest first. `/ai` reads `ai view --whole`. `ai view` records its memory read as an `ai memory view`.
 - A command reads the thread named, else the session's attached thread, else the repository's only thread, else one picked on a terminal; off a terminal it never prompts and fails listing the threads. Unnamed, `ai view` in an agent session reads only its attached thread.
 - A summary line is asked for a word target that grows with the AI's own words and tool calls it covers, from 50 to 200, and holds at most 512 bytes per 50 words of it; a reply still longer after its retries is a failure and is never stored.
-- A request someone makes (`/ai`, `ai chat start`, `ai chat build`) stops at the first summary line that fails and fails itself, naming every failed line with its error: it compacts nothing, prints no view and starts no session. The background summariser builds what it can past a failure and only logs.
+- A request someone makes (`/ai`, `ai agent start`, `ai agent build`) stops at the first summary line that fails and fails itself, naming every failed line with its error: it compacts nothing, prints no view and starts no session. The background summariser builds what it can past a failure and only logs.
 - Chat records are JSON Lines.
 - Earlier states remain readable as prefixes of append-only files.
 - Unsupported newer formats are refused before writing.

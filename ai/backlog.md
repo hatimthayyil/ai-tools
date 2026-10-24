@@ -4,7 +4,7 @@
 
 - Settings outside `ai.toml`: the chat view size (64 lines, a constant).
 - `ai desk`: a TUI overview of every part of `ai` (memory, chat threads and sessions, notes, code): search and navigate, see stale lines, resummarise a line. Mostly for `ai notes`/`ai code`, where the user takes part; the user doubts session logs need curating.
-- Overlap between `ai memory` and `ai chat` (both fold a log into a summary tree with the same ids): consider consolidating.
+- Overlap between `ai memory` and `ai agent` (both fold a log into a summary tree with the same ids): consider consolidating.
 - pi and DeepSeek Harness (DSH) support: an unreviewed implementation by DeepSeek Flash on branch `dsh-pi` (21 commits on v0.14.0). Review it before any of it lands, or reimplement. It holds:
   - chat: reading pi and DSH sessions into items, attach for pi, subagent reports as work turns;
   - plugins: one client for the ai CLI, `/ai` for pi and DSH, every plugin shipped in the package;
@@ -31,10 +31,10 @@
 
 ## Chat
 
-- `ai chat` layer 1 runs end to end in Claude Code (register.ts.md, End to end). To enable: install the Claude Code plugin (README). Open from that run:
+- `ai agent` layer 1 runs end to end in Claude Code (register.ts.md, End to end). To enable: install the Claude Code plugin (README). Open from that run:
   - Haiku overruns the 512-byte line often (6 retries in 16 calls); Sonnet stays the default model.
   - A native summary is a marker: after `detach`, native `/compact`, `attach`, its text is neither in the view nor in `zoom`.
-  - After an `ai chat` compaction, nested `CLAUDE.md`/`AGENTS.md` files are not re-attached (register.ts.md). Not tested: the run had `CLAUDE_CODE_DISABLE_CLAUDE_MDS`.
+  - After an `ai agent` compaction, nested `CLAUDE.md`/`AGENTS.md` files are not re-attached (register.ts.md). Not tested: the run had `CLAUDE_CODE_DISABLE_CLAUDE_MDS`.
   - Auto-compaction was not run live (it needs a full context); the plugin tests cover the `auto` trigger.
 - Our own auto-compaction: `/ai` runs by itself at our own context threshold, before Claude Code's auto-compaction. Claude Code 2.1.304 has settings `autoCompactEnabled`, `precomputeCompactionEnabled`, `idleCompaction` and env `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; the mod's `session.compact` fires for triggers `manual`, `auto`, `plugin`, `precompute`. Open: where the plugin reads the context size (`usage` of each assistant entry in the transcript, or an engine API); when it checks (turn end); what a failed automatic `/ai` shows without disrupting the user.
 
