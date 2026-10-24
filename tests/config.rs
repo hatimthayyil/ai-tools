@@ -240,12 +240,37 @@ fn an_agent_merges_key_by_key_with_paths_from_the_project_root() {
 }
 
 #[test]
-fn outside_a_project_an_agents_paths_are_from_the_current_directory() {
+fn a_users_agent_takes_its_instructions_from_beside_the_users_file() {
     let t = Tree::new();
-    fs::write(t.user(), "[agents.helper]\nworktree = \"w\"\n").unwrap();
+    fs::write(
+        t.user(),
+        "[agents.reviewer]\ninstructions = \"agents/reviewer.md\"\nworktree = \"../review\"\n",
+    )
+    .unwrap();
+    fs::write(t.inner().join("ai.toml"), "").unwrap();
     assert_eq!(
-        t.load().unwrap().agent("helper").unwrap().worktree,
-        Some(t.cwd().join("w"))
+        t.load().unwrap().agent("reviewer"),
+        Some(&Agent {
+            instructions: Some(t.tmp.path().join("agents/reviewer.md")),
+            worktree: Some(t.inner().join("../review")),
+        })
+    );
+}
+
+#[test]
+fn outside_a_project_a_relative_worktree_stays_as_written() {
+    let t = Tree::new();
+    fs::write(
+        t.user(),
+        "[agents.helper]\ninstructions = \"helper.md\"\nworktree = \"w\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        t.load().unwrap().agent("helper"),
+        Some(&Agent {
+            instructions: Some(t.tmp.path().join("helper.md")),
+            worktree: Some("w".into()),
+        })
     );
 }
 

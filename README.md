@@ -143,7 +143,7 @@ instructions = "ai/agents/stabiliser.md"  # its own instructions, a Markdown fil
 worktree = "../ai-tools-stabiliser"       # the directory it runs in
 ```
 
-An agent's paths are relative to the project's root, the directory of its `ai.toml`, in whichever file sets them.
+An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 

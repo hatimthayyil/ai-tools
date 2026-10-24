@@ -64,7 +64,8 @@ pub(crate) struct File {
     pub agents: BTreeMap<String, Agent>,
 }
 
-/// `[agents.<name>]`: what an agent runs with; relative paths are from the project's root.
+/// `[agents.<name>]`: what an agent runs with. A relative `instructions` is from the folder of the
+/// file that sets it, a relative `worktree` from the project's root.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
@@ -93,10 +94,17 @@ impl Agent {
         }
     }
 
+    fn from(self, dir: &Path) -> Agent {
+        Agent {
+            instructions: self.instructions.map(|p| dir.join(p)),
+            ..self
+        }
+    }
+
     fn under(self, root: &Path) -> Agent {
         Agent {
-            instructions: self.instructions.map(|p| root.join(p)),
             worktree: self.worktree.map(|p| root.join(p)),
+            ..self
         }
     }
 }
@@ -144,10 +152,14 @@ impl Settings {
         .try_fold(Settings::default(), |base, (p, layer)| {
             Ok(Settings::read(p, layer)?.unwrap_or_default().over(base))
         })
-        .map(|s| s.under(project.as_deref().and_then(Path::parent).unwrap_or(cwd)))
+        .map(|s| match project.as_deref().and_then(Path::parent) {
+            Some(root) => s.under(root),
+            None => s,
+        })
     }
 
-    /// `[agents.<name>]`, its paths absolute; `None` when no file has the table.
+    /// `[agents.<name>]`, its paths absolute, except a relative `worktree` outside a project;
+    /// `None` when no file has the table.
     pub fn agent(&self, name: &str) -> Option<&Agent> {
         self.agents.get(name)
     }
@@ -175,7 +187,11 @@ impl Settings {
             chat: f.chat,
             memory: f.memory,
             summariser: f.summariser,
-            agents: f.agents,
+            agents: f
+                .agents
+                .into_iter()
+                .map(|(name, a)| (name, a.from(p.parent().unwrap_or(Path::new("")))))
+                .collect(),
         }))
     }
 
