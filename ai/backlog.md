@@ -40,6 +40,10 @@
   - After an `ai agent` compaction, nested `CLAUDE.md`/`AGENTS.md` files are not re-attached (register.ts.md). Not tested: the run had `CLAUDE_CODE_DISABLE_CLAUDE_MDS`.
   - Auto-compaction was not run live (it needs a full context); the plugin tests cover the `auto` trigger.
 - Our own auto-compaction: `/ai` runs by itself at our own context threshold, before Claude Code's auto-compaction. Claude Code 2.1.304 has settings `autoCompactEnabled`, `precomputeCompactionEnabled`, `idleCompaction` and env `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; the mod's `session.compact` fires for triggers `manual`, `auto`, `plugin`, `precompute`. Open: where the plugin reads the context size (`usage` of each assistant entry in the transcript, or an engine API); when it checks (turn end); what a failed automatic `/ai` shows without disrupting the user.
+- `ai agent rename <old> <new>`: moves the thread folder, updates attached sessions, one commit in `.ai/local`. Refuses if `<new>` exists. Leaves `ai.toml` alone but warns when `[agents.<old>]` exists.
+- `ai agent delete <name>`: refuses while a session is attached; removes the thread folder in one commit, no prompt, and prints the git restore command. The history keeps the thread, raw transcripts included; harness transcripts are never touched.
+- Incremental sync: each sync re-reads every source file and its archived copy (`src/agent/source.rs:9`, `src/agent/store.rs:880`), ~285 MB on `ai-chat` and growing with the thread. Record each file's size and mtime; copy only from the old end.
+- Auto gc: `.ai/local/.git` is never packed (65 MB of loose objects on `ai-chat`). Run `git gc --auto` after each event commit.
 
 ## Notes
 
