@@ -1,0 +1,38 @@
+ai/comments/src/main.rs.md
+  s_77b04d9838f161::t_6598c7a729686d 3
+tests/agent_cli.rs
+  s_77b04d9838f161::t_d0588655332042 1315-1336
+  s_77b04d9838f161::t_4f0ea9e361308a 1314
+ai/comments/src/agent/cli.rs.md
+  s_77b04d9838f161::t_b0388ea3f7e4aa 20
+src/main.rs
+  s_77b04d9838f161::t_3b27ff7a0afbb1 35
+  s_77b04d9838f161::t_d68a2ac64ff452 20
+  s_77b04d9838f161::t_b37799b25a259d 21
+src/agent/cli.rs
+  s_77b04d9838f161::t_3fe3259b33456f 185-207
+  s_77b04d9838f161::t_c3051b8bcad943 58
+  s_77b04d9838f161::t_d45503cb2c2ceb 325
+ai/comments/tests/agent_cli.rs.md
+  s_77b04d9838f161::t_d9198b06798b5b 19
+src/agent/mod.rs
+  s_77b04d9838f161::t_c2f12ecaa4d0d5 14
+README.md
+  s_77b04d9838f161::t_dfdfa5f52f7f7f 106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "570d5e641930cf740ebf057a64eeb9c5fe04b71e",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
