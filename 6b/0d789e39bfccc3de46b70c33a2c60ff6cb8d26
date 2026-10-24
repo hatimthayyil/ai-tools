@@ -1,0 +1,28 @@
+src/project.rs
+  s_77b04d9838f161::t_0ab5a4a4ad5ed0 86,95-97,99-123,125-144
+  s_77b04d9838f161::t_794fbbde5ec3c2 16
+README.md
+  s_77b04d9838f161::t_bb8aafa2dd15f7 84
+  s_77b04d9838f161::t_3422742cf04b3a 123
+ai/comments/src/project.rs.md
+  s_77b04d9838f161::t_39590bc6d7c5ba 10
+tests/project.rs
+  s_77b04d9838f161::t_94ecdb2bf7557f 79-97
+  s_77b04d9838f161::t_2b2f1cd4ccae11 78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6b0d789e39bfccc3de46b70c33a2c60ff6cb8d26",
+  "prompts": {},
+  "sessions": {
+    "s_77b04d9838f161": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "799603ff-89ac-4e8a-9cfb-a9648c74f1fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
