@@ -2,6 +2,8 @@ plugins/claude/tests/ai.test.ts
   s_77b04d9838f161::t_76a06c71b41315 287-289,292-301
 ai/research/20261021T224734--storage.md
   s_77b04d9838f161::t_d67efbc6b1d8d8 45
+  s_77b04d9838f161::t_b86634d01c5102 37
+  s_77b04d9838f161::t_380599b7448151 18
 ai/comments/src/view.rs.md
   s_77b04d9838f161::t_ca4803c9d10564 9
 ai/comments/src/agent/cli.rs.md
@@ -28,6 +30,8 @@ src/agent/cli.rs
   s_77b04d9838f161::t_0e510ecbd72bf6 130-137
   s_77b04d9838f161::t_b263b793e1837c 392-394
   s_77b04d9838f161::t_d027d986df3204 332-334,345,350,353,355-357
+README.md
+  s_77b04d9838f161::t_2b4a88c784d434 88
 ---
 {
   "schema_version": "authorship/3.0.0",
