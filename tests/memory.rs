@@ -1201,12 +1201,14 @@ fn the_note_limit_is_a_knob() {
         entry_chars: Some(10),
         ..Config::default()
     };
-    assert!(
-        run_sized(&d, ten.clone(), &["note", "eleven char"])
-            .stderr
-            .contains("limit 10")
+    assert_eq!(
+        run_sized(&d, ten.clone(), &["note", &"x".repeat(51)]).stderr,
+        "Too long: 51 bytes, limit 50. Aim for 10; accented characters cost 2 bytes. Compress it, or split it into separate notes."
     );
-    assert_eq!(run_sized(&d, ten.clone(), &["note", "ten chars!"]).code, 0);
+    assert_eq!(
+        run_sized(&d, ten.clone(), &["note", &"x".repeat(50)]).code,
+        0
+    );
     assert!(
         run_sized(&d, ten.clone(), &["init"])
             .stdout
@@ -1215,7 +1217,28 @@ fn the_note_limit_is_a_knob() {
     assert_eq!(
         run_sized(&d, ten, &["config"]).stdout,
         "view.lines   96      how many lines view prints (96 is about 8k tokens)\n\
-         entry-chars  10      the longest one note may be, in bytes (default 280)\n"
+         entry-chars  10      the length a note aims for, in bytes; 40 more are accepted (default 280)\n"
+    );
+}
+
+#[test]
+fn a_note_may_run_past_the_target_but_not_past_a_node() {
+    let (_tmp, d) = store();
+    let at = |n| Config {
+        entry_chars: Some(n),
+        ..Config::default()
+    };
+    assert_eq!(run_sized(&d, at(280), &["note", &"x".repeat(320)]).code, 0);
+    assert!(
+        run_sized(&d, at(280), &["note", &"x".repeat(321)])
+            .stderr
+            .starts_with("Too long: 321 bytes, limit 320. Aim for 280;")
+    );
+    assert_eq!(run_sized(&d, at(500), &["note", &"x".repeat(512)]).code, 0);
+    assert!(
+        run_sized(&d, at(500), &["note", &"x".repeat(513)])
+            .stderr
+            .starts_with("Too long: 513 bytes, limit 512.")
     );
 }
 

@@ -132,7 +132,7 @@ backend = "claude" # claude -p; the only backend yet
 model = "sonnet"   # in the backend's own spelling
 
 [memory]
-entry-chars = 280  # the longest note, in bytes; at most 512
+entry-chars = 280  # the length a note aims for, in bytes, at most 512; 40 more are accepted
 
 [memory.view]
 lines = 96         # how many lines `ai memory view` prints

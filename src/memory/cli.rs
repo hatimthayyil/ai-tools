@@ -17,7 +17,7 @@ use crate::{
         backend::MakeBackend,
         claude::CALLS,
         compact::{Compactor, GaveUp, Options, Spend},
-        config::{Config, Knob},
+        config::{Config, Knob, note_limit},
         cover::cover,
         grep::{Grep, grep},
         hook::{REMINDED, hook},
@@ -411,7 +411,7 @@ pub fn line_id(s: &str, t: u64) -> Result<Coord> {
     Coord::at(id, n, t).with_context(|| format!("No line {s}."))
 }
 
-fn check(text: &str, limit: u64) -> Result<&str> {
+fn check(text: &str, target: u64) -> Result<&str> {
     let text = text.trim();
     if text.is_empty() {
         bail!("Empty. A memory is one line of text.");
@@ -422,10 +422,10 @@ fn check(text: &str, limit: u64) -> Result<&str> {
             text.matches('\n').count() + 1
         );
     }
-    let n = text.len() as u64;
+    let (n, limit) = (text.len() as u64, note_limit(target));
     if n > limit {
         bail!(
-            "Too long: {n} bytes, limit {limit}. Accented characters cost 2 bytes. Compress it, or split it into separate notes."
+            "Too long: {n} bytes, limit {limit}. Aim for {target}; accented characters cost 2 bytes. Compress it, or split it into separate notes."
         );
     }
     Ok(text)

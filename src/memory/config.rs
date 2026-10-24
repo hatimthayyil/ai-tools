@@ -5,6 +5,14 @@ use crate::memory::tree::NODE;
 /// The longest note: one node, so it is its own line of the view.
 pub const NOTE_MAX: u64 = NODE as u64;
 
+/// How far past `entry-chars` a note may run before it is refused.
+pub const NOTE_GRACE: u64 = 40;
+
+/// The longest note accepted for a target of `entry-chars` bytes.
+pub fn note_limit(target: u64) -> u64 {
+    (target + NOTE_GRACE).min(NOTE_MAX)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Knob {
     ViewLines,
@@ -29,10 +37,12 @@ impl Knob {
         }
     }
 
-    pub fn what(self) -> &'static str {
+    pub fn what(self) -> String {
         match self {
-            Knob::ViewLines => "how many lines view prints (96 is about 8k tokens)",
-            Knob::EntryChars => "the longest one note may be, in bytes",
+            Knob::ViewLines => "how many lines view prints (96 is about 8k tokens)".into(),
+            Knob::EntryChars => {
+                format!("the length a note aims for, in bytes; {NOTE_GRACE} more are accepted")
+            }
         }
     }
 
