@@ -1,10 +1,11 @@
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Result, anyhow, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
 
 use crate::{
     chat,
@@ -60,6 +61,44 @@ pub(crate) struct File {
     pub chat: chat::Config,
     pub memory: memory::Config,
     pub summariser: summariser::Config,
+    pub agents: BTreeMap<String, Agent>,
+}
+
+/// `[agents.<name>]`: what an agent runs with; relative paths are from the project's root.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Agent {
+    /// A Markdown file of the agent's own instructions.
+    #[serde(deserialize_with = "path")]
+    pub instructions: Option<PathBuf>,
+    /// The directory the agent runs in.
+    #[serde(deserialize_with = "path")]
+    pub worktree: Option<PathBuf>,
+}
+
+fn path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
+    match String::deserialize(d)?.trim() {
+        "" => Err(D::Error::custom(
+            "is empty: name a path, or leave the key out",
+        )),
+        p => Ok(Some(p.into())),
+    }
+}
+
+impl Agent {
+    fn over(self, base: Agent) -> Agent {
+        Agent {
+            instructions: self.instructions.or(base.instructions),
+            worktree: self.worktree.or(base.worktree),
+        }
+    }
+
+    fn under(self, root: &Path) -> Agent {
+        Agent {
+            instructions: self.instructions.map(|p| root.join(p)),
+            worktree: self.worktree.map(|p| root.join(p)),
+        }
+    }
 }
 
 /// The `ai.toml` at `p`, `None` without the file; a bad key or value names both.
@@ -81,6 +120,7 @@ pub struct Settings {
     pub chat: chat::Config,
     pub memory: memory::Config,
     pub summariser: summariser::Config,
+    agents: BTreeMap<String, Agent>,
 }
 
 impl Settings {
@@ -104,6 +144,12 @@ impl Settings {
         .try_fold(Settings::default(), |base, (p, layer)| {
             Ok(Settings::read(p, layer)?.unwrap_or_default().over(base))
         })
+        .map(|s| s.under(project.as_deref().and_then(Path::parent).unwrap_or(cwd)))
+    }
+
+    /// `[agents.<name>]`, its paths absolute; `None` when no file has the table.
+    pub fn agent(&self, name: &str) -> Option<&Agent> {
+        self.agents.get(name)
     }
 
     /// The settings in `p`, `None` without the file; only a project's `ai.toml` holds
@@ -129,14 +175,32 @@ impl Settings {
             chat: f.chat,
             memory: f.memory,
             summariser: f.summariser,
+            agents: f.agents,
         }))
     }
 
     fn over(self, base: Settings) -> Settings {
+        let mut agents = base.agents;
+        for (name, a) in self.agents {
+            let b = agents.remove(&name).unwrap_or_default();
+            agents.insert(name, a.over(b));
+        }
         Settings {
             chat: self.chat.over(base.chat),
             memory: self.memory.over(base.memory),
             summariser: self.summariser.over(base.summariser),
+            agents,
+        }
+    }
+
+    fn under(self, root: &Path) -> Settings {
+        Settings {
+            agents: self
+                .agents
+                .into_iter()
+                .map(|(name, a)| (name, a.under(root)))
+                .collect(),
+            ..self
         }
     }
 }

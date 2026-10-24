@@ -1,6 +1,10 @@
 use std::{fs, path::PathBuf};
 
-use ai_tools::{config::Settings, memory::Knob, summariser::Kind};
+use ai_tools::{
+    config::{Agent, Settings},
+    memory::Knob,
+    summariser::Kind,
+};
 use tempfile::TempDir;
 
 /// A user's `ai.toml` path and a project tree `outer/inner/cwd`, no file written.
@@ -110,6 +114,8 @@ fn a_bad_key_or_value_names_its_file_and_key() {
             "unknown variant `api`, expected `claude`",
         ),
         ("[chat]\nmodel = \"haiku\"\n", "model", "unknown field"),
+        ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),
+        ("[agents.a]\nworktree = \"\"\n", "worktree", "is empty"),
         (
             "[memory]\nview-lines = 0\n",
             "view-lines",
@@ -195,6 +201,52 @@ fn only_the_local_file_beside_the_nearest_project_file_counts() {
     )
     .unwrap();
     assert_eq!(t.load().unwrap().summariser.model(), "haiku");
+}
+
+#[test]
+fn an_agent_merges_key_by_key_with_paths_from_the_project_root() {
+    let t = Tree::new();
+    fs::write(
+        t.user(),
+        "[agents.stabiliser]\ninstructions = \"/home/me/stabiliser.md\"\nworktree = \"../mine\"\n\n[agents.solo]\nworktree = \"/w\"\n",
+    )
+    .unwrap();
+    fs::write(
+        t.inner().join("ai.toml"),
+        "[agents.stabiliser]\ninstructions = \"ai/agents/stabiliser.md\"\nworktree = \"../ai-tools-stabiliser\"\n",
+    )
+    .unwrap();
+    fs::write(
+        t.inner().join("ai.local.toml"),
+        "[agents.stabiliser]\nworktree = \"../my-stabiliser\"\n",
+    )
+    .unwrap();
+    let s = t.load().unwrap();
+    assert_eq!(
+        s.agent("stabiliser"),
+        Some(&Agent {
+            instructions: Some(t.inner().join("ai/agents/stabiliser.md")),
+            worktree: Some(t.inner().join("../my-stabiliser")),
+        })
+    );
+    assert_eq!(
+        s.agent("solo"),
+        Some(&Agent {
+            instructions: None,
+            worktree: Some("/w".into()),
+        })
+    );
+    assert_eq!(s.agent("developer"), None);
+}
+
+#[test]
+fn outside_a_project_an_agents_paths_are_from_the_current_directory() {
+    let t = Tree::new();
+    fs::write(t.user(), "[agents.helper]\nworktree = \"w\"\n").unwrap();
+    assert_eq!(
+        t.load().unwrap().agent("helper").unwrap().worktree,
+        Some(t.cwd().join("w"))
+    );
 }
 
 #[test]

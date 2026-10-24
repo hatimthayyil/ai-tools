@@ -137,7 +137,13 @@ model = "sonnet"   # in the backend's own spelling
 [memory]
 view-lines = 96    # how many lines `ai memory view` prints
 entry-chars = 280  # the longest note, in bytes; at most 512
+
+[agents.stabiliser]                       # one table per agent that needs one
+instructions = "ai/agents/stabiliser.md"  # its own instructions, a Markdown file
+worktree = "../ai-tools-stabiliser"       # the directory it runs in
 ```
+
+An agent's paths are relative to the project's root, the directory of its `ai.toml`, in whichever file sets them.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 
