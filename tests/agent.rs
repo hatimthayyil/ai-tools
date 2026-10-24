@@ -136,7 +136,7 @@ impl Repo {
 
     /// The agent store of the project, in its checkout.
     fn store_dir(&self) -> PathBuf {
-        self.path().join(".ai/agents")
+        self.path().join(".ai/local/agents")
     }
 }
 

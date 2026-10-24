@@ -42,7 +42,7 @@ pub const WAIT: Duration = Duration::from_secs(60);
 #[command(
     name = "agent",
     about = "Agents: named threads that span harness sessions, kept in this project.",
-    after_help = "Each agent's thread lives in .ai/agents in the project's main checkout."
+    after_help = "Each agent's thread lives in .ai/local/agents in the project's main checkout."
 )]
 pub struct Cli {
     #[command(subcommand)]

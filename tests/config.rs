@@ -47,6 +47,13 @@ impl Tree {
     }
 }
 
+/// The private settings of the project at `dir`, their directory made.
+fn private(dir: &Path) -> PathBuf {
+    let p = dir.join(".ai/local/ai.toml");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    p
+}
+
 #[test]
 fn without_a_file_every_key_has_its_default() {
     let t = Tree::new();
@@ -148,7 +155,7 @@ fn a_bad_key_or_value_names_its_file_and_key() {
                 "project" => t.inner().join("ai.toml"),
                 _ => {
                     fs::write(t.inner().join("ai.toml"), "").unwrap();
-                    t.inner().join("ai.local.toml")
+                    private(&t.inner())
                 }
             };
             fs::write(&p, text).unwrap();
@@ -164,7 +171,7 @@ fn a_bad_key_or_value_names_its_file_and_key() {
 }
 
 #[test]
-fn the_local_file_overrides_its_project_file_key_by_key() {
+fn the_private_file_overrides_its_project_file_key_by_key() {
     let t = Tree::new();
     fs::write(
         t.user(),
@@ -177,7 +184,7 @@ fn the_local_file_overrides_its_project_file_key_by_key() {
     )
     .unwrap();
     fs::write(
-        t.inner().join("ai.local.toml"),
+        private(&t.inner()),
         "[summariser]\nmodel = \"opus\"\n\n[memory]\nentry-chars = 200\n",
     )
     .unwrap();
@@ -196,24 +203,16 @@ fn the_local_file_overrides_its_project_file_key_by_key() {
 }
 
 #[test]
-fn only_the_local_file_beside_the_nearest_project_file_counts() {
+fn only_the_private_file_of_the_nearest_project_counts() {
     let t = Tree::new();
     fs::write(t.outer().join("ai.toml"), "").unwrap();
-    fs::write(
-        t.outer().join("ai.local.toml"),
-        "[summariser]\nmodel = \"opus\"\n",
-    )
-    .unwrap();
+    fs::write(private(&t.outer()), "[summariser]\nmodel = \"opus\"\n").unwrap();
     fs::write(
         t.inner().join("ai.toml"),
         "[summariser]\nmodel = \"haiku\"\n",
     )
     .unwrap();
-    fs::write(
-        t.cwd().join("ai.local.toml"),
-        "[summariser]\nmodel = \"fable\"\n",
-    )
-    .unwrap();
+    fs::write(private(&t.cwd()), "[summariser]\nmodel = \"fable\"\n").unwrap();
     assert_eq!(t.load().unwrap().summariser.model(), "haiku");
 }
 
@@ -231,7 +230,7 @@ fn an_agent_adds_up_instructions_and_overrides_its_worktree() {
     )
     .unwrap();
     fs::write(
-        t.inner().join("ai.local.toml"),
+        private(&t.inner()),
         "[agents.stabiliser]\ninstructions = \"mine.md\"\nworktree = \"../my-stabiliser\"\n",
     )
     .unwrap();
@@ -293,16 +292,32 @@ fn outside_a_project_a_relative_worktree_stays_as_written() {
 }
 
 #[test]
-fn the_local_file_holds_no_project_table() {
+fn the_private_file_holds_no_project_table() {
     let t = Tree::new();
     fs::write(t.inner().join("ai.toml"), "[project]\nname = \"widget\"\n").unwrap();
-    let local = t.inner().join("ai.local.toml");
+    let local = private(&t.inner());
     fs::write(&local, "[project]\nname = \"mine\"\n").unwrap();
     assert_eq!(
         t.load().unwrap_err().to_string(),
         format!(
-            "{}: [project] belongs in the project's ai.toml, not in ai.local.toml.",
+            "{}: [project] belongs in the project's ai.toml, not in its private one.",
             local.display()
+        )
+    );
+}
+
+#[test]
+fn a_local_file_of_its_own_is_refused() {
+    let t = Tree::new();
+    fs::write(t.inner().join("ai.toml"), "").unwrap();
+    let link = t.inner().join("ai.local.toml");
+    fs::write(&link, "[summariser]\nmodel = \"opus\"\n").unwrap();
+    assert_eq!(
+        t.load().unwrap_err().to_string(),
+        format!(
+            "{} is a file of its own. Move it to {}, then run `ai init` to link it.",
+            link.display(),
+            t.inner().join(".ai/local/ai.toml").display()
         )
     );
 }
@@ -328,7 +343,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-fn a_linked_worktree_reads_the_main_checkouts_local_file() {
+fn a_linked_worktree_reads_the_main_checkouts_private_file() {
     let tmp = TempDir::new().unwrap();
     let main = tmp.path().join("main");
     let sub = main.join("sub");
@@ -338,30 +353,37 @@ fn a_linked_worktree_reads_the_main_checkouts_local_file() {
         "[project]\nid = \"project_01m5h1sxw1eh2rcnjyd5hb8fy4\"\n\n[summariser]\nmodel = \"haiku\"\n",
     )
     .unwrap();
-    fs::write(main.join(".gitignore"), "ai.local.toml\n").unwrap();
+    fs::write(main.join(".gitignore"), "/.ai/local/\n").unwrap();
     git(&main, &["init", "-q"]);
     git(&main, &["add", "."]);
     git(&main, &["commit", "-qm", "init"]);
     git(&main, &["worktree", "add", "-q", "../wt"]);
-    fs::write(
-        sub.join("ai.local.toml"),
-        "[summariser]\nmodel = \"opus\"\n",
-    )
-    .unwrap();
+    fs::write(private(&sub), "[summariser]\nmodel = \"opus\"\n").unwrap();
     let wt = tmp.path().join("wt").join("sub");
-    fs::write(
-        wt.join("ai.local.toml"),
-        "[summariser]\nmodel = \"fable\"\n",
-    )
-    .unwrap();
+    fs::write(private(&wt), "[summariser]\nmodel = \"fable\"\n").unwrap();
 
     assert_eq!(
         Settings::load(None, &wt).unwrap().summariser.model(),
         "opus"
     );
     let p = Project::find(&wt).unwrap().unwrap();
-    assert_eq!((p.dir, p.home), (wt, fs::canonicalize(&sub).unwrap()));
+    assert_eq!(
+        (p.dir, p.home),
+        (wt.clone(), fs::canonicalize(&sub).unwrap())
+    );
     assert_eq!(Project::find(&sub).unwrap().unwrap().home, sub);
+
+    Project::init(&wt).unwrap();
+    assert_eq!(
+        fs::read_link(sub.join("ai.local.toml")).unwrap(),
+        Path::new(".ai/local/ai.toml"),
+        "init in a linked worktree links the main checkout's private settings"
+    );
+    assert!(fs::symlink_metadata(wt.join("ai.local.toml")).is_err());
+    assert_eq!(
+        Settings::load(None, &wt).unwrap().summariser.model(),
+        "opus"
+    );
 }
 
 #[test]

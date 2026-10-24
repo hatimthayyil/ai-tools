@@ -35,7 +35,7 @@ pub struct Table {
 pub struct Project {
     /// The directory holding its `ai.toml`.
     pub dir: PathBuf,
-    /// Where it keeps its `.ai` store: see [`home`].
+    /// Where it keeps its private store: see [`home`].
     pub home: PathBuf,
     pub id: String,
     /// Its slug: `[project] name`, else the directory's name.
@@ -91,7 +91,8 @@ impl Project {
     }
 
     /// The project at `dir`, minting an id into its `ai.toml` when it has none, the rest of the
-    /// file kept as written, with its `ai.local.toml` and `.ai/` in its `.gitignore`.
+    /// file kept as written; with its private settings in its store, linked from its
+    /// `ai.local.toml`, and that link and the store in its `.gitignore`.
     pub fn init(dir: &Path) -> Result<Project> {
         let p = dir.join(FILE);
         if config::is_user(&p) {
@@ -100,18 +101,25 @@ impl Project {
                 pretty(&p)
             );
         }
+        config::check_link(&home(dir)?)?;
         let project = match Project::read(&p)? {
             Some(project) => project,
             None => mint(dir, &p)?,
         };
         ignore_untracked(dir)?;
+        link_private(&project.home)?;
         Ok(project)
     }
 
-    /// Commits its `.ai` store as one commit `msg`, making the store's repository first;
+    /// Its private store: a git repository of its own in its [home](Project::home).
+    pub fn store(&self) -> PathBuf {
+        self.home.join(STORE)
+    }
+
+    /// Commits its private store as one commit `msg`, making the store's repository first;
     /// nothing before the store exists or when nothing changed.
     pub fn commit(&self, msg: &str) -> Result<()> {
-        let dir = self.home.join(STORE);
+        let dir = self.store();
         if !dir.is_dir() {
             return Ok(());
         }
@@ -128,9 +136,9 @@ impl Project {
     }
 }
 
-/// Where a project keeps ai's store, below its [home](Project::home): a git repository of its
-/// own, which the project's git ignores.
-pub const STORE: &str = ".ai";
+/// Where a project keeps its private data, below its [home](Project::home): a git repository of
+/// its own, which the project's git ignores. The rest of `.ai` is the project's.
+pub const STORE: &str = ".ai/local";
 /// What the store's repository leaves out: locks and logs.
 const STORE_IGNORES: &str = "*.lock\n*.log\n";
 
@@ -150,7 +158,7 @@ pub fn committing<T>(cwd: &Path, msg: &str, op: impl FnOnce() -> Result<T>) -> R
     }
 }
 
-/// Where the project at `dir` keeps its `.ai` store: in a linked git worktree, the same
+/// Where the project at `dir` keeps its private store: in a linked git worktree, the same
 /// directory in the main checkout; else `dir`.
 pub fn home(dir: &Path) -> Result<PathBuf> {
     let Ok(repo) = gix::discover(dir) else {
@@ -183,8 +191,31 @@ fn mint(dir: &Path, p: &Path) -> Result<Project> {
     Project::read(p)?.context("ai init wrote no project id.")
 }
 
-/// What a project keeps out of git: its own settings and its agents.
-const UNTRACKED: [&str; 2] = [LOCAL, ".ai/"];
+/// Makes the private settings of the project at `home` if missing, and its [`LOCAL`] link to
+/// them.
+fn link_private(home: &Path) -> Result<()> {
+    let file = config::private_file(home);
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir).at(dir)?;
+    }
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+    {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e).at(&file),
+    }
+    let link = home.join(LOCAL);
+    if fs::symlink_metadata(&link).is_ok() {
+        return Ok(());
+    }
+    std::os::unix::fs::symlink(Path::new(STORE).join(FILE), &link).at(&link)
+}
+
+/// What a project keeps out of git: the link to its private settings, and its private store.
+const UNTRACKED: [&str; 2] = [LOCAL, ".ai/local/"];
 
 /// Adds each of [`UNTRACKED`] to the `.gitignore` in `dir` as `/<name>`, unless a line there
 /// already names it, with or without its slashes.

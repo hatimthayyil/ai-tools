@@ -1825,12 +1825,12 @@ fn an_ai_toml_without_an_id_has_no_threads() {
 #[test]
 fn the_store_is_a_git_repository_committed_on_events() {
     let s = Sandbox::new();
-    let store = s.repo().join(".ai");
+    let store = s.repo().join(".ai/local");
     ok(
         s.ai(&["list"]),
         "No agents in this project. Create one: ai agent new <name>\n",
     );
-    assert!(!store.exists(), "a read makes no store");
+    assert!(!store.join(".git").exists(), "a read makes no repository");
     ok(
         s.ai_in("s-1", &["new", "dev"]),
         "Created agent dev. Start it: ai agent resume dev\n",
@@ -1871,7 +1871,7 @@ fn a_turns_sync_waits_for_the_next_event_to_be_committed() {
     let s = Sandbox::new();
     s.fake_compactor("0");
     assert_eq!(code(&s.top(None, &["memory", "init"])), 0);
-    let store = s.repo().join(".ai");
+    let store = s.repo().join(".ai/local");
     let log = || git(&store, &["log", "--format=%s"]);
     let clean = || git(&store, &["status", "--porcelain"]).is_empty();
     let turns = |n| s.transcript("s-1", &talk(n, |k| long("ok", k)));
@@ -1935,7 +1935,7 @@ fn a_linked_worktree_commits_to_the_main_checkouts_store() {
         "Created agent dev. Start it: ai agent resume dev\n",
     );
     assert!(!wt.join(".ai").exists());
-    let store = s.repo().join(".ai");
+    let store = s.repo().join(".ai/local");
     assert_eq!(git(&store, &["log", "--format=%s"]), "ai agent new dev\n");
     assert_eq!(git(&s.repo(), &["status", "--porcelain"]), "");
 }

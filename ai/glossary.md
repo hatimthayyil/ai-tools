@@ -21,12 +21,13 @@
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes); off a terminal, in parts newest first.
 - `snapshot`: the memory as of one commit; every command reads one.
 - `knob`: a memory size set under `[memory]` in `ai.toml`, shown by `ai memory config`: `view.lines`, `entry-chars`.
-- `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[agent]`, `[memory]`, `[summariser]`): the user's in `~/.ai`, and the project's, the nearest one at or above the cwd (never the user's), whose keys win. A project's also holds `[project]`: its `id` and `name`.
+- `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[agent]`, `[memory]`, `[summariser]`): the user's in `~/.ai`; the project's, the nearest one at or above the cwd (never the user's); and the project's private one in its private store, linked from `ai.local.toml`; each later one's keys win. A project's also holds `[project]`: its `id` and `name`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.
 - `format`: the store's format number, the `format` blob at the tree root (absent: 1). This ai reads and writes only its own (`FORMAT`); it refuses a newer store and upgrades an older one.
 - `upgrade`: the pure, automatic rewrite of an older-format store to `FORMAT`, one commit `upgrade format N -> M` on the old head under the compactor's lock; the old head is the rollback.
-- `project`: the directory of the nearest `ai.toml` at or above the cwd, never the user's; its id, a TypeID `project_<UUIDv7>`, is minted once by `ai init`. Its agents live in `.ai/` of its main checkout, and a note records its id.
+- `project`: the directory of the nearest `ai.toml` at or above the cwd, never the user's; its id, a TypeID `project_<UUIDv7>`, is minted once by `ai init`. Its agents and private settings live in `.ai/local/` of its main checkout, and a note records its id.
+- `private store`: `.ai/local/` in a project's main checkout: one user's agents and private settings for the project, a git repository of its own that the project's git ignores. The rest of `.ai/` is hidden but tracked by the project; `ai/` is the agents' visible workspace.
 - `notes`: the store `ai notes` manages: a global knowledge base agents consult deliberately, never loaded at session start. A non-bare repo of Markdown files at `~/.ai/notes` (override `AI_NOTES_DIR`), one commit per change.
 - `topic`: a directory of the notes, named by its slug path with dots (`linguistics.syntax`); repo knowledge goes under `projects.<repo>`.
 - `leaf`: one note of the notes: one claim, titled (`# <title>`, ≤ 80 characters, the claim in a few words), body ≤ 1024 bytes, file `<id>--<slug of title>.md`; the id is its UTC Denote timestamp, permanent. Frontmatter: `source`, `confidence` (`verified | reported | speculative | assessment`), `checked`, `decay`, `links`, `supersedes`, `invalid_at`.
@@ -40,7 +41,7 @@
 - `human prompt`: a user entry that opens a turn: one the user typed or sent (mid-run included) or a subagent's task. Tool results, hook context, `isMeta` entries, local commands and their output, task notifications are not.
 - `work`: an item that is a message from another agent, with its sender: a subagent's hand-back, a fork's report (from its description), a peer's report, a coordinator's instruction. It opens a turn (OptChat's name).
 - `agent`: a name in a project with one thread, created only by `ai agent new`. Every thread is an agent's.
-- `thread`: an agent's history: a directory `threads/<name>` of the project's agent store, `.ai/agents` in its main checkout, so its linked worktrees share it. Holds items, session tracks, subagents and lines as append-only JSON Lines, and copies of its sessions' files; format 3.
+- `thread`: an agent's history: a directory `threads/<name>` of the project's agent store, `.ai/local/agents` in its main checkout, so its linked worktrees share it. Holds items, session tracks, subagents and lines as append-only JSON Lines, and copies of its sessions' files; format 3.
 - `sequence number`: an item's position in its thread, from 0, permanent. Parents and line keys are sequence numbers. A subagent's items are numbered apart, beside the main tree.
 - `binding`: a harness session's record in a thread (`sessions/<harness>/<session>`): transcript path, graft, tip, attach and detach times. Attached until detached; a session is attached to at most one thread of a repository.
 - `graft`: the item a session's roots hang on: the thread's newest item when the session was first attached; none on a new thread.

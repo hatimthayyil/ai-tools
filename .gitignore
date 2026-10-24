@@ -12,9 +12,9 @@ devenv.local.yaml
 # Rust
 /target
 
-# ai, one user's: settings and agents
+# ai, one user's: the link to private settings, and the private store
 /ai.local.toml
-/.ai/
+/.ai/local/
 
 # Claude Code
 /.claude/

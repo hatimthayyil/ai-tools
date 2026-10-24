@@ -75,31 +75,77 @@ fn init_mints_an_id_once() {
 }
 
 #[test]
-fn init_ignores_the_local_file_and_the_agents_once() {
+fn init_ignores_the_link_and_the_private_store_once() {
     let s = Sandbox::new();
     let ignore = s.work().join(".gitignore");
     ok(&s.ai(&s.work(), &["init"]));
     assert_eq!(
         fs::read_to_string(&ignore).unwrap(),
-        "/ai.local.toml\n/.ai/\n"
+        "/ai.local.toml\n/.ai/local/\n"
     );
     ok(&s.ai(&s.work(), &["init"]));
     assert_eq!(
         fs::read_to_string(&ignore).unwrap(),
-        "/ai.local.toml\n/.ai/\n"
+        "/ai.local.toml\n/.ai/local/\n"
     );
 
     for (before, after) in [
-        ("/target", "/target\n/ai.local.toml\n/.ai/\n"),
-        ("/target\n", "/target\n/ai.local.toml\n/.ai/\n"),
-        ("ai.local.toml\n", "ai.local.toml\n/.ai/\n"),
-        ("/.ai\n", "/.ai\n/ai.local.toml\n"),
-        (".ai/\n/ai.local.toml\n", ".ai/\n/ai.local.toml\n"),
+        ("/target", "/target\n/ai.local.toml\n/.ai/local/\n"),
+        ("/target\n", "/target\n/ai.local.toml\n/.ai/local/\n"),
+        ("ai.local.toml\n", "ai.local.toml\n/.ai/local/\n"),
+        ("/.ai/local\n", "/.ai/local\n/ai.local.toml\n"),
+        (
+            ".ai/local/\n/ai.local.toml\n",
+            ".ai/local/\n/ai.local.toml\n",
+        ),
+        ("/.ai/\n", "/.ai/\n/ai.local.toml\n/.ai/local/\n"),
     ] {
         fs::write(&ignore, before).unwrap();
         ok(&s.ai(&s.work(), &["init"]));
         assert_eq!(fs::read_to_string(&ignore).unwrap(), after, "{before:?}");
     }
+}
+
+#[test]
+fn init_links_the_private_settings_once() {
+    let s = Sandbox::new();
+    let link = s.work().join("ai.local.toml");
+    let private = s.work().join(".ai/local/ai.toml");
+    ok(&s.ai(&s.work(), &["init"]));
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        Path::new(".ai/local/ai.toml")
+    );
+    assert_eq!(fs::read_to_string(&private).unwrap(), "");
+
+    fs::write(&link, "[summariser]\nmodel = \"opus\"\n").unwrap();
+    ok(&s.ai(&s.work(), &["init"]));
+    assert_eq!(
+        fs::read_to_string(&private).unwrap(),
+        "[summariser]\nmodel = \"opus\"\n",
+        "the link writes through, and init keeps what is there"
+    );
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        Path::new(".ai/local/ai.toml")
+    );
+}
+
+#[test]
+fn init_refuses_a_local_file_of_its_own() {
+    let s = Sandbox::new();
+    let link = s.work().join("ai.local.toml");
+    fs::write(&link, "[summariser]\nmodel = \"opus\"\n").unwrap();
+    assert_eq!(
+        fails(&s.ai(&s.work(), &["init"])),
+        format!(
+            "{} is a file of its own. Move it to {}, then run `ai init` to link it.\n",
+            link.display(),
+            s.work().join(".ai/local/ai.toml").display()
+        )
+    );
+    assert!(!s.work().join("ai.toml").exists(), "nothing is written");
+    assert!(!s.work().join(".ai").exists());
 }
 
 #[test]

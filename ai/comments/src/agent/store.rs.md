@@ -3,7 +3,7 @@
 Design: `ai/research/20261014T002322--chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; JSON Lines files: `src/jsonl.rs`.
 
 Where
-- The store of a project is `.ai/agents/` (`DIR`) in its home (`Project::home`), found from a directory by `Project::find`: the project's folder in the main checkout, so linked worktrees share the main checkout's threads. Each clone has its own store, and deleting the checkout deletes it. `ai init` gitignores `/.ai/`. Outside a project, or in one whose `ai.toml` has no id, `find` is `None` (a hook's sync then does nothing), and `open`, the CLI's, fails saying to run `ai init`.
+- The store of a project is `agents/` (`DIR`) in its private store, `.ai/local/` in its home (`Project::store`, `Project::home`), found from a directory by `Project::find`: the project's folder in the main checkout, so linked worktrees share the main checkout's threads. Each clone has its own store, and deleting the checkout deletes it. `ai init` gitignores `/.ai/local/`. Outside a project, or in one whose `ai.toml` has no id, `find` is `None` (a hook's sync then does nothing), and `open`, the CLI's, fails saying to run `ai init`.
 
 - Thread names: letters, digits, `-`, `_`, starting with a letter or digit: a safe directory and lock file name. Harness, session and agent ids become path names: letters, digits, `.`, `_`, `-`, not starting with `.` (record.rs, `check_id`).
 

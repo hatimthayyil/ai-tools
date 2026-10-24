@@ -150,10 +150,10 @@ impl FromStr for Mark {
     }
 }
 
-/// Where a project keeps its agents, below its [home](Project::home).
-pub const DIR: &str = ".ai/agents";
+/// Where a project keeps its agents, in its [private store](Project::store).
+pub const DIR: &str = "agents";
 
-/// The agents of one project: `.ai/agents` in its home, shared by its linked worktrees.
+/// The agents of one project: `.ai/local/agents` in its home, shared by its linked worktrees.
 pub struct Store {
     project: Project,
     root: PathBuf,
@@ -173,7 +173,7 @@ impl Store {
     }
 
     fn of(project: Project, cwd: &Path) -> Result<Store> {
-        let root = project.home.join(DIR);
+        let root = project.store().join(DIR);
         file::check_format(&root, FORMAT, "agent")?;
         Ok(Store {
             project,

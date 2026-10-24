@@ -16,8 +16,30 @@ use crate::{
 /// The settings file: the user's in [`home`], a project's at or above where `ai` runs.
 pub const FILE: &str = "ai.toml";
 
-/// One user's overrides of a project's settings, beside its [`FILE`].
+/// The link in a project's top directory to its [private settings](private_file).
 pub const LOCAL: &str = "ai.local.toml";
+
+/// One user's overrides of the settings of the project at `home`: an `ai.toml` in its private
+/// store.
+pub fn private_file(home: &Path) -> PathBuf {
+    home.join(project::STORE).join(FILE)
+}
+
+/// Refuses an [`LOCAL`] in `home` that is a file of its own rather than the link to
+/// [`private_file`].
+pub fn check_link(home: &Path) -> Result<()> {
+    let p = home.join(LOCAL);
+    match fs::symlink_metadata(&p) {
+        Ok(m) if !m.file_type().is_symlink() => bail!(
+            "{} is a file of its own. Move it to {}, then run `ai init` to link it.",
+            pretty(&p),
+            pretty(&private_file(home))
+        ),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).at(&p),
+    }
+}
 
 /// `~/.ai`: the user's settings, and every store not pointed elsewhere.
 pub fn home() -> Option<PathBuf> {
@@ -66,8 +88,9 @@ pub(crate) struct File {
 }
 
 /// `[agents.<name>]`: what an agent runs with. A relative `instructions` is from the folder of the
-/// file that sets it, a relative `worktree` from the project's [`home`](project::home), so every
-/// checkout of the project names the same directory.
+/// file that sets it, or for the private settings from the project's [`home`](project::home), where
+/// their [link](LOCAL) sits; a relative `worktree` is from the home, so every checkout of the
+/// project names the same directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
@@ -128,7 +151,7 @@ pub(crate) fn read(p: &Path) -> Result<Option<File>> {
         .map_err(|e| anyhow!("{}: {e}", pretty(p)))
 }
 
-/// What `ai.toml` sets: the project's `ai.local.toml` over its `ai.toml` over the user's, key by
+/// What `ai.toml` sets: the project's private settings over its `ai.toml` over the user's, key by
 /// key, except an agent's instructions, which add up; unset keys keep their defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
@@ -140,8 +163,8 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// The user's `ai.toml`, under the nearest one at or above `cwd`, under the `ai.local.toml`
-    /// beside that in the project's [`home`](project::home).
+    /// The user's `ai.toml`, under the nearest one at or above `cwd`, under the
+    /// [private settings](private_file) of that project's [`home`](project::home).
     pub fn find(cwd: &Path) -> Result<Settings> {
         Settings::load(user_file().as_deref(), cwd)
     }
@@ -153,16 +176,24 @@ impl Settings {
             Some(dir) => Some(project::home(dir)?),
             None => None,
         };
-        let local = home.as_ref().map(|h| h.join(LOCAL));
+        if let Some(h) = &home {
+            check_link(h)?;
+        }
+        let local = home.as_deref().map(|h| (private_file(h), h));
+        let beside = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
         [
-            user.map(|p| (p, Layer::User)),
-            project.as_deref().map(|p| (p, Layer::Project)),
-            local.as_deref().map(|p| (p, Layer::Local)),
+            user.map(|p| (p.to_path_buf(), beside(p), Layer::User)),
+            project
+                .as_deref()
+                .map(|p| (p.to_path_buf(), beside(p), Layer::Project)),
+            local.map(|(p, h)| (p, h.to_path_buf(), Layer::Local)),
         ]
         .into_iter()
         .flatten()
-        .try_fold(Settings::default(), |base, (p, layer)| {
-            Ok(Settings::read(p, layer)?.unwrap_or_default().over(base))
+        .try_fold(Settings::default(), |base, (p, dir, layer)| {
+            Ok(Settings::read(&p, &dir, layer)?
+                .unwrap_or_default()
+                .over(base))
         })
         .map(|s| match &home {
             Some(home) => s.under(home),
@@ -176,9 +207,9 @@ impl Settings {
         self.agents.get(name)
     }
 
-    /// The settings in `p`, `None` without the file; only a project's `ai.toml` holds
-    /// `[project]`.
-    fn read(p: &Path, layer: Layer) -> Result<Option<Settings>> {
+    /// The settings in `p`, its relative instructions from `dir`, `None` without the file; only
+    /// a project's `ai.toml` holds `[project]`.
+    fn read(p: &Path, dir: &Path, layer: Layer) -> Result<Option<Settings>> {
         let Some(f) = read(p)? else {
             return Ok(None);
         };
@@ -189,7 +220,7 @@ impl Settings {
                     pretty(p)
                 ),
                 Layer::Local => bail!(
-                    "{}: [project] belongs in the project's {FILE}, not in {LOCAL}.",
+                    "{}: [project] belongs in the project's {FILE}, not in its private one.",
                     pretty(p)
                 ),
                 Layer::Project => {}
@@ -203,7 +234,7 @@ impl Settings {
             agents: f
                 .agents
                 .into_iter()
-                .map(|(name, a)| (name, a.from(p.parent().unwrap_or(Path::new("")))))
+                .map(|(name, a)| (name, a.from(dir)))
                 .collect(),
         }))
     }

@@ -3,7 +3,7 @@
 The summariser: builds the lines `rollup.rs` plans. Design: `ai/research/20261014T002322--chat-design.md`, Roll-up (background compactor) and Contract.
 
 Config (`Store::config`)
-- `[chat]` in `ai.toml` (config.rs.md), the user's under the project's under its `ai.local.toml`: `background` (bool, default true). `Store::settings` reads the files from the directory the store was found from, each time it is asked, so a command that never needs them never reads them.
+- `[chat]` in `ai.toml` (config.rs.md), the user's under the project's under its private settings: `background` (bool, default true). `Store::settings` reads the files from the directory the store was found from, each time it is asked, so a command that never needs them never reads them.
 - `backend(model)`: the `[summariser]` backend (summariser.rs.md) with `model` (`build --model`) over the configured one.
 
 Runs (`Run`)
