@@ -10,6 +10,7 @@ ai/comments/tests/rollup.rs.md
   s_77b04d9838f161::t_790475d5b98628 7
 ai/comments/tests/agent_cli.rs.md
   s_77b04d9838f161::t_ec6c7391697e73 24
+  s_77b04d9838f161::t_77243b84fbf151 23
 ai/comments/plugins/claude/hooks/register.ts.md
   s_77b04d9838f161::t_8d63aba446dcd4 23
   s_77b04d9838f161::t_31eec34c62362c 22,24
@@ -57,6 +58,8 @@ tests/agent_cli.rs
   s_77b04d9838f161::t_bbb7892398277e 1808-1862,1867-1871,1877-1879
   s_77b04d9838f161::t_5417bcbc47afba 142,146-148
   s_77b04d9838f161::t_150491b4723758 149
+README.md
+  s_77b04d9838f161::t_b693d616a2997d 109
 ---
 {
   "schema_version": "authorship/3.0.0",
