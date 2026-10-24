@@ -19,7 +19,17 @@ const GIT: &str = ".git";
 const LOCK: &str = "ai-commit.lock";
 
 pub fn exists(dir: &Path) -> bool {
-    dir.join(GIT).is_dir()
+    git_dir(dir).is_dir()
+}
+
+/// The git directory of the repository at `dir`.
+pub fn git_dir(dir: &Path) -> PathBuf {
+    dir.join(GIT)
+}
+
+/// The lock [`commit`] takes: holding it keeps every commit of `dir` waiting.
+pub fn lock(dir: &Path) -> Result<file::Lock> {
+    file::lock(&git_dir(dir).join(LOCK))
 }
 
 /// Makes `dir` a git repository unless it is one. `.git` is made beside `dir` and renamed in,
@@ -46,7 +56,7 @@ pub fn create(dir: &Path) -> Result<()> {
 /// identity, else `me`; nothing when the tree is HEAD's. A file whose stat matches its index
 /// entry keeps that entry's blob unread.
 pub fn commit(dir: &Path, me: &str, msg: &str) -> Result<()> {
-    let _lock = file::lock(&dir.join(GIT).join(LOCK))?;
+    let _lock = lock(dir)?;
     let mut repo = gix::open(dir)?;
     repo.committer_or_set_fallback(me, "ai@localhost")?;
     let index = repo.index_or_empty()?;

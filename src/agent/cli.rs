@@ -2,7 +2,7 @@ use std::{
     cmp::Reverse,
     env, fs,
     io::{self, IsTerminal, Write},
-    os::unix::process::CommandExt,
+    os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{self, ExitCode},
     time::{Duration, Instant},
@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
-use dialoguer::Select;
+use dialoguer::{Confirm, Select};
 use indicatif::ProgressBar;
 use jiff::Timestamp;
 
@@ -23,6 +23,7 @@ use crate::{
         store::{Mark, Snapshot, Store, Thread, ThreadInfo},
         summarise::{OnFail, build, dry_run, first, rebuild, rewrite, summarise},
         sync::Synced,
+        upgrade,
         view::Branch,
     },
     config::FILE,
@@ -210,6 +211,7 @@ impl Resume {
     /// Runs in the current directory.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
+        offer_upgrade(&cwd)?;
         self.run(&cwd)
     }
 
@@ -317,10 +319,37 @@ fn claude_config() -> Option<PathBuf> {
     claude::config_dir(|k| env::var(k).ok())
 }
 
+/// On a terminal, offers to convert the agent store at or above `cwd` if it awaits that.
+fn offer_upgrade(cwd: &Path) -> Result<()> {
+    if !asks() {
+        return Ok(());
+    }
+    upgrade::offer(cwd, |q| {
+        Ok(Confirm::new().with_prompt(q).default(false).interact()?)
+    })
+}
+
+/// Whether a question can be put on the terminal: stdin and stderr are one, and reading it will
+/// not stop this process as a background job of it.
+fn asks() -> bool {
+    let stdin = io::stdin();
+    if !(stdin.is_terminal() && io::stderr().is_terminal()) {
+        return false;
+    }
+    let group = unsafe { libc::tcgetpgrp(stdin.as_raw_fd()) };
+    group < 0 || group == unsafe { libc::getpgrp() }
+}
+
 impl Cli {
     /// Runs in the current directory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
+        if !matches!(
+            self.command,
+            Some(Command::SyncSession { .. } | Command::CompactSession { .. })
+        ) {
+            offer_upgrade(&cwd)?;
+        }
         let terminal = io::stdout().is_terminal();
         match self.run(&cwd, &mut io::stdout().lock(), terminal) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),

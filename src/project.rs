@@ -123,7 +123,15 @@ impl Project {
         if !dir.is_dir() {
             return Ok(());
         }
+        self.repo()?;
+        repo::commit(&dir, "ai", msg).map_err(|e| anyhow!("Cannot commit {}: {e:#}", pretty(&dir)))
+    }
+
+    /// Its `.ai` store, made a repository with its `.gitignore` unless it is one.
+    pub fn repo(&self) -> Result<PathBuf> {
+        let dir = self.home.join(STORE);
         if !repo::exists(&dir) {
+            fs::create_dir_all(&dir).at(&dir)?;
             let p = dir.join(".gitignore");
             match fs::OpenOptions::new().write(true).create_new(true).open(&p) {
                 Ok(mut f) => f.write_all(STORE_IGNORES.as_bytes()).at(&p)?,
@@ -132,7 +140,7 @@ impl Project {
             }
             repo::create(&dir)?;
         }
-        repo::commit(&dir, "ai", msg).map_err(|e| anyhow!("Cannot commit {}: {e:#}", pretty(&dir)))
+        Ok(dir)
     }
 }
 

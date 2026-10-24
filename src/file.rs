@@ -75,19 +75,27 @@ pub fn lock(p: &Path) -> Result<Lock> {
     Ok(Lock(f))
 }
 
-/// Refuses the `store` store in `dir` unless its format file names `format`; a store without
-/// one is new.
-pub fn check_format(dir: &Path, format: u32, store: &str) -> Result<()> {
+/// The format the `store` store in `dir` names; `None` without a format file.
+pub fn format(dir: &Path, store: &str) -> Result<Option<u32>> {
     let p = dir.join(FORMAT);
     let v = match fs::read(&p) {
         Ok(v) => v,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).at(&p),
     };
-    let v: u32 = std::str::from_utf8(&v)
+    std::str::from_utf8(&v)
         .ok()
         .and_then(|v| v.trim().parse().ok())
-        .with_context(|| format!("The {store} store's format file is corrupt."))?;
+        .map(Some)
+        .with_context(|| format!("The {store} store's format file is corrupt."))
+}
+
+/// Refuses the `store` store in `dir` unless its format file names `format`; a store without
+/// one is new.
+pub fn check_format(dir: &Path, format: u32, store: &str) -> Result<()> {
+    let Some(v) = self::format(dir, store)? else {
+        return Ok(());
+    };
     match v {
         v if v == format => Ok(()),
         v if v > format => {

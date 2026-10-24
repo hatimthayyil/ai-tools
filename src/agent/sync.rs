@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(snapshot.len().unwrap(), 1);
         let archived = store.dir().join("threads/dev/sources/claude/s-1/s-1.jsonl");
         assert_eq!(
-            fs::read(archived).unwrap(),
+            crate::segments::read_all(&archived).unwrap(),
             original.as_bytes(),
             "archived bytes must match the parsed observation"
         );

@@ -1,29 +1,30 @@
 # agent/store.rs
 
-Design: `ai/research/20261014T002322--chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; JSON Lines files: `src/jsonl.rs`.
+Design: `ai/research/20261014T002322--chat-design.md` (Threads and sessions, Data model, Roll-up keys). Records: record.rs; segmented files: `src/segments.rs`; JSON Lines: `src/jsonl.rs`.
 
 Where
 - The store of a project is `agents/` (`DIR`) in its private store, `.ai/local/` in its home (`Project::store`, `Project::home`), found from a directory by `Project::find`: the project's folder in the main checkout, so linked worktrees share the main checkout's threads. Each clone has its own store, and deleting the checkout deletes it. `ai init` gitignores `/.ai/local/`. Outside a project, or in one whose `ai.toml` has no id, `find` is `None` (a hook's sync then does nothing), and `open`, the CLI's, fails saying to run `ai init`.
 
 - Thread names: letters, digits, `-`, `_`, starting with a letter or digit: a safe directory and lock file name. Harness, session and agent ids become path names: letters, digits, `.`, `_`, `-`, not starting with `.` (record.rs, `check_id`).
 
-Layout (format 3)
-- `format`: `3`, written before the first write. `Store::find` refuses another format, so a newer store is refused before any read or write.
+Layout (format 4)
+- Every file below that grows is a segmented file (segments.rs.md): a directory of its name holding segments of up to 1 MiB, so a commit of the private store stores only the open segment. Named here by the file each one joins to.
+- `format`: `4`, written before the first write. `Store::find` refuses another format, so a newer store is refused before any read or write. A format-3 store (each file whole) awaits conversion and is refused until the user converts it on a terminal (upgrade.rs.md).
 - `sessions.jsonl`: every session's attachment changes (`Event`), appended. The last one per harness and session is the one owner lookup (`Store::owner`): a session is attached to at most one thread by construction, and finding it reads no thread.
 - `threads/<name>/`: one agent's thread; it exists once `Store::create` makes it, empty.
   - `items.jsonl`: the main tree, one `Row` per item; its position is its sequence number.
   - `sessions.jsonl`: each session's branch here (`Track`: transcript, graft, tip), appended when it changes; the last per session holds.
   - `agents.jsonl`: subagent records (`Agent`), appended when they change; the last per harness and agent holds. `agents/<harness>/<agent>.jsonl`: the subagent's own rows, numbered from 0; its roots have no parent and `call` links it to the main tree.
   - `lines.jsonl`: summary line operations (`LineOp`), folded in order.
-  - `sources/<harness>/<session>/<relative path>`: the session's original files, byte for byte.
-  - `calls/<session>.jsonl`: the compactor's calls to the model, byte for byte (`Thread::calls_dir`, `memory/claude.rs`'s `Record`).
+  - `sources/<harness>/<session>/<relative path>`: the session's original files, byte for byte when their segments are joined.
+  - `calls/<session>.jsonl`: the compactor's calls to the model, byte for byte (`Thread::calls_dir`, `memory/claude.rs`'s `Record`); whole files, one per call, which do not grow per turn.
 - Locks, beside the threads: `sessions/<harness>/<session>.lock` (one session's attach, sync and detach), `sessions.lock` (appends to `sessions.jsonl`), `<name>.write.lock` (a thread's writers), `<name>.lock` (its compactor) and its log `<name>.log`.
 
 Writing
-- Every file but the sources is append-only, so any earlier state of a thread is a prefix of its files. A `Mark` is the lengths of a thread's `items`, `lines` and `sessions` files; `snapshot_at` reads those prefixes (the view's pages, the summariser's change check).
-- A crash can leave an incomplete last line: readers stop at the last newline, and the next writer truncates it under its lock before appending (`jsonl::append`). No fsync: everything but the lines is derived from the transcripts, and a lost line is built again.
+- Every file but the sources is append-only, so any earlier state of a thread is a prefix of its files. A `Mark` is the lengths of a thread's `items`, `lines` and `sessions` files, segments joined; `snapshot_at` reads those prefixes (the view's pages, the summariser's change check).
+- A crash can leave an incomplete last line: readers stop at the last newline, and the next writer truncates it under its lock before appending (`segments::append`). No fsync: everything but the lines is derived from the transcripts, and a lost line is built again.
 - Writers hold the thread's writer lock and read the files again under it. Order within one write: sources, subagent rows, main rows, agent records, then the session's track. A record is written after the items it names, so a crash between them leaves items no record names yet, which the next sync's dedupe keeps.
-- Sources: a file that extends its archived copy gets the new bytes appended (transcripts only grow); any other change rewrites it. A path that changed between file and directory replaces the entry standing in the way. Missing live files keep their last copy. Earlier versions of a rewritten file are not kept.
+- Sources: a file that extends its archived copy gets the new bytes appended (transcripts only grow); any other change rewrites it in new segments. A path that changed between file and directory replaces the entry standing in the way: in the archive a directory holding files is a segmented file, one holding directories a parent (`segments::is_segmented`). Missing live files keep their last copy. Earlier versions of a rewritten file are not kept.
 
 Reading
 - A `Snapshot` holds the bytes of the thread's `items`, `lines`, `sessions` and `agents` files and the store's `sessions.jsonl` as read at one moment, and decodes on demand. Subagent item files are read live.

@@ -50,17 +50,23 @@ pub fn decode_all<T: DeserializeOwned>(b: &[u8]) -> Result<Vec<T>> {
         .collect()
 }
 
+/// `rows`, one line each.
+pub fn encode<T: Serialize>(rows: &[T]) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    for r in rows {
+        serde_json::to_writer(&mut buf, r)?;
+        buf.push(b'\n');
+    }
+    Ok(buf)
+}
+
 /// Appends `rows` to `p`, one line each, first dropping an incomplete last line a crash left.
 /// The caller holds the file's writer lock.
 pub fn append<T: Serialize>(p: &Path, rows: &[T]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
-    let mut buf = Vec::new();
-    for r in rows {
-        serde_json::to_writer(&mut buf, r)?;
-        buf.push(b'\n');
-    }
+    let buf = encode(rows)?;
     let mut f = OpenOptions::new()
         .create(true)
         .read(true)

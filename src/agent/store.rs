@@ -1,8 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt,
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fmt, fs, io,
     ops::Range,
     path::{Path, PathBuf},
     str::FromStr,
@@ -21,20 +19,22 @@ use crate::{
             Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Row, State, Tag, Track,
             check_id,
         },
+        upgrade,
     },
     file::{self, AtPath},
     jsonl,
     memory::{CALLS, Who},
     project::Project,
+    segments,
 };
 
 /// The agent store format this ai reads and writes.
-pub const FORMAT: u32 = 3;
-const THREADS: &str = "threads";
-const ITEMS: &str = "items.jsonl";
-const LINES: &str = "lines.jsonl";
-const SESSIONS: &str = "sessions.jsonl";
-const AGENTS: &str = "agents.jsonl";
+pub const FORMAT: u32 = 4;
+pub(super) const THREADS: &str = "threads";
+pub(super) const ITEMS: &str = "items.jsonl";
+pub(super) const LINES: &str = "lines.jsonl";
+pub(super) const SESSIONS: &str = "sessions.jsonl";
+pub(super) const AGENTS: &str = "agents.jsonl";
 const SOURCES: &str = "sources";
 
 /// `name` if it names a thread: letters, digits, `-` and `_`, starting with a letter or digit.
@@ -173,7 +173,11 @@ impl Store {
     }
 
     fn of(project: Project, cwd: &Path) -> Result<Store> {
-        let root = project.store().join(DIR);
+        let store = project.store();
+        if upgrade::pending(&store)? {
+            bail!(upgrade::CONVERT);
+        }
+        let root = store.join(DIR);
         file::check_format(&root, FORMAT, "agent")?;
         Ok(Store {
             project,
@@ -212,7 +216,7 @@ impl Store {
     /// The attachment changes of every session, in order.
     fn events(&self) -> Result<Vec<Event>> {
         let p = self.root.join(SESSIONS);
-        jsonl::decode_all(&jsonl::read(&p)?)
+        jsonl::decode_all(&segments::read(&p)?)
             .with_context(|| format!("The chat sessions file is corrupt: {}", file::pretty(&p)))
     }
 
@@ -238,7 +242,7 @@ impl Store {
             at: Timestamp::now(),
             state,
         };
-        jsonl::append(&self.root.join(SESSIONS), &[event])
+        segments::append(&self.root.join(SESSIONS), &[event])
     }
 
     /// The thread of agent `name`; it exists once [`Store::create`] makes it.
@@ -361,14 +365,14 @@ impl Thread {
     /// before it, so the records are read first and the items last: the state is whole without
     /// the writer's lock.
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let events = jsonl::read(&self.root.join(SESSIONS))?;
-        let tracks = jsonl::read(&self.dir.join(SESSIONS))?;
-        let lines = jsonl::read(&self.dir.join(LINES))?;
-        let agents = jsonl::read(&self.dir.join(AGENTS))?;
+        let events = segments::read(&self.root.join(SESSIONS))?;
+        let tracks = segments::read(&self.dir.join(SESSIONS))?;
+        let lines = segments::read(&self.dir.join(LINES))?;
+        let agents = segments::read(&self.dir.join(AGENTS))?;
         Ok(Snapshot {
             name: self.name.clone(),
             dir: self.dir.clone(),
-            items: jsonl::read(&self.dir.join(ITEMS))?,
+            items: segments::read(&self.dir.join(ITEMS))?,
             lines,
             tracks,
             agents,
@@ -400,11 +404,7 @@ impl Thread {
     }
 
     fn append<T: Serialize>(&self, file: &str, rows: &[T]) -> Result<()> {
-        if rows.is_empty() {
-            return Ok(());
-        }
-        fs::create_dir_all(&self.dir).at(&self.dir)?;
-        jsonl::append(&self.dir.join(file), rows)
+        segments::append(&self.dir.join(file), rows)
     }
 
     /// Records a session's branch; the caller holds the writer's lock.
@@ -767,7 +767,7 @@ impl Snapshot {
 
     /// A subagent's items, in order; its roots follow its [`Agent::call`].
     pub fn agent_items(&self, harness: &str, agent: &str) -> Result<Vec<Item>> {
-        let b = jsonl::read(&self.agent_path(harness, agent)?)?;
+        let b = segments::read(&self.agent_path(harness, agent)?)?;
         items(&self.name, &format!("agent {agent} item"), &b)
     }
 
@@ -854,7 +854,7 @@ impl Snapshot {
                 .and_then(|i| main.seq(&i.id));
             let path = self.agent_path(&b.harness, &sub.agent)?;
             let what = format!("agent {} item", sub.agent);
-            let mut items = Append::new(heads(&self.name, &what, &jsonl::read(&path)?)?);
+            let mut items = Append::new(heads(&self.name, &what, &segments::read(&path)?)?);
             for item in &sub.items {
                 if items.seq(&item.id).is_none() {
                     let parent = item.parent.as_ref().and_then(|p| items.seq(p));
@@ -862,11 +862,7 @@ impl Snapshot {
                 }
             }
             agent_items += items.rows.len() as u64;
-            if !items.rows.is_empty() {
-                let dir = path.parent().expect("an agent file in a dir");
-                fs::create_dir_all(dir).at(dir)?;
-                jsonl::append(&path, &items.rows)?;
-            }
+            segments::append(&path, &items.rows)?;
             let i = agents
                 .iter()
                 .position(|a| a.harness == b.harness && a.agent == sub.agent);
@@ -895,8 +891,8 @@ impl Snapshot {
     }
 }
 
-/// Copies `bytes` to `relative` under `root`: appended when they extend the copy there, else
-/// written whole, replacing a file or directory standing in the way.
+/// Copies `bytes` to the segmented file `relative` under `root`: appended when they extend the
+/// copy there, else written whole, replacing a file or directory standing in the way.
 fn archive(root: &Path, relative: &Path, bytes: &[u8]) -> Result<()> {
     let p = root.join(relative);
     let mut up: Vec<&Path> = relative
@@ -907,30 +903,22 @@ fn archive(root: &Path, relative: &Path, bytes: &[u8]) -> Result<()> {
     up.reverse();
     for a in up {
         let a = root.join(a);
-        if fs::symlink_metadata(&a).is_ok_and(|m| !m.is_dir()) {
-            fs::remove_file(&a).at(&a)?;
+        if segments::is_segmented(&a) {
+            fs::remove_dir_all(&a).at(&a)?;
         }
     }
-    match fs::symlink_metadata(&p) {
-        Ok(m) if m.is_dir() => fs::remove_dir_all(&p).at(&p)?,
-        Ok(_) => {
-            let old = fs::read(&p).at(&p)?;
-            if old == bytes {
-                return Ok(());
-            }
-            if let Some(new) = bytes.strip_prefix(old.as_slice()) {
-                return OpenOptions::new()
-                    .append(true)
-                    .open(&p)
-                    .and_then(|mut f| f.write_all(new))
-                    .at(&p);
-            }
+    if !segments::is_segmented(&p) {
+        if p.is_dir() {
+            fs::remove_dir_all(&p).at(&p)?;
         }
-        Err(_) => {}
+        return segments::write(&p, bytes);
     }
-    let dir = p.parent().expect("a source file in a dir");
-    fs::create_dir_all(dir).at(dir)?;
-    fs::write(&p, bytes).at(&p)
+    let old = segments::read_all(&p)?;
+    match bytes.strip_prefix(old.as_slice()) {
+        Some([]) => Ok(()),
+        Some(new) => segments::extend(&p, new),
+        None => segments::write(&p, bytes),
+    }
 }
 
 /// New rows of one item sequence (the main tree's, or a subagent's).

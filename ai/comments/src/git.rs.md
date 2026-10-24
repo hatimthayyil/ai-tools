@@ -10,4 +10,4 @@ Git plumbing of `ai memory` (`memory/store.rs`): a store is a tree of blobs unde
 - `cas`: a failed ref edit is a lost race when the head moved, an error otherwise.
 - `Snap`: one commit's tree; reads are cached by path, so a mutation reading the same blob twice fetches it once. `raw`/`tree` are unchecked: upgraders read older formats through them.
 - `fan_path`: entry `n` at `dir/{n>>8:04x}/{n&255:02x}`, 256 entries per tree, so an append rewrites two small trees. `walk` and `count` read these numbered trees.
-- `hash`: the sha1 blob id of a text, as a content hash with no repository (notes summaries, `files` tree).
+- `hash`: the sha1 blob id of a text, as a content hash with no repository (notes and their summaries).

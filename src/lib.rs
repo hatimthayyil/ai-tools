@@ -10,5 +10,6 @@ pub mod progress;
 pub mod project;
 pub mod record;
 pub mod repo;
+pub mod segments;
 pub mod summariser;
 pub mod view;

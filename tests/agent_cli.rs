@@ -1939,3 +1939,86 @@ fn a_linked_worktree_commits_to_the_main_checkouts_store() {
     assert_eq!(git(&store, &["log", "--format=%s"]), "ai agent new dev\n");
     assert_eq!(git(&s.repo(), &["status", "--porcelain"]), "");
 }
+
+#[test]
+fn a_format_3_store_converts_on_a_terminal_once_asked() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let agents = s.repo().join(".ai/local/agents");
+    fs::write(agents.join("format"), "3\n").unwrap();
+    fs::write(agents.join("threads/dev/items.jsonl"), "").unwrap();
+    fails(
+        s.ai(&["list"]),
+        "This project's agents are stored in format 3. Run an ai agent command on a terminal to convert them to format 4.\n",
+    );
+
+    let (code, shown) = s.on_terminal(&["list"], b"n");
+    assert_eq!(code, 1, "{shown}");
+    assert!(
+        shown.contains("to format 4, splitting their growing files into 1 MiB segments?"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Conversion cancelled; this project's agents are unchanged."),
+        "{shown}"
+    );
+    assert_eq!(fs::read_to_string(agents.join("format")).unwrap(), "3\n");
+
+    let (code, shown) = s.on_terminal(&["list"], b"y");
+    assert_eq!(code, 0, "{shown}");
+    assert!(
+        shown.contains("Converted this project's agents to format 4."),
+        "{shown}"
+    );
+    assert!(shown.contains("dev  0 turns"), "{shown}");
+    assert_eq!(fs::read_to_string(agents.join("format")).unwrap(), "4\n");
+    assert!(
+        agents
+            .join("threads/dev/items.jsonl/000000.jsonl")
+            .is_file()
+    );
+    let log = git(&s.repo().join(".ai/local"), &["log", "--format=%s"]);
+    assert_eq!(log, "ai agent: convert to format 4\nai agent new dev\n");
+}
+
+#[test]
+fn a_commit_after_a_small_append_stores_only_the_open_segments() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let big = "x".repeat(200_000);
+    let ask = |k: usize| match k {
+        6 => "small".to_string(),
+        _ => format!("{k} {big}"),
+    };
+    s.transcript("s-1", &talk(6, ask));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let thread = s.repo().join(".ai/local/agents/threads/dev");
+    for log in ["items.jsonl", "sources/claude/s-1/s-1.jsonl"] {
+        let n = fs::read_dir(thread.join(log)).unwrap().count();
+        assert!(n > 1, "{log} holds {n} segments");
+    }
+
+    s.transcript("s-1", &talk(7, ask));
+    ok(s.ai_in("s-1", &["end-session"]), "");
+    let store = s.repo().join(".ai/local");
+    let changed = git(&store, &["diff", "--name-only", "HEAD~1", "HEAD"]);
+    assert!(
+        changed.contains("/sources/claude/s-1/s-1.jsonl/"),
+        "{changed}"
+    );
+    for path in changed.lines() {
+        let p = store.join(path);
+        let newest = fs::read_dir(p.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .max()
+            .unwrap();
+        assert_eq!(p.file_name().unwrap(), newest, "{path} is a closed segment");
+    }
+}

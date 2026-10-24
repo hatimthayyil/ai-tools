@@ -9,6 +9,7 @@ mod source;
 mod store;
 mod summarise;
 mod sync;
+pub mod upgrade;
 mod view;
 
 pub use cli::{AGENT_HELP, Cli, NOT_ATTACHED, Resume, Session, thread_view};
