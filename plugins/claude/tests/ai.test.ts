@@ -192,7 +192,7 @@ test('/ai new creates the agent, then attaches the session to it; a failed new a
     args[2] === 'taken'
       ? [1, '', 'Agent taken already exists in this project.\n']
       : sub(args) === 'new'
-        ? [0, 'Created agent dev. Start it: ai agent start dev\n', '']
+        ? [0, 'Created agent dev. Start it: ai agent resume dev\n', '']
         : [0, 'Attached to dev.\n', ''],
   )
   await start($)

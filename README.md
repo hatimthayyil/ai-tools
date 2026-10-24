@@ -100,9 +100,9 @@ A file's summary is asked for a tenth of its bytes, at least 512; a directory's 
 
 ```sh
 ai agent new dev                      # create agent dev, with an empty thread
-ai agent start dev [-- claude args]   # Claude Code in a new session of dev; its thread's view is its context
-ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in
-                                      # both take --harness; claude is the only one yet
+ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in,
+                                      # else a new one, whose context is the thread's view;
+                                      # --harness: claude is the only one yet
 ai agent list                         # the agents here, newest first, and their sessions
 ai agent view dev                     # dev's view, from the summaries written so far
 ai agent zoom -a dev <id>             # open a line of it; --tool-output adds tool output
@@ -110,11 +110,11 @@ ai agent grep -a dev <regex>          # search it; repeat -a to search several a
 ai agent build -a dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
 ```
 
-Only `new` creates an agent; `start`, `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in `.ai/agents/` in the project's main checkout, so its linked worktrees share them; `ai init` adds `/.ai/` to `.gitignore`.
+Only `new` creates an agent; `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in `.ai/agents/` in the project's main checkout, so its linked worktrees share them; `ai init` adds `/.ai/` to `.gitignore`.
 
 A session is attached to one agent at a time. Detach it explicitly before attaching it to another; the previous agent's thread keeps the recorded history.
 
-Each turn's work, the agent's steps between your message and its final reply, is summarised first; the turn's line is then written from your message, that summary and the final reply. A summary line is asked for 50 to 200 words, more where the AI wrote more and ran more tools, and holds at most 512 bytes per 50 words. A command you run, `/ai` included, writes the lines it needs and stops at the first that fails, naming each failed line with its error: `/ai` then compacts nothing, and `ai agent start` starts no session. The background summariser, started after each turn, builds what it can and only logs, to `<thread>.log` beside the threads.
+Each turn's work, the agent's steps between your message and its final reply, is summarised first; the turn's line is then written from your message, that summary and the final reply. A summary line is asked for 50 to 200 words, more where the AI wrote more and ran more tools, and holds at most 512 bytes per 50 words. A command you run, `/ai` included, writes the lines it needs and stops at the first that fails, naming each failed line with its error: `/ai` then compacts nothing, and `ai agent resume` starts no new session. The background summariser, started after each turn, builds what it can and only logs, to `<thread>.log` beside the threads.
 
 A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Earlier states are prefixes of those files (`--at`). A newer store format is refused. Re-attaching a session rebuilds its thread from the transcript.
 
@@ -147,7 +147,7 @@ worktree = "../ai-tools-stabiliser"       # the directory it runs in
 
 An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project. Instructions add up: the agent gets the user's, then the project's, then `ai.local.toml`'s, each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it; in a linked git worktree, the root in the main checkout, so `../dev` names the same directory from every checkout.
 
-`ai agent start` runs the harness in the agent's `worktree`, else in the current directory, and `start` and `resume` add its `instructions` to the harness's system prompt (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a git worktree of the project's main checkout, at a commit holding its `ai.toml`, so its sessions find the threads in the main checkout's `.ai/agents`; a plain copy, or another clone, has its own. A session in the worktree reads `ai.local.toml` from the main checkout.
+`ai agent resume` starts a new session in the agent's `worktree`, else in the current directory, and adds its `instructions` to the harness's system prompt, for a new session and a resumed one (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a git worktree of the project's main checkout, at a commit holding its `ai.toml`, so its sessions find the threads in the main checkout's `.ai/agents`; a plain copy, or another clone, has its own. A session in the worktree reads `ai.local.toml` from the main checkout.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 

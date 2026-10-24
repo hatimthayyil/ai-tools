@@ -464,7 +464,7 @@ fn a_thread_is_named_else_attached_else_the_only_one_else_listed() {
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let dev = stdout(&s.ai(&["view", "dev"]));
@@ -477,7 +477,7 @@ fn a_thread_is_named_else_attached_else_the_only_one_else_listed() {
     s.transcript("s-3", &talk(3, |k| format!("other {k}")));
     ok(
         s.ai_in("s-3", &["new", "other"]),
-        "Created agent other. Start it: ai agent start other\n",
+        "Created agent other. Start it: ai agent resume other\n",
     );
     ok(s.ai_in("s-3", &["attach", "other"]), "Attached to other.\n");
     let rows = "This project's agents, newest first:\n  other  3 turns  2026-10-14 10:00\n  dev  2 turns  2026-10-14 10:00\n";
@@ -525,7 +525,7 @@ fn plumbing_is_hidden_from_help() {
     let s = Sandbox::new();
     let help = stdout(&s.ai(&["--help"]));
     for cmd in [
-        "start", "resume", "list", "view", "attach", "detach", "zoom", "build",
+        "resume", "list", "view", "attach", "detach", "zoom", "build",
     ] {
         assert!(help.contains(&format!("\n  {cmd} ")), "{cmd}: {help}");
     }
@@ -552,7 +552,7 @@ fn attach_sync_and_detach() {
     s.transcript("s-1", &half);
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let t = s.store().thread("dev").unwrap();
@@ -573,7 +573,7 @@ fn attach_sync_and_detach() {
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     ok(
         s.ai(&["new", "other"]),
-        "Created agent other. Start it: ai agent start other\n",
+        "Created agent other. Start it: ai agent resume other\n",
     );
     fails(
         s.ai(&["attach", "other", "--harness", "claude", "--session", "s-1"]),
@@ -610,7 +610,7 @@ fn compact_session_syncs_and_prints_the_view() {
     s.transcript("s-1", &first);
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     s.transcript("s-1", &all);
@@ -658,7 +658,7 @@ fn compact_session_fails_with_its_reason() {
     let flags = ["--harness", "pi", "--session", "p-1", "--transcript", p];
     ok(
         s.ai(&["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(
         s.ai(&[&["attach", "dev"][..], &flags].concat()),
@@ -681,13 +681,13 @@ fn list_shows_this_repositorys_threads_newest_first_and_their_sessions() {
     s.transcript("s-1", &fixture("rewind.jsonl"));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     s.transcript("s-2", &talk(100, |k| format!("question {k}")));
     ok(
         s.ai_in("s-2", &["new", "long-one"]),
-        "Created agent long-one. Start it: ai agent start long-one\n",
+        "Created agent long-one. Start it: ai agent resume long-one\n",
     );
     ok(
         s.ai_in("s-2", &["attach", "long-one"]),
@@ -718,7 +718,7 @@ fn view_prints_a_thread_in_parts_from_one_state() {
     s.transcript("s-2", &talk(100, ask));
     ok(
         s.ai_in("s-2", &["new", "long-one"]),
-        "Created agent long-one. Start it: ai agent start long-one\n",
+        "Created agent long-one. Start it: ai agent resume long-one\n",
     );
     ok(
         s.ai_in("s-2", &["attach", "long-one"]),
@@ -787,7 +787,7 @@ fn agent_alone_prints_the_view() {
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let view = stdout(&s.ai_in("s-1", &["view"]));
@@ -801,7 +801,7 @@ fn view_syncs_its_session_and_writes_no_line() {
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let lines = |s: &Sandbox| {
@@ -882,7 +882,7 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     s.transcript("s-1", &talk(2, |k| format!("question {k}")));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let both = stdout(&s.top(Some("s-1"), &["view", "--whole"]));
@@ -917,7 +917,7 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     s.transcript("s-3", &talk(3, |k| format!("other {k}")));
     ok(
         s.ai_in("s-3", &["new", "other"]),
-        "Created agent other. Start it: ai agent start other\n",
+        "Created agent other. Start it: ai agent resume other\n",
     );
     ok(s.ai_in("s-3", &["attach", "other"]), "Attached to other.\n");
     fails(
@@ -971,7 +971,7 @@ fn zoom_opens_lines_and_items() {
     s.transcript("s-1", &text);
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     s.line("dev", 1, 1, "first");
@@ -1041,7 +1041,7 @@ fn grep_pages_the_newest_matches_first() {
     );
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     ok(
@@ -1169,17 +1169,17 @@ fn grep_searches_each_agent_named() {
 }
 
 #[test]
-fn start_binds_a_new_session_and_starts_claude() {
+fn resuming_a_new_agent_binds_a_new_session_and_starts_claude() {
     let s = Sandbox::new();
     fails(
-        s.ai(&["start", "dev"]),
+        s.ai(&["resume", "dev"]),
         "No agent dev in this project. Create it: ai agent new dev\n",
     );
     ok(
         s.ai(&["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
-    ok(s.ai(&["start", "dev", "--", "--model", "haiku"]), "");
+    ok(s.ai(&["resume", "dev", "--", "--model", "haiku"]), "");
     let argv = s.argv();
     assert_eq!(argv[0], "--session-id");
     assert_eq!(argv[2..], ["--model", "haiku"]);
@@ -1204,7 +1204,14 @@ fn start_binds_a_new_session_and_starts_claude() {
     fs::write(&want, fixture("plain.jsonl")).unwrap();
     unattached(s.ai_in("other", &["sync-session"]));
     ok(s.ai_in(id, &["sync-session"]), "");
-    ok(s.ai(&["start", "dev"]), "");
+    fs::remove_file(&want).unwrap();
+    let o = s.ai(&["resume", "dev"]);
+    assert_eq!(
+        stderr(&o),
+        format!(
+            "Cannot resume dev: the transcript of session {id} is gone. Starting a new session.\n"
+        )
+    );
     let second = &s.argv()[1];
     assert_ne!(second, id);
     let b = t
@@ -1229,7 +1236,7 @@ fn start_binds_a_new_session_and_starts_claude() {
         "a new session's view ends at its graft, the previous session's ended turn: {seed}"
     );
 
-    let o = s.ai(&["start", "a b"]);
+    let o = s.ai(&["resume", "a b"]);
     assert_eq!(code(&o), 1);
     assert!(stderr(&o).contains("is not a thread name"));
 }
@@ -1245,7 +1252,7 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
     let newest = s.transcript("s-2", &ran_in(&talk(1, |_| "later".into()), &s.repo()));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     ok(s.ai_in("s-2", &["attach", "dev"]), "Attached to dev.\n");
@@ -1318,12 +1325,12 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
     .unwrap();
     ok(
         s.ai(&["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
 
     let given = s.repo().join("../dev-wt");
     fails(
-        s.ai(&["start", "dev"]),
+        s.ai(&["resume", "dev"]),
         &format!(
             "Agent dev's worktree {0} does not exist. Create it: git worktree add {0}\n",
             given.display()
@@ -1338,16 +1345,16 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
         wt.display(),
         s.repo().display()
     );
-    fails(s.ai(&["start", "dev"]), &unshared);
+    fails(s.ai(&["resume", "dev"]), &unshared);
     fs::write(wt.join("ai.toml"), &project).unwrap();
-    fails(s.ai(&["start", "dev"]), &unshared);
+    fails(s.ai(&["resume", "dev"]), &unshared);
     fs::remove_dir_all(&wt).unwrap();
     git(&s.repo(), &["init", "-q"]);
     git(&s.repo(), &["add", "."]);
     git(&s.repo(), &["commit", "-qm", "init"]);
     git(&s.repo(), &["worktree", "add", "-q", "../dev-wt"]);
     fails(
-        s.ai(&["start", "dev"]),
+        s.ai(&["resume", "dev"]),
         &format!(
             "Cannot read agent dev's instructions: {}: No such file or directory.\n",
             s.repo().join("agents/dev.md").display()
@@ -1357,11 +1364,11 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
 
     fs::create_dir(s.repo().join("agents")).unwrap();
     fs::write(s.repo().join("agents/dev.md"), "Keep it short.").unwrap();
-    let o = s.ai(&["start", "dev", "--harness", "pi"]);
+    let o = s.ai(&["resume", "dev", "--harness", "pi"]);
     assert_eq!(code(&o), 2, "only claude is a harness yet");
     ok(
         s.ai(&[
-            "start",
+            "resume",
             "dev",
             "--harness",
             "claude",
@@ -1447,12 +1454,12 @@ fn threads_resolve_in_the_current_repository_only() {
     );
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     ok(
         s.ai_at(&other, "s-2", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(
         s.ai_at(&other, "s-2", &["attach", "dev"]),
@@ -1484,7 +1491,7 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
     s.transcript("s-1", &talk(3, |k| format!("question {k}")));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     s.line("dev", 1, 1, "first, by hand");
@@ -1545,7 +1552,7 @@ fn build_writes_or_rewrites_one_line() {
     s.transcript("s-1", &talk(5, |k| format!("question {k}")));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let ends = turn_ends(&s, "dev");
@@ -1626,7 +1633,7 @@ fn failing(s: &Sandbox, n: usize) -> Vec<u64> {
     s.transcript("s-1", &talk(n + 1, |k| long(tag(k), k)));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     turn_ends(s, "dev")
@@ -1683,7 +1690,7 @@ fn attaching_starts_a_background_summariser_that_builds() {
     s.transcript("s-1", &talk(3, |k| long("ok", k)));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let ends = turn_ends(&s, "dev");
@@ -1711,7 +1718,7 @@ fn build_off_a_terminal_shows_no_progress() {
     s.transcript("s-1", &talk(3, |k| long("ok", k)));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     ok(
@@ -1727,7 +1734,7 @@ fn a_line_still_over_the_limit_fails_and_is_not_stored() {
     s.transcript("s-1", &talk(2, |k| long("LONG", k)));
     ok(
         s.ai_in("s-1", &["new", "dev"]),
-        "Created agent dev. Start it: ai agent start dev\n",
+        "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let ends = turn_ends(&s, "dev");
@@ -1742,14 +1749,20 @@ fn a_line_still_over_the_limit_fails_and_is_not_stored() {
 }
 
 #[test]
-fn a_failed_line_stops_compaction_and_start() {
+fn a_failed_line_stops_compaction_and_a_new_session() {
     let s = Sandbox::new();
     failing(&s, 20);
     let failed = "Cannot build the view of thread dev: 1 line failed.\n\
                   Failed 0: claude: overloaded\n\
                   Write them, then try again: ai agent build -a dev\n";
     fails(s.ai(&["compact-session", "--session", "s-1"]), failed);
-    fails(s.ai(&["start", "dev"]), failed);
+    fails(
+        s.ai(&["resume", "dev"]),
+        &format!(
+            "Cannot resume dev: the transcript of session s-1 names no directory. Starting a \
+             new session.\n{failed}"
+        ),
+    );
     assert!(
         !s.root.join("out/argv").exists(),
         "Claude Code did not start"

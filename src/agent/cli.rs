@@ -56,20 +56,8 @@ enum Command {
         name: String,
     },
     #[command(
-        about = "start Claude Code in a new session attached to an agent.",
-        after_help = "It runs in the agent's worktree, with its instructions, when ai.toml's [agents.<name>] names them. It first writes the summary lines the session's view needs; if one fails, Claude Code does not start."
-    )]
-    Start {
-        #[arg(help = "the agent")]
-        name: String,
-        #[arg(long, default_value = claude::HARNESS, value_parser = [claude::HARNESS], help = "the harness to run it in")]
-        harness: String,
-        #[arg(last = true, help = "arguments for claude, after --")]
-        args: Vec<String>,
-    },
-    #[command(
-        about = "continue the agent's newest Claude Code session.",
-        after_help = "It runs where that session ran, with the agent's instructions from ai.toml's [agents.<name>]."
+        about = "continue the agent's newest Claude Code session, else start a new one.",
+        after_help = "A session resumes where it ran. A new one runs in the agent's worktree when ai.toml's [agents.<name>] names one, after writing the summary lines its view needs; if one fails, Claude Code does not start. Either way it gets the agent's instructions."
     )]
     Resume {
         #[arg(help = "the agent")]
@@ -322,7 +310,6 @@ impl Cli {
         });
         match command {
             Command::New { name } => new(cwd, out, &name),
-            Command::Start { name, args, .. } => launch(cwd, &name, &args),
             Command::Resume { name, args, .. } => resume(cwd, &name, &args),
             Command::List { session } => list(cwd, out, session),
             Command::View {
@@ -538,7 +525,10 @@ fn exec_claude(dir: &Path, args: &[&str]) -> Result<ExitCode> {
 /// Creates agent `name`.
 fn new(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
     Store::open(cwd)?.create(name)?;
-    writeln!(out, "Created agent {name}. Start it: ai agent start {name}")?;
+    writeln!(
+        out,
+        "Created agent {name}. Start it: ai agent resume {name}"
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -628,7 +618,7 @@ fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
 }
 
 /// The thread's newest Claude Code session, resumed attached in the directory it ran in when
-/// it can be, with the agent's instructions; else a new one.
+/// it can be, with the agent's instructions; else a new one, saying why when there was one.
 fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
     let t = store.existing(name)?;
@@ -639,7 +629,7 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
         .filter(|b| b.harness == claude::HARNESS)
         .max_by_key(|b| (b.tip, b.attached));
     let why = match &newest {
-        None => "it has no Claude Code session".to_string(),
+        None => return launch(cwd, name, args),
         Some(b) => match &b.transcript {
             Some(p) if p.is_file() => match claude::session_dir(p) {
                 Some(dir) if store.holds(&dir) => {

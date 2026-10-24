@@ -56,7 +56,7 @@
 - `place` (chat): an item's turn and number in it, from its branch (`model::Place`); fixed by the path from the root, so the same on every branch through the item.
 - `open turn`: a branch's last turn, not yet closed: no message follows it and the harness has not ended it.
 - `placeholder` (chat): `8+4|(not summarised yet)`, a line the roll-up has not built.
-- `launcher`: `ai agent start <name> [-- args]`: a new session id bound to the thread with its future transcript, then `exec claude --session-id`.
+- `launcher`: `ai agent resume <name> [-- args]` when the thread has no session to continue: a new session id bound to the thread with its future transcript, then `exec claude --session-id`.
 - `seed` (chat): the view a launched session of an existing thread starts with, its only context: the plugin's `SessionStart` (`startup`) context, from `ai agent compact-session`. Kept in the transcript, so a resume replays it; a compaction replaces it.
 - `roll-up`: a thread's lines and what each is made from (`agent::Rollup`), over every branch: work lines (level 0), turn lines of closed turns from their message, work lines and final reply (1), binary nodes over aligned pairs of closed turns along the branch (1+k). Built by the chat compactor.
 - `final reply`: the item that ends a turn when it is the assistant's text (Claude Code's `end_turn`), the reply that tells the user what came of the work. A turn cut short by a message or an interrupt has none.
