@@ -1652,6 +1652,39 @@ fn the_background_summariser_builds_past_a_failed_line() {
 }
 
 #[test]
+fn attaching_starts_a_background_summariser_that_builds() {
+    let s = Sandbox::new();
+    fs::write(
+        s.repo().join("ai.local.toml"),
+        "[chat]\nbackground = true\n",
+    )
+    .unwrap();
+    s.fake_compactor("0");
+    s.transcript("s-1", &talk(3, |k| long("ok", k)));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent start dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let ends = turn_ends(&s, "dev");
+    let log = s.store().thread("dev").unwrap().log_path().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let text = fs::read_to_string(&log).unwrap_or_default();
+        if text.contains(" end ") {
+            break;
+        }
+        assert!(!text.contains("error:"), "the summariser failed: {text}");
+        assert!(
+            Instant::now() < deadline,
+            "the summariser never ended: {text}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(built(&s, &ends, 2), [true, true]);
+}
+
+#[test]
 fn build_off_a_terminal_shows_no_progress() {
     let s = Sandbox::new();
     s.fake_compactor("0.2");
