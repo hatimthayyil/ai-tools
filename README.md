@@ -86,6 +86,8 @@ ai init  # make this directory a project, once: mints its id into ai.toml, ignor
 
 `ai files` and `ai agent` work in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
 
+A project's agents and file summaries live in `.ai/` in its main checkout, which the project's git ignores. `.ai/` is a git repository of its own, made on its first write, so they keep their history: each `ai` command that writes there commits once, naming the command, as `ai agent attach dev` or `ai files build`, and makes no commit when nothing changed. Its `.gitignore` leaves out locks and logs. A command that fails still commits what it wrote; a commit that fails is an error.
+
 ### ai files
 
 ```sh

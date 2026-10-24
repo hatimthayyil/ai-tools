@@ -29,6 +29,7 @@ use crate::{
     file::{self, AtPath},
     memory::{Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page, progress,
+    project::committing,
 };
 
 /// The exit code of plumbing for a session attached to no thread; it prints nothing.
@@ -201,7 +202,13 @@ impl Resume {
     /// Runs in the current directory.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        resume(&cwd, &self.name, &self.args)
+        self.run(&cwd)
+    }
+
+    /// Runs in `cwd`, committing the store before the harness starts, or after a failure.
+    fn run(&self, cwd: &Path) -> Result<ExitCode> {
+        let msg = format!("ai agent resume {}", self.name);
+        committing(cwd, &msg, || resume(cwd, &self.name, &self.args))
     }
 }
 
@@ -320,9 +327,34 @@ impl Cli {
             session: Session::default(),
             parts: Parts::default(),
         });
-        match command {
+        let msg = match &command {
+            Command::New { name } => format!("ai agent new {name}"),
+            Command::Attach { name, .. } => format!("ai agent attach {name}"),
+            Command::Detach { .. } => "ai agent detach".into(),
+            Command::View { .. } => "ai agent view".into(),
+            Command::Build(b) => match &b.target.agent {
+                Some(name) => format!("ai agent build {name}"),
+                None => "ai agent build".into(),
+            },
+            Command::SyncSession { .. } => "ai agent sync-session".into(),
+            Command::CompactSession { .. } => "ai agent compact-session".into(),
+            Command::Resume(_)
+            | Command::List { .. }
+            | Command::Zoom { .. }
+            | Command::Grep { .. } => {
+                return command.dispatch(cwd, out, terminal);
+            }
+        };
+        committing(cwd, &msg, || command.dispatch(cwd, out, terminal))
+    }
+}
+
+impl Command {
+    /// Runs in `cwd`, printing to `out`.
+    fn dispatch(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
+        match self {
             Command::New { name } => new(cwd, out, &name),
-            Command::Resume(r) => resume(cwd, &r.name, &r.args),
+            Command::Resume(r) => r.run(cwd),
             Command::List { session } => list(cwd, out, session),
             Command::View {
                 agent,
@@ -531,8 +563,10 @@ fn start_summariser(cwd: &Path, thread: &str) -> Result<()> {
     Ok(())
 }
 
-/// Runs `claude args` in `dir`, in place of this process.
-fn exec_claude(dir: &Path, args: &[&str]) -> Result<ExitCode> {
+/// Commits the store as resuming agent `name`, then runs `claude args` in `dir`, in place of
+/// this process.
+fn exec_claude(store: &Store, name: &str, dir: &Path, args: &[&str]) -> Result<ExitCode> {
+    store.project().commit(&format!("ai agent resume {name}"))?;
     let e = process::Command::new("claude")
         .args(args)
         .current_dir(dir)
@@ -633,6 +667,8 @@ fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
         .join(format!("{session}.jsonl"));
     store.attach(name, claude::HARNESS, &session, Some(&path))?;
     exec_claude(
+        &store,
+        name,
         &dir,
         &claude_args(["--session-id", &session], &instructions, args),
     )
@@ -657,6 +693,8 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
                     let instructions = instructions(&store, name)?;
                     store.attach(name, claude::HARNESS, &b.session, Some(p))?;
                     return exec_claude(
+                        &store,
+                        name,
                         &dir,
                         &claude_args(["--resume", &b.session], &instructions, args),
                     );

@@ -1,0 +1,9 @@
+# repo.rs
+
+A git repository whose work tree is a store's files, committed whole: the notes store (`~/.ai/notes`) and a project's `.ai` store (`Project::commit`). Unlike `git.rs`, which keeps a store as blobs under one ref with no work tree, the files on disk are the store and git keeps their history.
+
+- `create`: `gix::init` in a temp dir beside the store, then `.git` renamed in. The rename is atomic, so parallel first writes never see a half-made repo; the loser finds `.git` and goes on. The dir itself may already hold files: a project's `.ai` predates its repo.
+- `commit`: takes `.git/ai-commit.lock`, so commits by the agents' and the files' writers, each under its own store locks, never race on HEAD or the index. Every file the store's ignore files keep (`.gitignore`, `.git/info/exclude`; `ignore` crate, no parent or global files, so the project's `.gitignore` above `.ai` is not read) becomes a blob of a tree built from empty; no commit when the tree is HEAD's. Then the index is written from the tree with each file's stat.
+- Stat cache: a file whose stat (`gix_index` `Stat`: mtime and ctime to the nanosecond, size, inode) equals its index entry keeps that entry's blob, unread. A commit of an unchanged 163 MB store walks it in milliseconds; the first commit hashes it all, about a second. The stat is taken before the file is read, so a write landing between them leaves a stale stat and the next commit reads the file again. Same-size rewrites inside one timestamp tick are not caught; the stores only append or replace by rename, which changes size or inode.
+- An index refresh with no commit happens when the tree matches HEAD but some file had to be read (its stat moved, its content did not).
+- Committer and author: the user's git identity, else the given fallback name with `ai@localhost` (`committer_or_set_fallback`, then `commit_as` with it for both). No `git` binary needed.

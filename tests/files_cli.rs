@@ -141,6 +141,18 @@ done
     fn store(&self) -> PathBuf {
         self.repo().join(".ai/files")
     }
+
+    /// The subjects of the `.ai` store's commits, newest first.
+    fn store_log(&self) -> String {
+        let o = Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(self.repo().join(".ai"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    }
 }
 
 fn ok(o: &Output) -> String {
@@ -292,12 +304,18 @@ fn a_failed_call_stops_the_build_and_keeps_what_was_written() {
             "src/bad.rs"
         ]
     );
+    assert_eq!(
+        s.store_log(),
+        "ai files build\n",
+        "what was written is committed"
+    );
     fs::remove_file(s.repo().join("src/bad.rs")).unwrap();
     assert_eq!(
         ok(&s.ai(&["build"])),
         "Wrote 2 summaries in 2 requests to the model, $0.02.\n"
     );
     assert_eq!(s.asked(), [".", "src"]);
+    assert_eq!(s.store_log(), "ai files build\nai files build\n");
 }
 
 #[test]

@@ -5,6 +5,7 @@ Design: `ai/research/20261014T002322--chat-design.md`, Commands and Contract. Ca
 Porcelain and plumbing
 - Porcelain (`new`, `resume`, `list`, `view`, `attach`, `detach`, `zoom`, `grep`, `build`) is for users and agents: a failure is a sentence on stderr that says what to do, exit 1.
 - Plumbing (`sync-session`, `compact-session`) is for harness glue: two-word names, hidden from help (`hide = true`). Not attached (no session, no repository, no attached binding): exit `NOT_ATTACHED` (3) and print nothing, so the plugin tells "not attached" from a failure without parsing text.
+- Commits: `run` wraps each command that can write the store (`new`, `attach`, `detach`, `view`, which syncs, `build`, the plumbing) in `project::committing`, one commit named after the command, as `ai agent attach dev`. `list`, `zoom` and `grep` only read. `resume` commits in `exec_claude`, before `exec` replaces the process, and through `Resume::run` when it fails before that; `Resume::run` serves `ai resume` too.
 
 Agents
 - `new <name>` is the only command that creates an agent: an empty `threads/<name>` directory (`Store::create`, under the thread's writer lock; an existing one is an error). Every other command names an agent through `Store::existing`, which refuses an unknown name with `Create it: ai agent new <name>`, so a typo fails instead of making a stray thread.

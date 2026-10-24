@@ -9,7 +9,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 
-use crate::{agent, config::Settings, memory, page};
+use crate::{agent, config::Settings, memory, page, project::committing};
 
 /// `ai view`: the memory's whole view, read as `ai memory view`, then a thread's view
 /// (`agent::thread_view`); whole on a terminal, else in parts from one state of both.
@@ -94,7 +94,9 @@ impl Cli {
             Some(Some((name, mark))) => {
                 agent::thread_view(cwd, Some(name), self.session, Some(mark))?
             }
-            None => agent::thread_view(cwd, self.thread, self.session, None)?,
+            None => committing(cwd, "ai view", || {
+                agent::thread_view(cwd, self.thread, self.session, None)
+            })?,
         };
         let mem = match &at {
             Some(at) => at.memory,

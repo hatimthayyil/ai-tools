@@ -21,7 +21,7 @@ use crate::{
     git::hash,
     memory::{Backend, CALLS, JOBS, Spend, broken_pipe, log::usd, plural},
     progress,
-    project::Project,
+    project::{Project, committing},
     summariser,
 };
 
@@ -68,7 +68,9 @@ impl Cli {
     pub fn run(self, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
         let (root, store) = open(cwd)?;
         match self.command {
-            Command::Build => build(&root, &store, &Settings::find(cwd)?.summariser, out),
+            Command::Build => committing(cwd, "ai files build", || {
+                build(&root, &store, &Settings::find(cwd)?.summariser, out)
+            }),
             Command::View { path } => view(cwd, &root, &store, path.as_deref(), out),
         }
     }

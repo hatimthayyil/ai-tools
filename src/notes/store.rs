@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use gix::{ObjectId, objs::tree::EntryKind};
 
 use crate::{
     file::{self, AtPath, pretty},
@@ -14,6 +13,7 @@ use crate::{
         summary::Summary,
         topic::{Topic, is_slug},
     },
+    repo,
 };
 
 pub const ME: &str = "ai notes";
@@ -141,7 +141,7 @@ impl Store {
         self.create()?;
         let _lock = file::lock(&self.git_dir().join(LOCK))?;
         let r = change(&self.load()?)?;
-        self.commit(msg)?;
+        repo::commit(&self.dir, ME, msg)?;
         Ok(r)
     }
 
@@ -160,39 +160,7 @@ impl Store {
                 pretty(&self.dir)
             );
         }
-        fs::create_dir_all(&self.dir).at(&self.dir)?;
-        let up = self.dir.parent().filter(|p| !p.as_os_str().is_empty());
-        let tmp = tempfile::Builder::new()
-            .prefix(".ai-notes-init")
-            .tempdir_in(up.unwrap_or(Path::new(".")))
-            .context("Cannot create a temporary directory.")?;
-        gix::init(tmp.path())?;
-        match fs::rename(tmp.path().join(GIT), self.git_dir()) {
-            Err(_) if self.exists() => Ok(()),
-            r => r.at(&self.git_dir()),
-        }
-    }
-
-    /// Commits every file of the work tree, then makes the index match; nothing if unchanged.
-    fn commit(&self, msg: &str) -> Result<()> {
-        let mut repo = gix::open(&self.dir)?;
-        repo.committer_or_set_fallback(ME, "ai@localhost")?;
-        let mut ed = repo.edit_tree(ObjectId::empty_tree(repo.object_hash()))?;
-        for (rel, abs) in files(&self.dir)? {
-            let id = repo.write_blob(fs::read(&abs).at(&abs)?)?;
-            ed.upsert(&rel, EntryKind::Blob, id)?;
-        }
-        let tree = ed.write()?.detach();
-        let parent = repo.head()?.id().map(|id| id.detach());
-        if let Some(p) = parent
-            && repo.find_commit(p)?.tree_id()? == tree
-        {
-            return Ok(());
-        }
-        let me = repo.committer().context("No committer.")??;
-        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
-        repo.index_from_tree(&tree)?.write(Default::default())?;
-        Ok(())
+        repo::create(&self.dir)
     }
 
     pub fn write(&self, rel: &Path, text: &str) -> Result<()> {
@@ -245,33 +213,4 @@ impl Store {
         }
         Ok(())
     }
-}
-
-/// Every file under `dir` but `.git`, by its path relative to `dir`.
-fn files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
-    let mut out = Vec::new();
-    let mut todo = vec![(String::new(), dir.to_path_buf())];
-    while let Some((rel, d)) = todo.pop() {
-        for e in fs::read_dir(&d).at(&d)? {
-            let e = e.at(&d)?;
-            let Ok(name) = e.file_name().into_string() else {
-                continue;
-            };
-            if rel.is_empty() && name == GIT {
-                continue;
-            }
-            let r = if rel.is_empty() {
-                name
-            } else {
-                format!("{rel}/{name}")
-            };
-            let kind = e.file_type().at(&e.path())?;
-            if kind.is_dir() {
-                todo.push((r, e.path()));
-            } else if kind.is_file() {
-                out.push((r, e.path()));
-            }
-        }
-    }
-    Ok(out)
 }

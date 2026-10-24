@@ -15,6 +15,7 @@ use toml_edit::DocumentMut;
 use crate::{
     config::{self, FILE, LOCAL},
     file::{AtPath, pretty},
+    repo,
 };
 
 /// The type of a project's id: `project_` and a UUIDv7, as a TypeID.
@@ -105,6 +106,47 @@ impl Project {
         };
         ignore_untracked(dir)?;
         Ok(project)
+    }
+
+    /// Commits its `.ai` store as one commit `msg`, making the store's repository first;
+    /// nothing before the store exists or when nothing changed.
+    pub fn commit(&self, msg: &str) -> Result<()> {
+        let dir = self.home.join(STORE);
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        if !repo::exists(&dir) {
+            let p = dir.join(".gitignore");
+            match fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+                Ok(mut f) => f.write_all(STORE_IGNORES.as_bytes()).at(&p)?,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e).at(&p),
+            }
+            repo::create(&dir)?;
+        }
+        repo::commit(&dir, "ai", msg).map_err(|e| anyhow!("Cannot commit {}: {e:#}", pretty(&dir)))
+    }
+}
+
+/// Where a project keeps ai's store, below its [home](Project::home): a git repository of its
+/// own, which the project's git ignores.
+pub const STORE: &str = ".ai";
+/// What the store's repository leaves out: locks and logs.
+const STORE_IGNORES: &str = "*.lock\n*.log\n";
+
+/// Runs `op`, then commits the store of the project at or above `cwd` as `msg`, whatever `op`
+/// returned, so what it wrote before failing is kept. `op`'s error comes first.
+pub fn committing<T>(cwd: &Path, msg: &str, op: impl FnOnce() -> Result<T>) -> Result<T> {
+    let r = op();
+    let c = Project::find(cwd).and_then(|p| p.map_or(Ok(()), |p| p.commit(msg)));
+    match (r, c) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Ok(_), Err(e)) => Err(e),
+        (Err(e), Ok(())) => Err(e),
+        (Err(e), Err(c)) => {
+            eprintln!("{c}");
+            Err(e)
+        }
     }
 }
 

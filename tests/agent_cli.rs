@@ -319,8 +319,8 @@ fn stdout(o: &Output) -> String {
     String::from_utf8(o.stdout.clone()).unwrap()
 }
 
-/// `git args` in `dir`, which must succeed.
-fn git(dir: &Path, args: &[&str]) {
+/// `git args` in `dir`, which must succeed: its stdout.
+fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -333,6 +333,7 @@ fn git(dir: &Path, args: &[&str]) {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", stderr(&o));
+    stdout(&o)
 }
 
 fn stderr(o: &Output) -> String {
@@ -1813,4 +1814,67 @@ fn an_ai_toml_without_an_id_has_no_threads() {
             bare.display()
         )
     );
+}
+
+#[test]
+fn the_store_is_a_git_repository_with_a_commit_per_write() {
+    let s = Sandbox::new();
+    let store = s.repo().join(".ai");
+    ok(
+        s.ai(&["list"]),
+        "No agents in this project. Create one: ai agent new <name>\n",
+    );
+    assert!(!store.exists(), "a read makes no store");
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    assert_eq!(
+        fs::read_to_string(store.join(".gitignore")).unwrap(),
+        "*.lock\n*.log\n"
+    );
+    let log = || git(&store, &["log", "--format=%an: %s"]);
+    assert_eq!(log(), "ai: ai agent new dev\n");
+
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    assert_eq!(
+        log(),
+        "ai: ai agent attach dev\nai: ai agent new dev\n",
+        "a write that changes nothing makes no commit"
+    );
+    let files = git(&store, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(files.contains("agents/threads/dev/items.jsonl"), "{files}");
+    assert!(store.join("agents/dev.write.lock").is_file());
+    assert!(!files.contains(".lock"), "{files}");
+    assert_eq!(git(&store, &["status", "--porcelain"]), "");
+
+    fs::write(store.join(".git/HEAD"), "not a ref\n").unwrap();
+    let o = s.ai(&["new", "other"]);
+    assert_eq!(code(&o), 1);
+    assert!(
+        stderr(&o).starts_with(&format!("Cannot commit {}: ", store.display())),
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[test]
+fn a_linked_worktree_commits_to_the_main_checkouts_store() {
+    let s = Sandbox::new();
+    git(&s.repo(), &["init", "-q"]);
+    git(&s.repo(), &["add", "."]);
+    git(&s.repo(), &["commit", "-qm", "init"]);
+    let wt = s.root.join("wt");
+    git(&s.repo(), &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    ok(
+        s.cmd(&wt).args(["new", "dev"]).output().unwrap(),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    assert!(!wt.join(".ai").exists());
+    let store = s.repo().join(".ai");
+    assert_eq!(git(&store, &["log", "--format=%s"]), "ai agent new dev\n");
+    assert_eq!(git(&s.repo(), &["status", "--porcelain"]), "");
 }
