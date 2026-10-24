@@ -74,10 +74,10 @@ fn the_nearest_project_file_overrides_the_users_key_by_key() {
     let t = Tree::new();
     fs::write(
         t.user(),
-        "[chat]\nbackground = false\n\n[summariser]\nmodel = \"opus\"\n\n[memory]\nview-lines = 50\n",
+        "[chat]\nbackground = false\n\n[summariser]\nmodel = \"opus\"\n\n[memory.view]\nlines = 50\n",
     )
     .unwrap();
-    fs::write(t.outer().join("ai.toml"), "[memory]\nview-lines = 10\n").unwrap();
+    fs::write(t.outer().join("ai.toml"), "[memory.view]\nlines = 10\n").unwrap();
     fs::write(
         t.inner().join("ai.toml"),
         "[summariser]\nmodel = \"haiku\"\n\n[memory]\nentry-chars = 100\n",
@@ -106,7 +106,8 @@ fn a_bad_key_or_value_names_its_file_and_key() {
             "modle",
             "unknown field",
         ),
-        ("[memroy]\nview-lines = 3\n", "memroy", "unknown field"),
+        ("[memroy]\nentry-chars = 3\n", "memroy", "unknown field"),
+        ("[memory]\nview-lines = 3\n", "view-lines", "unknown field"),
         (
             "[chat]\nbackground = \"maybe\"\n",
             "background",
@@ -122,8 +123,8 @@ fn a_bad_key_or_value_names_its_file_and_key() {
         ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),
         ("[agents.a]\nworktree = \"\"\n", "worktree", "is empty"),
         (
-            "[memory]\nview-lines = 0\n",
-            "view-lines",
+            "[memory.view]\nlines = 0\n",
+            "lines",
             "positive whole number",
         ),
         (
@@ -159,12 +160,12 @@ fn the_local_file_overrides_its_project_file_key_by_key() {
     let t = Tree::new();
     fs::write(
         t.user(),
-        "[chat]\nbackground = false\n\n[memory]\nview-lines = 50\n",
+        "[chat]\nbackground = false\n\n[memory.view]\nlines = 50\n",
     )
     .unwrap();
     fs::write(
         t.inner().join("ai.toml"),
-        "[summariser]\nmodel = \"haiku\"\n\n[memory]\nentry-chars = 100\nview-lines = 10\n",
+        "[summariser]\nmodel = \"haiku\"\n\n[memory]\nentry-chars = 100\n\n[memory.view]\nlines = 10\n",
     )
     .unwrap();
     fs::write(

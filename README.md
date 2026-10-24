@@ -138,8 +138,10 @@ backend = "claude" # claude -p; the only backend yet
 model = "sonnet"   # in the backend's own spelling
 
 [memory]
-view-lines = 96    # how many lines `ai memory view` prints
 entry-chars = 280  # the longest note, in bytes; at most 512
+
+[memory.view]
+lines = 96         # how many lines `ai memory view` prints
 
 [agents.stabiliser]                       # one table per agent that needs one
 instructions = "ai/agents/stabiliser.md"  # its own instructions, a Markdown file

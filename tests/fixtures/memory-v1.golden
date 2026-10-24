@@ -115,7 +115,7 @@ model   -
 session -
 text    imported first note imported second note, with spaces imported third note imported fourth
 $ config
-view-lines   3       how many lines view prints (96 is about 8k tokens) (default 96)
+view.lines   3       how many lines view prints (96 is about 8k tokens) (default 96)
 entry-chars  280     the longest one note may be, in bytes
 $ view -o session
 2020-01-01

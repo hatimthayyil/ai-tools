@@ -25,7 +25,7 @@ pub use compact::{
     COMPACT, Compactor, GaveUp, JOBS, Job, Options, RETRIES, RETRY, RETRY_MAX, SCALE, Spend, Step,
     TRIES, fit, ruler, summarize, write_line,
 };
-pub use config::{Config, Knob};
+pub use config::{Config, Knob, View};
 pub use cover::cover;
 pub use grep::{Pattern, excerpt, quote, word};
 pub use hook::{LONG_PROMPT, REMIND_EVERY, REMINDER};

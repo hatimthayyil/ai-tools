@@ -14,10 +14,10 @@ pub enum Knob {
 impl Knob {
     pub const ALL: [Knob; 2] = [Knob::ViewLines, Knob::EntryChars];
 
-    /// Its key under `[memory]` in `ai.toml`.
+    /// Its key under `[memory]` in `ai.toml`, dotted through nested tables.
     pub fn key(self) -> &'static str {
         match self {
-            Knob::ViewLines => "view-lines",
+            Knob::ViewLines => "view.lines",
             Knob::EntryChars => "entry-chars",
         }
     }
@@ -59,10 +59,17 @@ impl Knob {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
-    #[serde(deserialize_with = "view_lines")]
-    pub view_lines: Option<u64>,
+    pub view: View,
     #[serde(deserialize_with = "entry_chars")]
     pub entry_chars: Option<u64>,
+}
+
+/// `[memory.view]`: the sizes of `ai memory view`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct View {
+    #[serde(deserialize_with = "view_lines")]
+    pub lines: Option<u64>,
 }
 
 fn view_lines<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
@@ -80,7 +87,7 @@ impl Config {
 
     pub fn overridden(&self, k: Knob) -> Option<u64> {
         match k {
-            Knob::ViewLines => self.view_lines,
+            Knob::ViewLines => self.view.lines,
             Knob::EntryChars => self.entry_chars,
         }
     }
@@ -88,7 +95,9 @@ impl Config {
     /// These sizes, then `base`'s for those unset here.
     pub fn over(self, base: Config) -> Config {
         Config {
-            view_lines: self.view_lines.or(base.view_lines),
+            view: View {
+                lines: self.view.lines.or(base.view.lines),
+            },
             entry_chars: self.entry_chars.or(base.entry_chars),
         }
     }

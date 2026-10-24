@@ -14,7 +14,7 @@ use std::{
 use ai_tools::memory::{
     Backend, Block, Cli, Compactor, Config, Conversation, Coord, Field, GaveUp, HIDDEN, Kind,
     LONG_PROMPT, Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY, REMINDER,
-    Runtime, Store, Usage, VIEW, Who, zoom,
+    Runtime, Store, Usage, VIEW, View, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -815,7 +815,7 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["build"]).stdout, "Nothing to build.\n");
 
     let eight = Config {
-        view_lines: Some(8),
+        view: View { lines: Some(8) },
         ..Config::default()
     };
     let view = run_sized(d, eight, &["view"]).stdout;
@@ -1214,7 +1214,7 @@ fn the_note_limit_is_a_knob() {
     );
     assert_eq!(
         run_sized(&d, ten, &["config"]).stdout,
-        "view-lines   96      how many lines view prints (96 is about 8k tokens)\n\
+        "view.lines   96      how many lines view prints (96 is about 8k tokens)\n\
          entry-chars  10      the longest one note may be, in bytes (default 280)\n"
     );
 }

@@ -499,7 +499,7 @@ fn nothing_is_written_outside_the_store() {
 fn a_projects_ai_toml_overrides_the_users_key_by_key() {
     let s = Sandbox::new();
     assert!(s.ai(&["init"]).status.success());
-    s.user_toml("[memory]\nview-lines = 50\nentry-chars = 100\n");
+    s.user_toml("[memory]\nentry-chars = 100\n\n[memory.view]\nlines = 50\n");
     let work = s.path().join("work");
     let sub = work.join("sub");
     fs::create_dir_all(&sub).unwrap();
@@ -507,7 +507,7 @@ fn a_projects_ai_toml_overrides_the_users_key_by_key() {
     let config = |cwd: &Path| s.cmd(cwd, Some(&s.store())).arg("config").output().unwrap();
     assert_eq!(
         text(&config(&sub).stdout),
-        "view-lines   50      how many lines view prints (96 is about 8k tokens) (default 96)\n\
+        "view.lines   50      how many lines view prints (96 is about 8k tokens) (default 96)\n\
          entry-chars  10      the longest one note may be, in bytes (default 280)\n"
     );
     assert!(text(&config(s.path()).stdout).contains("entry-chars  100 "));
@@ -835,7 +835,7 @@ fn a_format_1_store_upgrades_once_and_reads_as_before() {
 
     for (args, want) in &golden[1..] {
         if args[0] == "config" {
-            s.user_toml("[memory]\nview-lines = 3\n");
+            s.user_toml("[memory.view]\nlines = 3\n");
         }
         let r = s.ai(args);
         assert!(

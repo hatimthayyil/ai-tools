@@ -20,7 +20,7 @@
 - `show`: every field of one message or node.
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes); off a terminal, in parts newest first.
 - `snapshot`: the memory as of one commit; every command reads one.
-- `knob`: a memory size set under `[memory]` in `ai.toml`, shown by `ai memory config`: `view-lines`, `entry-chars`.
+- `knob`: a memory size set under `[memory]` in `ai.toml`, shown by `ai memory config`: `view.lines`, `entry-chars`.
 - `ai.toml`: `ai`'s settings, one table per tool (`[chat]`, `[memory]`, `[summariser]`): the user's in `~/.ai`, and the project's, the nearest one at or above the cwd (never the user's), whose keys win. A project's also holds `[project]`: its `id` and `name`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.
