@@ -173,6 +173,26 @@ test('/ai attach and detach run ai agent with the session and show its answer', 
   ])
 })
 
+test('/ai new creates the agent, then attaches the session to it; a failed new attaches nothing', async ($, on) => {
+  const world = engine(on, args =>
+    args[2] === 'taken'
+      ? [1, '', 'Agent taken already exists in this project.\n']
+      : sub(args) === 'new'
+        ? [0, 'Created agent dev. Start it: ai agent start dev\n', '']
+        : [0, 'Attached to dev.\n', ''],
+  )
+  await start($)
+  expect((await ai($, 'new dev')).text).toBe('Created agent dev. Attached to dev.')
+  expect((await ai($, 'new taken')).text).toBe('Agent taken already exists in this project.')
+  expect((await ai($, 'new')).text).toMatch(/^Usage/)
+  expect(world.calls).toEqual([
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'new', 'dev'],
+    ['ai', 'agent', 'attach', 'dev', ...ALL_ARGS],
+    ['ai', 'agent', 'new', 'taken'],
+  ])
+})
+
 async function turnEnd($: Engine, world: World) {
   await stop($)
   await world.clock.advance(0)

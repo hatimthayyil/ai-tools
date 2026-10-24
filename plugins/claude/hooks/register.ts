@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 const NOT_ATTACHED = 3
 const LONG_MS = 600_000
 const FLUSH_MS = 1_100
-const USAGE = 'Usage: /ai | /ai attach <name> | /ai detach'
+const USAGE = 'Usage: /ai | /ai new <name> | /ai attach <name> | /ai detach'
 const WITHHELD =
   "Not compacted: this session's start never reached the ai plugin, so its compaction would not either and /compact would summarise natively. Where an organization manages Claude Code, only a plugin its managed settings install receives these events."
 
@@ -53,6 +53,10 @@ function reply(ran: Ran): string {
   return ran.stderr.trim() || `ai agent exited with code ${ran.exitCode}.`
 }
 
+async function attach($: EngineInterface, name: string): Promise<string> {
+  return reply(await agent($, ['attach', name, ...(await session($))], LONG_MS))
+}
+
 async function isWithheld($: EngineInterface): Promise<boolean> {
   return (await $.state.get(transcript)).value === undefined
 }
@@ -81,8 +85,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ai',
-      description: "ai: compact into your memory and the thread's view; attach <name>, detach",
-      argumentHint: '[attach <name> | detach]',
+      description: "ai: compact into your memory and the thread's view; new <name>, attach <name>, detach",
+      argumentHint: '[new <name> | attach <name> | detach]',
     })
     await $.tool.register({
       name: 'compress',
@@ -130,9 +134,12 @@ export const register: Register = on => {
   on('command.run', { command: 'ai' }, async ($, e) => {
     const [sub, ...rest] = e.args.trim().split(/\s+/)
     if (sub === '' && rest.length === 0) return { text: (await compress($)) ?? 'Compacting.' }
-    if (sub === 'attach' && rest.length === 1) {
-      return { text: reply(await agent($, ['attach', rest[0]!, ...(await session($))], LONG_MS)) }
+    if (sub === 'new' && rest.length === 1) {
+      const made = await agent($, ['new', rest[0]!])
+      if (made.exitCode !== 0) return { text: reply(made) }
+      return { text: `Created agent ${rest[0]}. ${await attach($, rest[0]!)}` }
     }
+    if (sub === 'attach' && rest.length === 1) return { text: await attach($, rest[0]!) }
     if (sub === 'detach' && rest.length === 0) {
       return { text: reply(await agent($, ['detach', ...(await session($))])) }
     }
