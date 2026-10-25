@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, de::Error as _};
 
@@ -10,14 +10,12 @@ use crate::{
         model::{Item, Tree, Turn},
         record::{Binding, Key},
         render::{Cut, WHOLE, item_line, item_text, searched},
-        rollup::{self, chunk_last, work_limit},
+        rollup::{self, chunk_last},
         store::Snapshot,
     },
     memory::{Coord, excerpt, flat},
 };
 
-/// The most the recent turns print, in characters.
-pub const RECENT: usize = 16_000;
 /// The most of a message's words the fold prints for a turn not summarised yet.
 pub const LINE: usize = 512;
 /// The most of a tool call's input a zoom lists, on one line.
@@ -53,25 +51,83 @@ impl Table {
     }
 }
 
-/// `[agent.view]` in `ai.toml`.
+/// `[agent.view]` in `ai.toml`: how many entries the view shows at each level, as [`Counts`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct View {
-    /// The most lines the fold prints; default 64.
     #[serde(deserialize_with = "positive")]
-    pub lines: Option<usize>,
+    pub total: Option<usize>,
+    #[serde(deserialize_with = "positive")]
+    pub latest: Option<usize>,
+    pub recent: Option<usize>,
+    pub single: Option<usize>,
 }
 
 impl View {
-    pub fn lines(&self) -> usize {
-        self.lines.unwrap_or(64)
+    /// The counts, defaults for those unset; an error naming the keys when `latest`, `recent`
+    /// and `single` add up to more than `total`.
+    pub fn counts(&self) -> Result<Counts> {
+        let d = Counts::default();
+        let c = Counts {
+            total: self.total.unwrap_or(d.total),
+            latest: self.latest.unwrap_or(d.latest),
+            recent: self.recent.unwrap_or(d.recent),
+            single: self.single.unwrap_or(d.single),
+        };
+        let sum = c.latest + c.recent + c.single;
+        if sum > c.total {
+            bail!(
+                "[agent.view]: latest + recent + single ({} + {} + {} = {sum}) is more than total \
+                 ({}).",
+                c.latest,
+                c.recent,
+                c.single,
+                c.total
+            );
+        }
+        Ok(c)
     }
 
     /// These settings, then `base`'s for those unset here.
     pub fn over(self, base: View) -> View {
         View {
-            lines: self.lines.or(base.lines),
+            total: self.total.or(base.total),
+            latest: self.latest.or(base.latest),
+            recent: self.recent.or(base.recent),
+            single: self.single.or(base.single),
         }
+    }
+}
+
+/// How many entries the view shows at each level. Each entry counts one: a turn shown item by
+/// item, a turn line, or a line over several turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Counts {
+    /// Entries in the view.
+    pub total: usize,
+    /// The newest turns, every item.
+    pub latest: usize,
+    /// The turns before them, message and final reply word for word.
+    pub recent: usize,
+    /// The fewest of the fold's newest turns kept on a line each.
+    pub single: usize,
+}
+
+impl Default for Counts {
+    fn default() -> Counts {
+        Counts {
+            total: 64,
+            latest: 1,
+            recent: 3,
+            single: 0,
+        }
+    }
+}
+
+impl Counts {
+    /// The entries left to the fold: `total` less the turns shown item by item.
+    fn fold(&self) -> usize {
+        self.total.saturating_sub(self.latest + self.recent)
     }
 }
 
@@ -90,15 +146,17 @@ you had. When two lines disagree, trust the later one.
 
 A turn is a message to you, from the user or an agent you started, and everything you did in \
 reply. Each message, reply, tool call and output in it is an item. Both count from 0: `12` is \
-turn 12, `12.0` its message, `12.3` its item 3. Each line is `id|text`, and an item's text continues on lines indented by two spaces.
+turn 12, `12.0` its message, `12.3` its item 3. Each line is `id|text`, and an item's text \
+continues on lines indented by two spaces. A turn shown item by item opens with its number on a \
+line of its own, and the ids under it leave the turn out: `.3` under `12` is `12.3`.
 
 Every turn appears once, with more detail the newer it is:
 - The oldest turns share lines: `8+4|` summarises turns 8 to 11.
 - Older turns have one line each: `12|` summarises turn 12.
 - Recent turns show the message and your final reply word for word, and summarise the work \
-between them: `44.1+7|` summarises items 1 to 7 of turn 44.
-- The newest turn shows every item: `60.3|` is item 3 of turn 60. Tool calls take one line \
-each; tool output shows only its size.
+between them: `.1+7|` under `44` summarises items 1 to 7 of turn 44.
+- The newest turns show every item: `.3|` under `60` is item 3 of turn 60. Tool calls take one \
+line each; tool output shows only its size.
 Summaries cite the item that holds a detail, as [12.3]. A line marked `(not summarised yet)` \
 has no summary built; zoom it to read what it covers.
 
@@ -126,15 +184,16 @@ enum Level {
 }
 
 /// The fold over `t` turns: from one line each, merges the most due aligned pair,
-/// due = (t - last)/2^l, oldest first on a tie, until the lines' `cost` fits `budget`.
-pub fn fold(t: u64, budget: usize, cost: impl Fn(Coord) -> usize) -> Vec<Coord> {
+/// due = (t - last)/2^l, oldest first on a tie, until at most `budget` lines are left or no pair
+/// is; the newest `keep` turns never merge.
+pub fn fold(t: u64, budget: usize, keep: u64) -> Vec<Coord> {
     let mut view: Vec<Coord> = (0..t).map(Coord::leaf).collect();
-    let mut size: usize = view.iter().map(|&c| cost(c)).sum();
-    while size > budget {
+    let open = t.saturating_sub(keep);
+    while view.len() > budget {
         let mut best: Option<(usize, f64)> = None;
         for (k, w) in view.windows(2).enumerate() {
             let (a, b) = (w[0], w[1]);
-            if a.l != b.l || a.i % 2 != 0 || b.i != a.i + 1 {
+            if a.l != b.l || a.i % 2 != 0 || b.i != a.i + 1 || b.end() > open {
                 continue;
             }
             let due = (t - (b.end() - 1)) as f64 / b.n() as f64;
@@ -146,7 +205,6 @@ pub fn fold(t: u64, budget: usize, cost: impl Fn(Coord) -> usize) -> Vec<Coord> 
             break;
         };
         let p = view[k].parent();
-        size = size + cost(p) - cost(view[k]) - cost(view[k + 1]);
         view.splice(k..k + 2, [p]);
     }
     view
@@ -199,16 +257,21 @@ pub struct Branch {
     /// Each turn's chunks, as the roll-up cuts it.
     cuts: Vec<Vec<Range<usize>>>,
     lines: HashMap<Key, String>,
-    /// The most lines its fold prints.
-    fold: usize,
+    /// How many entries its view shows at each level.
+    counts: Counts,
     /// Read for the session attached to it.
     attached: bool,
 }
 
 impl Branch {
-    /// The branch ending at item `tip`, none for no item, with `lines` by key, its fold in at most
-    /// `fold` lines.
-    pub fn new(tree: Tree, tip: Option<u64>, lines: HashMap<Key, String>, fold: usize) -> Branch {
+    /// The branch ending at item `tip`, none for no item, with `lines` by key, its view by
+    /// `counts`.
+    pub fn new(
+        tree: Tree,
+        tip: Option<u64>,
+        lines: HashMap<Key, String>,
+        counts: Counts,
+    ) -> Branch {
         let b = tip.map(|t| rollup::branch(&tree, t as usize));
         let (path, parts) = b.map_or_else(Default::default, |b| (b.seqs, b.parts));
         let (xs, cuts) = parts.into_iter().map(|p| (p.turn, p.chunks)).unzip();
@@ -218,33 +281,33 @@ impl Branch {
             xs,
             cuts,
             lines,
-            fold,
+            counts,
             attached: false,
         }
     }
 
-    /// The branch of `s` ending at item `tip`, with every line of the thread, its fold in at most
-    /// `fold` lines.
-    pub fn load(s: &Snapshot, tip: Option<u64>, fold: usize) -> Result<Branch> {
+    /// The branch of `s` ending at item `tip`, with every line of the thread, its view by
+    /// `counts`.
+    pub fn load(s: &Snapshot, tip: Option<u64>, counts: Counts) -> Result<Branch> {
         let lines = s
             .all_lines()?
             .into_iter()
             .map(|(k, l)| (k, l.text))
             .collect();
-        Ok(Branch::new(s.tree()?, tip, lines, fold))
+        Ok(Branch::new(s.tree()?, tip, lines, counts))
     }
 
     /// The branch of session `b`: to its tip, else to its graft, the thread's newest item when
     /// it was attached.
-    pub fn session(s: &Snapshot, b: &Binding, fold: usize) -> Result<Branch> {
-        let mut branch = Branch::load(s, b.tip.or(b.graft), fold)?;
+    pub fn session(s: &Snapshot, b: &Binding, counts: Counts) -> Result<Branch> {
+        let mut branch = Branch::load(s, b.tip.or(b.graft), counts)?;
         branch.attached = true;
         Ok(branch)
     }
 
-    /// The view: the instruction, then every turn once, oldest first, each at its
-    /// [`Branch::levels`].
-    pub fn view(&self, thread: &str) -> String {
+    /// The view, in the pieces a page may end between: the instruction, then every turn once,
+    /// oldest first, in the entries of [`Branch::levels`], each whole.
+    pub fn entries(&self, thread: &str) -> Vec<String> {
         let mut head = format!(
             "# Thread `{thread}`\n\n{}",
             INSTRUCTION.replace("{name}", thread)
@@ -255,62 +318,37 @@ impl Branch {
         if let Some(which) = self.which() {
             head += &format!("\n{which}\n");
         }
-        format!("{head}{}", section(TURNS, &self.list()))
+        let list = self.list();
+        if !list.is_empty() {
+            head += &format!("\n## {TURNS}\n");
+        }
+        std::iter::once(head)
+            .chain(list.into_iter().map(|e| e.join("\n") + "\n"))
+            .collect()
     }
 
     /// Each entry of the view with its level, oldest first: the fold over the turns before the
-    /// recent ones in at most its `fold` lines, the recent turns, then the newest turn.
+    /// recent ones in its share of the entries, the recent turns, then the newest turns.
     fn levels(&self) -> Vec<(Coord, Level)> {
         let n = self.xs.len();
-        let first = self.recent();
-        let fold = fold(first as u64, self.fold, |_| 1)
+        let latest = n.saturating_sub(self.counts.latest);
+        let recent = latest.saturating_sub(self.counts.recent);
+        let fold = fold(recent as u64, self.counts.fold(), self.counts.single as u64)
             .into_iter()
             .map(|c| match c.l {
                 0 => (c, Level::Older),
                 _ => (c, Level::Oldest),
             });
-        let turns = (first..n).map(|e| match e + 1 == n {
-            true => (Coord::leaf(e as u64), Level::Newest),
-            false => (Coord::leaf(e as u64), Level::Recent),
+        let turns = (recent..n).map(|e| match e < latest {
+            true => (Coord::leaf(e as u64), Level::Recent),
+            false => (Coord::leaf(e as u64), Level::Newest),
         });
         fold.chain(turns).collect()
     }
 
-    /// The first recent turn: back from the one before the newest, the most whole turns that
-    /// fit in [`RECENT`] characters at their [`Branch::most`].
-    fn recent(&self) -> usize {
-        let mut first = self.xs.len().saturating_sub(1);
-        let mut size = 0;
-        while first > 0 {
-            size += self.most(first - 1);
-            if size > RECENT {
-                break;
-            }
-            first -= 1;
-        }
-        first
-    }
-
-    /// The most characters turn `e` prints as a recent turn, whatever is built: its message and
-    /// final reply, and each work line at the most it is accepted at.
-    fn most(&self, e: usize) -> usize {
-        let x = &self.xs[e];
-        let ends: Vec<String> = (x.span.start..self.body(e))
-            .chain(x.reply)
-            .map(|p| self.item_line(p, Cut::WHOLE))
-            .collect();
-        let work: usize = self.cuts[e]
-            .iter()
-            .map(|r| {
-                let id = self.items_id(r).to_string();
-                id.chars().count() + 2 + work_limit(r.clone().map(|p| self.item(p)))
-            })
-            .sum();
-        chars(&ends) + work
-    }
-
-    /// The view's lines: the fold's, then each recent turn's and the newest turn's.
-    fn list(&self) -> Vec<String> {
+    /// The view's entries, each as its lines: the fold's, then each recent and newest turn's
+    /// under its number.
+    fn list(&self) -> Vec<Vec<String>> {
         let levels = self.levels();
         let fold: Vec<Coord> = levels
             .iter()
@@ -322,8 +360,8 @@ impl Branch {
             let e = c.i as usize;
             match level {
                 Level::Oldest | Level::Older => {}
-                Level::Recent => out.extend(self.recent_turn(e)),
-                Level::Newest => out.extend(self.newest(e)),
+                Level::Recent => out.push(headed(e, self.recent_turn(e))),
+                Level::Newest => out.push(headed(e, self.newest(e))),
             }
         }
         out
@@ -570,10 +608,10 @@ impl Branch {
         }
     }
 
-    /// The lines of fold `plan`: each built line, else what is built under it, else its
-    /// placeholder with a turn's message; the oldest of the fallbacks become placeholders while
-    /// over its `fold` lines.
-    fn render(&self, plan: &[Coord]) -> Vec<String> {
+    /// The lines of each entry of fold `plan`: its built line, else what is built under it,
+    /// else its placeholder with a turn's message; the oldest of the fallbacks become
+    /// placeholders while over the fold's share of the entries.
+    fn render(&self, plan: &[Coord]) -> Vec<Vec<String>> {
         let mut parts: Vec<Vec<String>> = plan
             .iter()
             .map(|&c| {
@@ -584,7 +622,7 @@ impl Branch {
             .collect();
         let mut n: usize = parts.iter().map(Vec::len).sum();
         for (part, &c) in parts.iter_mut().zip(plan) {
-            if n <= self.fold {
+            if n <= self.counts.fold() {
                 break;
             }
             if part.len() > 1 {
@@ -592,7 +630,7 @@ impl Branch {
                 *part = vec![self.missing(c, true)];
             }
         }
-        parts.concat()
+        parts
     }
 
     /// Line `c`, else the lines built under it, else its placeholder: with `messages`, a turn's
@@ -689,16 +727,15 @@ impl Branch {
     }
 }
 
-/// The characters `lines` take, one newline each.
-fn chars(lines: &[String]) -> usize {
-    lines.iter().map(|l| l.chars().count() + 1).sum()
-}
-
-fn section(title: &str, lines: &[String]) -> String {
-    match lines.is_empty() {
-        true => String::new(),
-        false => format!("\n## {title}\n{}\n", lines.join("\n")),
-    }
+/// Turn `e`'s lines under its number on a line of its own, their ids without the turn.
+fn headed(e: usize, lines: Vec<String>) -> Vec<String> {
+    let turn = format!("{e}.");
+    std::iter::once(e.to_string())
+        .chain(lines.into_iter().map(|l| match l.strip_prefix(&turn) {
+            Some(rest) => format!(".{rest}"),
+            None => l,
+        }))
+        .collect()
 }
 
 #[cfg(test)]
@@ -751,12 +788,21 @@ mod tests {
     }
 
     fn branch(items: Vec<Item>, lines: &[(u32, u64, &str)]) -> Branch {
+        counted(items, lines, Counts::default())
+    }
+
+    fn counted(items: Vec<Item>, lines: &[(u32, u64, &str)], counts: Counts) -> Branch {
         let tip = items.len().checked_sub(1).map(|t| t as u64);
         let lines = lines
             .iter()
             .map(|&(level, last, t)| (Key { level, last }, t.to_string()))
             .collect();
-        Branch::new(Tree::new(items), tip, lines, View::default().lines())
+        Branch::new(Tree::new(items), tip, lines, counts)
+    }
+
+    /// The characters `lines` take, one newline each.
+    fn chars(lines: &[String]) -> usize {
+        lines.iter().map(|l| l.chars().count() + 1).sum()
     }
 
     fn short(i: usize) -> String {
@@ -781,22 +827,25 @@ mod tests {
     #[test]
     fn the_fold_merges_the_most_due_pair_first() {
         let names = |v: Vec<Coord>| -> Vec<String> { v.iter().map(|c| c.to_string()).collect() };
+        assert_eq!(names(fold(10, 6, 0)), ["0+4", "4+2", "6", "7", "8", "9"]);
         assert_eq!(
-            names(fold(10, 600, |_| 100)),
-            ["0+4", "4+2", "6", "7", "8", "9"]
-        );
-        assert_eq!(
-            names(fold(10, 300, |_| 100)),
+            names(fold(10, 3, 0)),
             ["0+4", "4+4", "8+2"],
             "due counts from a pair's last turn: 8-9 merges before 0-7"
         );
-        assert_eq!(names(fold(10, 1000, |_| 100)).len(), 10);
+        assert_eq!(names(fold(10, 10, 0)).len(), 10);
         assert_eq!(
-            names(fold(3, 0, |_| 100)),
+            names(fold(3, 0, 0)),
             ["0+2", "2"],
             "stops when no pair is left"
         );
-        assert!(fold(0, 0, |_| 100).is_empty());
+        assert!(fold(0, 0, 0).is_empty());
+        assert_eq!(
+            names(fold(10, 3, 2)),
+            ["0+8", "8", "9"],
+            "the newest two never merge"
+        );
+        assert_eq!(names(fold(10, 2, 2)), ["0+8", "8", "9"]);
     }
 
     #[test]
@@ -815,7 +864,7 @@ mod tests {
 
     /// The fold over every closed turn of `b`, rendered.
     fn folded(b: &Branch) -> Vec<String> {
-        b.render(&fold(b.closed(), b.fold, |_| 1))
+        b.render(&fold(b.closed(), b.counts.fold(), 0)).concat()
     }
 
     #[test]
@@ -845,13 +894,17 @@ mod tests {
 
     #[test]
     fn the_fold_keeps_to_its_lines() {
-        // 66 closed turns: the two oldest pairs merge, 0+2 and 2+2.
-        let b = branch(
+        // 66 closed turns in 64 lines: the two oldest pairs merge, 0+2 and 2+2.
+        let b = counted(
             chain(&"ut".repeat(67), short),
             &[(2, 3, "first two"), (1, 5, "third"), (1, 131, "newest")],
+            Counts {
+                total: 68,
+                ..Counts::default()
+            },
         );
         let fold = folded(&b);
-        assert_eq!(fold.len(), b.fold);
+        assert_eq!(fold.len(), b.counts.fold());
         assert_eq!(
             fold[..3],
             [
@@ -910,7 +963,8 @@ mod tests {
     }
 
     /// The spec's rule on `b`: its entries, and the ids of its lines, cover turns 0..N once
-    /// each, in order, and their detail never decreases toward the newest.
+    /// each, in order, their detail never decreases toward the newest, and each level holds its
+    /// count.
     fn check(b: &Branch) {
         let n = b.xs.len() as u64;
         let levels = b.levels();
@@ -921,12 +975,27 @@ mod tests {
         }
         assert_eq!(at, n, "{levels:?}");
         assert!(levels.windows(2).all(|w| w[0].1 <= w[1].1), "{levels:?}");
-        let newest = levels.iter().filter(|(_, l)| *l == Level::Newest).count();
-        assert_eq!(newest, usize::from(n > 0));
+        let count = |level| levels.iter().filter(|(_, l)| *l == level).count();
+        let latest = b.counts.latest.min(n as usize);
+        assert_eq!(count(Level::Newest), latest);
+        assert_eq!(
+            count(Level::Recent),
+            b.counts.recent.min(n as usize - latest)
+        );
 
         let mut last: Option<(Range<u64>, bool)> = None;
-        for l in b.list() {
-            let (r, items) = match Id::parse(l.split('|').next().unwrap()).unwrap() {
+        let mut head: Option<String> = None;
+        for l in b.list().concat() {
+            let id = l.split('|').next().unwrap();
+            if !l.contains('|') {
+                head = Some(l.clone());
+                continue;
+            }
+            let id = match id.starts_with('.') {
+                true => format!("{}{id}", head.as_ref().expect("an item under its turn")),
+                false => id.to_string(),
+            };
+            let (r, items) = match Id::parse(&id).unwrap() {
                 Id::Turns { first, n } => (first..first + n, false),
                 Id::Items { turn, .. } => (turn..turn + 1, true),
             };
@@ -962,45 +1031,80 @@ mod tests {
             ),
             branch(chain("ueu", &huge), &[]),
             branch(chain(&"ut".repeat(67), short), &[(2, 3, "first two")]),
+            counted(
+                chain(&"ue".repeat(40), short),
+                &[],
+                Counts {
+                    total: 12,
+                    latest: 2,
+                    recent: 4,
+                    single: 5,
+                },
+            ),
         ] {
             check(&b);
         }
     }
 
     #[test]
-    fn recent_turns_fill_their_budget_with_whole_turns_back_from_the_newest() {
-        let text = padded(|i| if i % 2 == 0 { 5_000 } else { 0 });
-        let b = branch(chain(&"ue".repeat(10), text), &[]);
+    fn each_level_holds_its_count_back_from_the_newest() {
+        let counts = Counts {
+            total: 10,
+            latest: 2,
+            recent: 3,
+            single: 3,
+        };
+        let levels = |turns: usize| -> Vec<(String, Level)> {
+            counted(chain(&"ue".repeat(turns), short), &[], counts)
+                .levels()
+                .into_iter()
+                .map(|(c, l)| (c.to_string(), l))
+                .collect()
+        };
+        let names = |v: &[(String, Level)]| v.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+        let all = levels(32);
+        assert_eq!(all.len(), counts.total);
         assert_eq!(
-            b.recent(),
-            6,
-            "three turns of about 5 KB fit in 16 KB, a fourth does not"
-        );
-        let levels: Vec<Level> = b.levels().into_iter().map(|(_, l)| l).collect();
-        assert_eq!(
-            levels[5..],
+            names(&all),
             [
-                Level::Older,
-                Level::Recent,
-                Level::Recent,
-                Level::Recent,
-                Level::Newest
+                "0+16", "16+8", "24", "25", "26", "27", "28", "29", "30", "31"
             ]
+            .map(String::from),
+            "{all:?}"
         );
-
-        let text = padded(|i| match i {
-            14 => 20_000,
-            _ if i % 2 == 0 => 100,
-            _ => 0,
-        });
-        let b = branch(chain(&"ue".repeat(10), text), &[]);
+        let at = |v: &[(String, Level)], c: &str| v.iter().find(|(n, _)| n == c).unwrap().1;
         assert_eq!(
-            b.recent(),
-            8,
-            "a turn too big stops the recent turns: the ones before it stay older"
+            at(&all, "26"),
+            Level::Older,
+            "the fold keeps its newest three single"
         );
-        let huge = padded(|i| if i == 0 { 20_000 } else { 0 });
-        assert_eq!(branch(chain("ueu", huge), &[]).recent(), 1);
+        assert_eq!(at(&all, "27"), Level::Recent);
+        assert_eq!(at(&all, "29"), Level::Recent);
+        assert_eq!(at(&all, "30"), Level::Newest);
+        assert_eq!(at(&all, "31"), Level::Newest);
+
+        let few = levels(4);
+        assert_eq!(
+            few.iter().map(|(_, l)| *l).collect::<Vec<_>>(),
+            [Level::Recent, Level::Recent, Level::Newest, Level::Newest],
+            "a short thread fills the newest levels first"
+        );
+        assert!(levels(0).is_empty());
+    }
+
+    #[test]
+    fn counts_over_the_total_are_an_error_naming_the_keys() {
+        let view = View {
+            total: Some(5),
+            single: Some(2),
+            ..View::default()
+        };
+        let err = view.counts().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "[agent.view]: latest + recent + single (1 + 3 + 2 = 6) is more than total (5)."
+        );
+        assert_eq!(View::default().counts().unwrap(), Counts::default());
     }
 
     #[test]
@@ -1009,23 +1113,24 @@ mod tests {
         let text = padded(|i| if i == 0 { 9_000 } else { 0 });
         let spec = "ucrtcreueu";
         let b = branch(chain(spec, &text), &[(0, 5, "ran it")]);
-        assert_eq!(b.recent(), 0);
         let turn = b.recent_turn(0);
         assert_eq!(ids(&turn), ["0.0", "0.1+5", "0.6"]);
         assert_eq!(turn[0], format!("0.0|user: {}", text(0)), "word for word");
         assert_eq!(turn[1], "0.1+5|ran it");
         assert_eq!(turn[2], "0.6|ai: m6");
-        assert!(chars(&turn) <= b.most(0));
+        assert_eq!(
+            section_lines(&b.entries("dev").concat(), TURNS)[..4],
+            [
+                "0",
+                &format!(".0|user: {}", text(0)),
+                ".1+5|ran it",
+                ".6|ai: m6"
+            ],
+            "under its number"
+        );
 
         let b = branch(chain(spec, &text), &[]);
         assert_eq!(b.recent_turn(0)[1], "0.1+5|(not summarised yet)");
-        assert!(chars(&b.recent_turn(0)) <= b.most(0));
-        let longest = "w".repeat(work_limit(&chain(spec, &text)[1..6]));
-        let b = branch(chain(spec, &text), &[(0, 5, &longest)]);
-        assert!(
-            chars(&b.recent_turn(0)) <= b.most(0),
-            "a work line at its limit fits its turn's most"
-        );
 
         assert_eq!(
             branch(chain("uctuct", short), &[]).recent_turn(0),
@@ -1063,32 +1168,26 @@ mod tests {
 
     #[test]
     fn the_view_needs_the_fold_and_recent_work_lines_whatever_is_built() {
-        // 30 turns of 5 items, messages of 3 KB: turns 25-28 recent, 29 the newest.
-        let text = padded(|i| if i % 5 == 0 { 3_000 } else { 0 });
-        let items = chain(&"ucrte".repeat(30), &text);
+        // 30 turns of 5 items: 0-25 in the fold, one line each; 26-28 recent; 29 the newest.
+        let items = chain(&"ucrte".repeat(30), short);
         let b = branch(items.clone(), &[]);
-        assert_eq!(b.recent(), 25);
         let key = |level, last| Key { level, last };
-        let want: Vec<Key> = (0..25)
+        let want: Vec<Key> = (0..26)
             .map(|e| key(1, 5 * e + 4))
-            .chain((25..29).map(|e| key(0, 5 * e + 3)))
+            .chain((26..29).map(|e| key(0, 5 * e + 3)))
             .collect();
         assert_eq!(b.needed(), want, "the newest turn needs no line");
 
-        let last = |k: Key| k.last as usize;
-        let built = want
-            .iter()
-            .map(|&k| (k, "w".repeat(work_limit(&items[last(k) - 2..=last(k)]))))
-            .collect();
+        let built = want.iter().map(|&k| (k, "w".repeat(2_000))).collect();
         let tip = Some(items.len() as u64 - 1);
-        let b = Branch::new(Tree::new(items), tip, built, View::default().lines());
+        let built = Branch::new(Tree::new(items), tip, built, Counts::default());
         assert_eq!(
-            b.recent(),
-            25,
+            built.levels(),
+            b.levels(),
             "what is built never moves a turn between levels"
         );
-        assert!(b.needed().is_empty());
-        check(&b);
+        assert!(built.needed().is_empty());
+        check(&built);
     }
 
     #[test]
@@ -1101,8 +1200,9 @@ mod tests {
             branch(chain(&spec, big), &as_refs(&lines)),
             branch(chain(&spec, big), &[]),
         ] {
-            let v = b.view("dev");
-            let most = b.fold * 600 + RECENT + chars(&b.newest(3000)) + 4_000;
+            let v = b.entries("dev").concat();
+            let recent: usize = (2997..3000).map(|e| chars(&b.recent_turn(e))).sum();
+            let most = b.counts.fold() * 600 + recent + chars(&b.newest(3000)) + 4_000;
             assert!(v.chars().count() <= most, "{}", v.chars().count());
             assert!(v.starts_with("# Thread `dev`\n\nThis is the thread `dev`"));
             assert_eq!(v.matches("\n## ").count(), 1, "one list");
@@ -1111,13 +1211,32 @@ mod tests {
                 .iter()
                 .filter(|(_, l)| *l <= Level::Older)
                 .count();
-            assert!(fold > 10 && fold <= b.fold, "{fold}");
+            assert_eq!(fold, b.counts.fold());
             let list = section_lines(&v, TURNS);
-            assert!(list.last().unwrap().starts_with("3000.0|user: "));
+            assert_eq!(list[list.len() - 2], "3000");
+            assert!(list.last().unwrap().starts_with(".0|user: "));
             check(&b);
         }
-        let empty = branch(Vec::new(), &[]).view("dev");
+        let empty = branch(Vec::new(), &[]).entries("dev").concat();
         assert!(empty.ends_with("The thread holds nothing yet.\n"));
+    }
+
+    #[test]
+    fn each_entry_is_a_whole_turn_or_fold_line() {
+        let b = branch(chain(&"ucrte".repeat(30), short), &[]);
+        let entries = b.entries("dev");
+        assert!(entries[0].starts_with("# Thread `dev`\n"));
+        assert!(
+            entries[0].ends_with("\n## Turns\n"),
+            "the instruction is one entry"
+        );
+        let turns = &entries[1..];
+        assert_eq!(turns.len(), 26 + 3 + 1);
+        for (e, t) in (26..30).zip(&turns[26..]) {
+            assert!(t.starts_with(&format!("{e}\n.0|user: ")), "{t}");
+            assert_eq!(t.matches("\n.4|").count(), 1, "turn {e} whole: {t}");
+        }
+        assert!(turns[..26].iter().all(|t| !t.starts_with('.')));
     }
 
     #[test]
@@ -1129,10 +1248,10 @@ mod tests {
                 Tree::new(items.clone()),
                 Some(tip),
                 HashMap::new(),
-                View::default().lines(),
+                Counts::default(),
             );
             b.attached = attached;
-            b.view("dev")
+            b.entries("dev").concat()
         };
         let at = "written by test session s at 1970-01-01 00:00.";
         assert!(view(4, false).contains(&format!(
@@ -1142,7 +1261,8 @@ mod tests {
         assert!(view(3, true).contains("follows your session's, which ends at 1.1, "));
         assert!(
             !branch(chain("ututu", short), &[])
-                .view("dev")
+                .entries("dev")
+                .concat()
                 .contains("branches.")
         );
     }

@@ -75,8 +75,23 @@ pub fn pages(text: &str, max: u64) -> Vec<&str> {
     out
 }
 
-/// Prints `text`: whole when `whole` or when it fits one part, else in [`PART`]-byte parts,
-/// each headed by `command`: the first here, all of them saved in `views` for [`PAGE`].
+/// `entries` in parts of at most `max` bytes, each cut only between entries: an entry larger
+/// than `max` is a part of its own, whole.
+pub fn packed(entries: &[String], max: u64) -> Vec<String> {
+    let mut out = vec![String::new()];
+    for e in entries {
+        let last = out.last_mut().expect("a part");
+        if !last.is_empty() && (last.len() + e.len()) as u64 > max {
+            out.push(String::new());
+        }
+        out.last_mut().expect("a part").push_str(e);
+    }
+    out
+}
+
+/// Prints `text`: whole when `whole` or when it fits one part, else in [`PART`]-byte parts
+/// ([`pages`]), each headed by `command`: the first here, all of them saved in `views` for
+/// [`PAGE`].
 pub fn print(
     out: &mut dyn Write,
     views: &Path,
@@ -88,8 +103,36 @@ pub fn print(
         true => vec![text],
         false => pages(text, PART),
     };
+    parted(out, views, command, &parts)
+}
+
+/// Prints `entries` joined, as [`print`] does `text`, but in parts cut only between entries
+/// ([`packed`]).
+pub fn print_entries(
+    out: &mut dyn Write,
+    views: &Path,
+    command: &str,
+    entries: &[String],
+    whole: bool,
+) -> Result<()> {
+    let parts = match whole {
+        true => vec![entries.concat()],
+        false => packed(entries, PART),
+    };
+    parted(out, views, command, &parts)
+}
+
+/// Prints `parts`: the one alone, else each headed by `command`, the first here, all of them
+/// saved in `views`.
+fn parted(
+    out: &mut dyn Write,
+    views: &Path,
+    command: &str,
+    parts: &[impl AsRef<str>],
+) -> Result<()> {
     let n = parts.len();
     if n == 1 {
+        let text = parts[0].as_ref();
         writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(text))?;
         return Ok(());
     }
@@ -97,6 +140,7 @@ pub fn print(
         .iter()
         .enumerate()
         .map(|(k, p)| {
+            let p = p.as_ref();
             let body = p.strip_suffix('\n').unwrap_or(p);
             format!("{}\n{body}\n", header(command, k + 1, n, ""))
         })
@@ -377,6 +421,41 @@ mod tests {
         assert_eq!(
             page(&none, "1:2").unwrap_err().to_string(),
             "View 1 is gone: run the command again."
+        );
+    }
+
+    #[test]
+    fn a_cut_inside_an_entry_moves_to_its_start() {
+        let turn = "12\n.0|user: go\n.1|ai: done\n".to_string();
+        let entries = ["a|one\n".to_string(), "b|two\n".to_string(), turn.clone()];
+        let parts = packed(&entries, 20);
+        assert_eq!(parts, ["a|one\nb|two\n", turn.as_str()]);
+        assert_eq!(parts.concat(), entries.concat());
+    }
+
+    #[test]
+    fn an_entry_over_the_part_size_gets_a_part_of_its_own() {
+        let big = format!("7\n.0|user: {}\n", "x".repeat(50));
+        let entries = ["a|one\n".to_string(), big.clone(), "b|two\n".to_string()];
+        assert_eq!(packed(&entries, 20), ["a|one\n", big.as_str(), "b|two\n"]);
+        assert_eq!(packed(std::slice::from_ref(&big), 20), [big.as_str()]);
+        assert_eq!(packed(&[], 20), [""]);
+    }
+
+    #[test]
+    fn printed_entries_page_between_entries() {
+        let tmp = TempDir::new().unwrap();
+        let views = &tmp.path().join("views");
+        let a = format!("1\n.0|{}\n", "a".repeat(12_000));
+        let b = format!("2\n.0|{}\n.1|{}\n", "b".repeat(6_000), "c".repeat(6_000));
+        let entries = [a.clone(), b.clone()];
+        let print = |whole| printed(|o| super::print_entries(o, views, "ai x", &entries, whole));
+        assert_eq!(print(true), entries.concat());
+        let first = print(false);
+        assert_eq!(first, format!("ai x, part 1 of 2.\n{a}Next: ai page 1:2\n"));
+        assert_eq!(
+            page(views, "1:2").unwrap(),
+            format!("ai x, part 2 of 2.\n{b}")
         );
     }
 

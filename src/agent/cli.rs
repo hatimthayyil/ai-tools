@@ -25,7 +25,7 @@ use crate::{
         summarise::{Built, OnFail, build, dry_run, first, rebuild, rewrite, summarise},
         sync::Synced,
         upgrade,
-        view::Branch,
+        view::{Branch, Counts},
     },
     config::FILE,
     file::{self, AtPath},
@@ -481,30 +481,35 @@ fn row(t: &ThreadInfo) -> String {
     )
 }
 
-/// How many lines the view's fold prints where `store` was found: `[agent.view] lines`.
-fn fold_lines(store: &Store) -> Result<usize> {
-    Ok(store.settings()?.agent.view.lines())
+/// How many entries the view shows at each level where `store` was found: `[agent.view]`.
+fn counts(store: &Store) -> Result<Counts> {
+    store.settings()?.agent.view.counts()
 }
 
 /// The branch a command reads in `s`: session `c`'s (to its newest item, else its graft), else
-/// the thread's newest, its fold in at most `fold` lines; `None` while it holds no item.
-fn read_branch(s: &Snapshot, c: Option<&Current>, fold: usize) -> Result<Option<Branch>> {
+/// the thread's newest, its view by `counts`; `None` while it holds no item.
+fn read_branch(s: &Snapshot, c: Option<&Current>, counts: Counts) -> Result<Option<Branch>> {
     match c {
         Some(c) => match s.binding(&c.harness, &c.session)? {
-            Some(b) if b.tip.or(b.graft).is_some() => Ok(Some(Branch::session(s, &b, fold)?)),
+            Some(b) if b.tip.or(b.graft).is_some() => Ok(Some(Branch::session(s, &b, counts)?)),
             _ => Ok(None),
         },
         None => match s.tips()?.last() {
-            Some(&tip) => Ok(Some(Branch::load(s, Some(tip), fold)?)),
+            Some(&tip) => Ok(Some(Branch::load(s, Some(tip), counts)?)),
             None => Ok(None),
         },
     }
 }
 
-/// The view of the branch `c` reads in snapshot `s`, its fold in at most `fold` lines; `None`
-/// while that branch holds no item.
-fn view_in(t: &Thread, s: &Snapshot, c: Option<&Current>, fold: usize) -> Result<Option<String>> {
-    Ok(read_branch(s, c, fold)?.map(|b| b.view(t.name())))
+/// The view of the branch `c` reads in snapshot `s`, by `counts`, as its [`Branch::entries`];
+/// `None` while that branch holds no item.
+fn view_in(
+    t: &Thread,
+    s: &Snapshot,
+    c: Option<&Current>,
+    counts: Counts,
+) -> Result<Option<Vec<String>>> {
+    Ok(read_branch(s, c, counts)?.map(|b| b.entries(t.name())))
 }
 
 /// The thread's latest snapshot, once the lines the view of `branch` (read in it) needs are
@@ -662,10 +667,10 @@ fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let t = store.existing(name)?;
     let dir = worktree(&store, cwd, name)?;
     let instructions = instructions(&store, name)?;
-    let fold = fold_lines(&store)?;
+    let counts = counts(&store)?;
     ready(&store, &t, |s| {
         s.graft()?
-            .map(|g| Branch::load(s, Some(g), fold))
+            .map(|g| Branch::load(s, Some(g), counts))
             .transpose()
     })?;
     let session = uuid()?;
@@ -819,10 +824,10 @@ fn compact_session(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCo
     let Some((store, t, c)) = synced(cwd, s)? else {
         return not_attached();
     };
-    let fold = fold_lines(&store)?;
-    let snap = ready(&store, &t, |s| read_branch(s, Some(&c), fold))?;
-    if let Some(view) = view_in(&t, &snap, Some(&c), fold)? {
-        write!(out, "{view}")?;
+    let counts = counts(&store)?;
+    let snap = ready(&store, &t, |s| read_branch(s, Some(&c), counts))?;
+    if let Some(view) = view_in(&t, &snap, Some(&c), counts)? {
+        write!(out, "{}", view.concat())?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -837,14 +842,14 @@ fn latest(store: &Store, t: &Thread, c: Option<&Current>) -> Result<Snapshot> {
 
 /// The thread view `ai view` prints after the memory, with the thread's name: [`pick`]'s
 /// thread, of the session's branch (synced first) when it is attached there, else of the
-/// newest. Unnamed, an agent session reads only the thread it is attached to, and outside a
-/// project with threads there is none. `None` too while the branch holds no item. It writes no
-/// line.
+/// newest, as its [`Branch::entries`]. Unnamed, an agent session reads only the thread it is
+/// attached to, and outside a project with threads there is none. `None` too while the branch
+/// holds no item. It writes no line.
 pub fn thread_view(
     cwd: &Path,
     name: Option<String>,
     s: Session,
-) -> Result<Option<(String, String)>> {
+) -> Result<Option<(Vec<String>, String)>> {
     let c = s.current();
     if name.is_none() {
         let Some(store) = Store::find(cwd)? else {
@@ -860,7 +865,7 @@ pub fn thread_view(
     }
     let (store, t, c) = pick(cwd, name, c, "ai view <name>")?;
     let snap = latest(&store, &t, c.as_ref())?;
-    let view = view_in(&t, &snap, c.as_ref(), fold_lines(&store)?)?;
+    let view = view_in(&t, &snap, c.as_ref(), counts(&store)?)?;
     Ok(view.map(|v| (v, t.name().to_string())))
 }
 
@@ -876,12 +881,12 @@ fn view(
 ) -> Result<ExitCode> {
     let (store, t, session) = pick(cwd, name, s.current(), "ai agent view <name>")?;
     let snap = latest(&store, &t, session.as_ref())?;
-    let Some(text) = view_in(&t, &snap, session.as_ref(), fold_lines(&store)?)? else {
+    let Some(entries) = view_in(&t, &snap, session.as_ref(), counts(&store)?)? else {
         writeln!(out, "Thread {} holds nothing yet.", t.name())?;
         return Ok(ExitCode::SUCCESS);
     };
     let command = format!("ai agent view {}", t.name());
-    page::print(out, &page::cache()?, &command, &text, terminal)?;
+    page::print_entries(out, &page::cache()?, &command, &entries, terminal)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -903,7 +908,7 @@ fn zoom(
         );
     };
     let snap = t.snapshot()?;
-    let branch = read_branch(&snap, session.as_ref(), fold_lines(&store)?)?;
+    let branch = read_branch(&snap, session.as_ref(), counts(&store)?)?;
     let Some(text) = branch.and_then(|b| b.zoom(parsed, tool_output)) else {
         bail!("This branch has no {parsed}.");
     };
@@ -944,7 +949,7 @@ fn grep(
     let several = picked.len() > 1;
     let (mut hits, mut agents) = (Vec::new(), Vec::new());
     for (store, t, session) in &picked {
-        if let Some(b) = read_branch(&t.snapshot()?, session.as_ref(), fold_lines(store)?)? {
+        if let Some(b) = read_branch(&t.snapshot()?, session.as_ref(), counts(store)?)? {
             hits.extend(b.grep(&re, tool_output).into_iter().map(|h| match several {
                 true => format!("{} {}", t.name(), h.line),
                 false => h.line,
@@ -1008,7 +1013,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
             let id = Id::parse(v).with_context(|| {
                 format!("'{v}' is not an id. Ids look like 12 (a turn), 8+4 (turns 8 to 11) or 12.1+7 (the work of turn 12).")
             })?;
-            let key = read_branch(&t.snapshot()?, session.as_ref(), fold_lines(&store)?)?
+            let key = read_branch(&t.snapshot()?, session.as_ref(), counts(&store)?)?
                 .and_then(|b| b.line_key(id))
                 .with_context(|| {
                     format!("{id} is not a line on this branch. Lines are closed turns (12), aligned nodes over closed turns (8+4) and their work (12.1+7).")

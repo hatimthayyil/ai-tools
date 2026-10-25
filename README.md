@@ -124,8 +124,11 @@ name = "widget"    # its name; default the directory's
 [chat]
 background = true  # summarise in the background after each turn
 
-[agent.view]
-lines = 64         # the most lines the view folds the older turns into
+[agent.view]       # how many entries `ai agent view` shows; a turn or a line is one
+total = 64         # entries in all
+latest = 1         # the newest turns, every item
+recent = 3         # the turns before them, message and final reply word for word, work summarised
+single = 0         # the fewest older turns kept on a line each; shared lines take the rest
 
 [summariser]       # what writes every summary: agents, memory, notes
 backend = "claude" # claude -p; the only backend yet

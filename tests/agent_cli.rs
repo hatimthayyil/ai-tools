@@ -424,12 +424,21 @@ fn turn_ends(s: &Sandbox, name: &str) -> Vec<u64> {
         .collect()
 }
 
-/// The lines of one section of a view.
-fn section<'v>(view: &'v str, title: &str) -> Vec<&'v str> {
+/// The lines of one section of a view, each item under a turn's number with its whole id.
+fn section(view: &str, title: &str) -> Vec<String> {
     let Some((_, rest)) = view.split_once(&format!("\n## {title}\n")) else {
         return Vec::new();
     };
-    rest.split("\n\n## ").next().unwrap().lines().collect()
+    let mut turn = "";
+    let mut out = Vec::new();
+    for l in rest.split("\n\n## ").next().unwrap().lines() {
+        match l {
+            _ if !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()) => turn = l,
+            _ if l.starts_with('.') => out.push(format!("{turn}{l}")),
+            _ => out.push(l.to_string()),
+        }
+    }
+    out
 }
 
 #[test]
@@ -662,6 +671,12 @@ fn compact_session_syncs_and_prints_the_view() {
         ],
         "the newest turn, ended, shows every item"
     );
+    assert!(
+        view.ends_with(
+            "\n3\n.0|user: Show me the diff instead.\n.1|ai: The diff changes the test filter only.\n"
+        ),
+        "under its number: {view}"
+    );
     assert_eq!(view.matches("\n## ").count(), 1, "one list: {view}");
 }
 
@@ -740,15 +755,16 @@ fn view_prints_a_thread_in_parts_from_one_state() {
         "Attached to long-one.\n",
     );
     let ends = turn_ends(&s, "long-one");
-    let text = |k: usize| format!("{k} {}", "w".repeat(500));
+    let text = |k: usize| format!("{k} {}", "w".repeat(700));
     for (k, &end) in ends.iter().enumerate() {
         s.line("long-one", 1, end, &text(k));
     }
-    // 99 closed turns fold to 64 lines: the 20 oldest in nodes of 4, the next 40 in pairs.
-    for i in 0..35 {
+    // The 96 turns before the recent three fold to 60 lines: the 24 oldest in nodes of 4, the
+    // next 36 in pairs.
+    for i in 0..30 {
         s.line("long-one", 2, ends[2 * i + 1], &text(i));
     }
-    for i in 0..5 {
+    for i in 0..6 {
         s.line("long-one", 3, ends[4 * i + 3], &text(i));
     }
     let o = s.ai(&["compact-session", "--session", "s-2"]);

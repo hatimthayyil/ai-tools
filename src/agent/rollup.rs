@@ -51,11 +51,6 @@ fn target(size: usize) -> usize {
     (size / RATIO).clamp(WORDS, MAX_WORDS)
 }
 
-/// The most characters a work line over `items` is accepted at.
-pub fn work_limit<'a>(items: impl IntoIterator<Item = &'a Item>) -> usize {
-    limit(target(items.into_iter().map(weight).sum()))
-}
-
 /// An item as a call reads it, without its id or the indent of its continued lines.
 fn bare(rendered: &str) -> String {
     let text = rendered.split_once('|').map_or(rendered, |(_, t)| t);

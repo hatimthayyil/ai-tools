@@ -22,4 +22,4 @@ pub use summarise::{
     Built, Config, Dry, DryLine, OnFail, Rewrote, build, dry_run, rebuild, rewrite, summarise,
 };
 pub use sync::{Attached, Synced, read, sync};
-pub use view::{Table, View};
+pub use view::{Counts, Table, View};

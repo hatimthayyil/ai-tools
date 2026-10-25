@@ -11,7 +11,8 @@ use clap::Args;
 use crate::{agent, config::Settings, memory, page};
 
 /// `ai view`: the memory's whole view, read as `ai memory view`, then a thread's view
-/// (`agent::thread_view`); whole on a terminal, else in parts read on with `ai page`.
+/// (`agent::thread_view`); whole on a terminal, else in parts read on with `ai page`, cut
+/// between memory lines and thread entries.
 #[derive(Args, Debug)]
 pub struct Cli {
     #[arg(help = agent::AGENT_HELP)]
@@ -61,17 +62,21 @@ impl Cli {
             out.write_all(&text)?;
             return Ok(woke);
         }
-        let mut text = String::from_utf8(text).context("The memory's view is not UTF-8.")?;
+        let text = String::from_utf8(text).context("The memory's view is not UTF-8.")?;
+        let mut entries: Vec<String> = text.split_inclusive('\n').map(String::from).collect();
         let mut command = "ai view".to_string();
         if let Some((view, name)) = thread {
-            text += &format!("\n{view}");
+            entries.extend(view.into_iter().enumerate().map(|(k, e)| match k {
+                0 => format!("\n{e}"),
+                _ => e,
+            }));
             command += &format!(" {name}");
         }
-        page::print(
+        page::print_entries(
             out,
             &page::cache()?,
             &command,
-            &text,
+            &entries,
             self.whole || terminal,
         )?;
         Ok(ExitCode::SUCCESS)
