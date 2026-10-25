@@ -15,7 +15,9 @@ neighbor into the line above. An agent can zoom a line back into the
 lines it came from, but picks where to zoom from your words alone:
 whatever your line does not name, every line above loses. Name each
 item with the words an agent would look for: project, repo, file,
-command, commit, person, decision.
+command, person, decision. Leave out commit hashes, agent and session
+ids, test counts, and push or merge status, unless the line is about
+them: zoom recovers them.
 
 Spend the space by value:
 
