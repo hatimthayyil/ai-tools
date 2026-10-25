@@ -2,10 +2,9 @@ use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
     agent::{
-        id::Id,
         model::{Item, Kind, Place, Tree, Turn, turns},
         record::{Key, LineKind},
-        render::{Cut, clip, item_line},
+        render::{Cut, clip, item_text},
     },
     memory::{WORDS, flat, limit, ruler},
 };
@@ -30,9 +29,10 @@ const CUT: Cut = Cut {
     output: Some(CLIP),
 };
 
-/// The item at `place` as a call reads it: its line, cut by [`CUT`], and a newline.
+/// The item at `place` as a call reads it: `i|kind: text`, numbered within its turn so the call
+/// reads the same wherever the turn sits, cut by [`CUT`], and a newline.
 pub fn render(place: Place, item: &Item) -> String {
-    item_line(Id::item(place), item, CUT) + "\n"
+    format!("{}|{}\n", place.item, item_text(item, CUT))
 }
 
 /// What an item adds to what a line covers: the AI's own words, and [`CALL`] for a tool call.
@@ -395,14 +395,18 @@ impl Rollup {
         }
     }
 
-    /// Chunk line `key` as a turn's input lists it: `t.i+n|text`.
+    /// Chunk line `key` as a turn's input lists it: `i+n|text`, numbered within its turn like
+    /// [`render`].
     fn chunk_line(&self, key: Key, text: &str) -> String {
         let first = match self.lines.get(&key) {
             Some(Source::Chunk { items, .. }) => items[0],
             _ => key.last,
         };
-        let id = Id::line(0, self.place(first), self.place(key.last));
-        format!("{id}|{text}\n")
+        let (first, last) = (self.place(first).item, self.place(key.last).item);
+        match last - first + 1 {
+            1 => format!("{first}|{text}\n"),
+            n => format!("{first}+{n}|{text}\n"),
+        }
     }
 
     /// The words line `key` is asked for: the [`target`] of what it covers.
@@ -505,7 +509,7 @@ mod tests {
     #[test]
     fn a_call_reads_items_cut_to_their_share() {
         let r = |k| render(Place { turn: 2, item: 7 }, &item(k));
-        assert_eq!(r(Kind::User("fix it".into())), "2.7|user: fix it\n");
+        assert_eq!(r(Kind::User("fix it".into())), "7|user: fix it\n");
         let result = r(Kind::ToolResult {
             id: "t1".into(),
             output: "o".repeat(3 * CLIP),

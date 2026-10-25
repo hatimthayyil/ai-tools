@@ -137,8 +137,8 @@ impl Repo {
 }
 
 /// A model that answers each call with a 300-byte line naming its verb and the first and last
-/// id in its input (`t.i|` items, `[t.i]` in lines), so lines show what they cover and two
-/// never merge free.
+/// id in its input (`i|` items, `i+n|` work lines, `[i]` in lines), so lines show what they
+/// cover and two never merge free.
 struct Fake {
     delay: Duration,
     fail: Box<dyn Fn(&str) -> bool + Send + Sync>,
@@ -185,7 +185,7 @@ fn reply(task: &str) -> String {
     .find(|v| task.contains(v.0))
     .expect("a known task")
     .1;
-    let ids: Vec<&str> = Regex::new(r"(?m)^(\d+(?:\.\d+)?(?:\+\d+)?)\||\[(\d+\.\d+)\]")
+    let ids: Vec<&str> = Regex::new(r"(?m)^(\d+(?:\.\d+)?(?:\+\d+)?)\||\[(\d+(?:\.\d+)?)\]")
         .unwrap()
         .captures_iter(input)
         .map(|c| c.get(1).or(c.get(2)).unwrap().as_str())
@@ -344,7 +344,8 @@ fn every_level_is_built_and_only_once() {
     );
     let fake = Fake::new();
     let built = summarised(&t, &fake);
-    let span = |kind: &str, a: u64, b: u64| format!("{kind} [{}]..[{}]", id(a), id(b));
+    let local = |seq: u64| tree.place(seq as usize).item;
+    let span = |kind: &str, a: u64, b: u64| format!("{kind} [{}]..[{}]", local(a), local(b));
     let want = [
         (chunks[0].to_string(), span("part", big + 1, chunks[0].last)),
         (
@@ -390,12 +391,12 @@ fn every_level_is_built_and_only_once() {
         .filter(|t| t.contains("part of the work of a long turn"))
         .collect();
     assert_eq!(chunk_tasks.len(), 2);
-    let context = "<context>\n2.0|user: read every file\n</context>";
+    let context = "<context>\n0|user: read every file\n</context>";
     assert!(chunk_tasks.iter().all(|t| t.contains(context)));
     assert!(
         chunk_tasks
             .iter()
-            .any(|t| t.contains("2.2|tool Read: file_path=/src/f0.rs"))
+            .any(|t| t.contains("\n2|tool Read: file_path=/src/f0.rs"))
     );
     let whole = tasks
         .iter()
@@ -404,12 +405,12 @@ fn every_level_is_built_and_only_once() {
     let n = chunks[0].last - big;
     assert!(
         whole.contains(&format!(
-            "<input>\n2.0|user: read every file\n2.1+{n}|part [2.1]..[2.{n}]"
+            "<input>\n0|user: read every file\n1+{n}|part [1]..[{n}]"
         )),
         "{whole}"
     );
     assert!(
-        whole.ends_with("2.43|ai: read them all\n</input>"),
+        whole.ends_with("\n43|ai: read them all\n</input>"),
         "the final reply whole: {whole}"
     );
     assert!(tasks.iter().all(|t| t.ends_with("</input>")));
@@ -546,7 +547,7 @@ fn branches_share_the_lines_of_their_common_prefix() {
     assert_eq!(got, want);
     assert_eq!(fake.calls(), want.len(), "the shared prefix once");
     let l = texts(&t);
-    assert!(l[&format!("3@{b3}")].starts_with("merge [0.0]..[3.1]."));
+    assert!(l[&format!("3@{b3}")].starts_with("merge [0]..[1]."));
 }
 
 #[test]
