@@ -1196,7 +1196,7 @@ fn the_note_limit_is_a_knob() {
     );
     assert_eq!(
         run_sized(&d, ten, &["config"]).stdout,
-        "view.lines   96      how many lines view prints (96 is about 8k tokens)\n\
+        "view.lines   96      how many lines view prints\n\
          entry-chars  10      the length a note aims for, in characters; 40 more are accepted (default 280)\n"
     );
 }

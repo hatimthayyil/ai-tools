@@ -39,7 +39,7 @@ impl Knob {
 
     pub fn what(self) -> String {
         match self {
-            Knob::ViewLines => "how many lines view prints (96 is about 8k tokens)".into(),
+            Knob::ViewLines => "how many lines view prints".into(),
             Knob::EntryChars => {
                 format!("the length a note aims for, in characters; {NOTE_GRACE} more are accepted")
             }
