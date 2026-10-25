@@ -28,8 +28,18 @@ pub fn complete(b: &[u8]) -> usize {
 
 /// The lines of `b`, complete lines as [`read`] returns them, without their newlines.
 pub fn lines(b: &[u8]) -> impl Iterator<Item = &[u8]> {
-    b.split_inclusive(|&c| c == b'\n')
-        .map(|l| l.strip_suffix(b"\n").unwrap_or(l))
+    let mut rest = b;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (line, next) = match memchr::memchr(b'\n', rest) {
+            Some(i) => (&rest[..i], &rest[i + 1..]),
+            None => (rest, &rest[rest.len()..]),
+        };
+        rest = next;
+        Some(line)
+    })
 }
 
 /// The number of lines in `b`.
