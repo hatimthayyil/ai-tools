@@ -469,9 +469,9 @@ mod tests {
     fn prompts_are_the_spec_s() {
         assert_eq!(SCALE.split_whitespace().count(), WORDS);
         assert!(SCALE.starts_with("Lorem ipsum") && SCALE.is_ascii() && !SCALE.contains('\n'));
-        assert!(COMPACT.starts_with("You write the memory of ai: AI agents"));
+        assert!(COMPACT.starts_with("Salam. Your task is to write one line of a shared memory."));
         assert!(!COMPACT.contains("OptChat") && !COMPACT.contains("bytes"));
-        assert!(COMPACT.trim_end().ends_with("Output\nonly the line."));
+        assert!(COMPACT.trim_end().ends_with("labels or markdown."));
     }
 
     #[test]
