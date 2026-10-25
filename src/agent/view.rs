@@ -140,35 +140,8 @@ fn positive<'de, D: Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> 
 
 const TURNS: &str = "Turns";
 
-const INSTRUCTION: &str = "\
-This is the thread `{name}`: your conversation so far, oldest first, in place of the context \
-you had. When two lines disagree, trust the later one.
-
-A turn is a message to you, from the user or an agent you started, and everything you did in \
-reply. Each message, reply, tool call and output in it is an item. Both count from 0: `12` is \
-turn 12, `12.0` its message, `12.3` its item 3. Each line is `id|text`, and an item's text \
-continues on lines indented by two spaces. A turn shown item by item opens with its number on a \
-line of its own, and the ids under it leave the turn out: `.3` under `12` is `12.3`.
-
-Every turn appears once, with more detail the newer it is:
-- The oldest turns share lines: `8+4|` summarises turns 8 to 11.
-- Older turns have one line each: `12|` summarises turn 12.
-- Recent turns show the message and your final reply word for word, and summarise the work \
-between them: `.1+7|` under `44` summarises items 1 to 7 of turn 44.
-- The newest turns show every item: `.3|` under `60` is item 3 of turn 60. Tool calls take one \
-line each; tool output shows only its size.
-Summaries cite the item that holds a detail, as [12.3]. A line marked `(not summarised yet)` \
-has no summary built; zoom it to read what it covers.
-
-Zoom a line to see what it was made from: `ai agent zoom 8+4`. You can zoom any turn, item or \
-range. Before you act, guess or ask, find the latest mention of what you need and zoom until \
-you have it whole. Zoom lists tool calls without their output; add `--tool-output` to include \
-it. `ai agent grep <regex>` searches the thread and takes the same flag. Long output comes in \
-parts; each part ends with the command for the next.
-
-Summaries keep little tool output, so state in your replies what you learned that you will \
-need later.
-";
+/// The view's opening: what the thread is and how to read it; `{name}` is the thread.
+const INSTRUCTION: &str = include_str!("prompts/view.txt");
 
 /// How much of a turn the view shows, least first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

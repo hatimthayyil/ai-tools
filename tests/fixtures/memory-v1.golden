@@ -1,4 +1,15 @@
 $ view
+This is your memory: what you and other agents noted while working for
+the user, oldest first, under UTC date headers. Each line is `id|text`.
+A line `id+n|text` summarises the n notes from id on, and the older a
+line, the more notes it covers. One that runs past its date header
+shows its last day: `256+8|..10-12|text`.
+
+Zoom a line to read what it was made from: `ai memory zoom 256+8`.
+`ai memory grep <regex>` searches every note word for word. When a line
+only mentions what your task needs, zoom it before you act, guess or
+ask. When two lines disagree, trust the later one.
+
 2020-01-01
 0|imported first note
 1|imported second note, with spaces
@@ -19,8 +30,19 @@ $ view
 13|long note 9 wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
 14|short note 10 about the widget
 15|short note 11 about the widget
-You are awake. Zoom the marked lines that touch your task before you act.
+You are awake.
 $ view --time -o origin,repo,head,branch,agent,model,session,kind
+This is your memory: what you and other agents noted while working for
+the user, oldest first, under UTC date headers. Each line is `id|text`.
+A line `id+n|text` summarises the n notes from id on, and the older a
+line, the more notes it covers. One that runs past its date header
+shows its last day: `256+8|..10-12|text`.
+
+Zoom a line to read what it was made from: `ai memory zoom 256+8`.
+`ai memory grep <regex>` searches every note word for word. When a line
+only mentions what your task needs, zoom it before you act, guess or
+ask. When two lines disagree, trust the later one.
+
 2020-01-01
 0|00:00|2RP35K|-|-|-|-|-|-|note|imported first note
 1|00:00|2RP35K|-|-|-|-|-|-|note|imported second note, with spaces
@@ -41,7 +63,7 @@ $ view --time -o origin,repo,head,branch,agent,model,session,kind
 13|23:03|2RP35K|acme/widget|0e553b08ba84|main|claude-code|claude-opus-5-5|sess-2|note|long note 9 wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
 14|23:03|2RP35K|acme/widget|0e553b08ba84|main|claude-code|claude-opus-5-5|sess-2|note|short note 10 about the widget
 15|23:03|2RP35K|acme/widget|0e553b08ba84|main|claude-code|claude-opus-5-5|sess-2|note|short note 11 about the widget
-You are awake. Zoom the marked lines that touch your task before you act.
+You are awake.
 $ zoom 0+16
 2020-01-01
 0+4|..01-03|imported first note imported second note, with spaces imported third note imported fourth
@@ -118,9 +140,20 @@ $ config
 view.lines   3       how many lines view prints (default 96)
 entry-chars  280     the length a note aims for, in characters; 40 more are accepted
 $ view -o session
+This is your memory: what you and other agents noted while working for
+the user, oldest first, under UTC date headers. Each line is `id|text`.
+A line `id+n|text` summarises the n notes from id on, and the older a
+line, the more notes it covers. One that runs past its date header
+shows its last day: `256+8|..10-12|text`.
+
+Zoom a line to read what it was made from: `ai memory zoom 256+8`.
+`ai memory grep <regex>` searches every note word for word. When a line
+only mentions what your task needs, zoom it before you act, guess or
+ask. When two lines disagree, trust the later one.
+
 2020-01-01
 0+8|..2026-10-13|sess-0(+1)|imported first note imported second note, with spaces imported third note imported fourth summary 521aac41
 2026-10-13
 8+4|sess-1|short note 4 about the widget short note 5 about the widget long note 6 wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww short note 7 about the widget
 12+4|sess-2|short note 8 about the widget long note 9 wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww short note 10 about the widget short note 11 about the widget
-You are awake. Zoom the marked lines that touch your task before you act.
+You are awake.

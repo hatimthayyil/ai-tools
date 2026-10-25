@@ -21,7 +21,14 @@ use clap::Parser;
 use regex::Regex;
 use tempfile::TempDir;
 
-const AWAKE: &str = "You are awake. Zoom the marked lines that touch your task before you act.";
+const AWAKE: &str = "You are awake.";
+
+/// A memory view after its opening.
+fn body(view: &str) -> &str {
+    let head = include_str!("../src/memory/prompts/view.txt").replace("{memo}", "ai memory");
+    view.strip_prefix(&format!("{head}\n"))
+        .unwrap_or_else(|| panic!("the view opens with its header: {view}"))
+}
 
 /// The `(id, n)` of every line printed in `out`.
 fn line_ids(out: &str) -> Vec<(u64, u64)> {
@@ -788,14 +795,17 @@ fn a_life_through_the_cli() {
         format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8]),
         format!("{}:{}", &ts[9..11], &ts[11..13]),
     );
-    assert!(view.starts_with("2020-01-01\n0|message 0 nnn"), "{view}");
+    assert!(
+        body(&view).starts_with("2020-01-01\n0|message 0 nnn"),
+        "{view}"
+    );
     assert!(
         view.contains(&format!("\n{today}\n40|a short one\n")),
         "{view}"
     );
     let view = run(d, &["view", "--time", "-o", "kind,repo"]).stdout;
     assert!(
-        view.starts_with("2020-01-01\n0|00:00|note|-|message 0 nnn"),
+        body(&view).starts_with("2020-01-01\n0|00:00|note|-|message 0 nnn"),
         "{view}"
     );
     assert!(
@@ -842,7 +852,7 @@ fn a_life_through_the_cli() {
     assert_eq!(ids[7].0 + ids[7].1, 42, "{view}");
 
     let one = run(d, &["view"]).stdout;
-    assert!(is_day(one.lines().next().unwrap()), "{one}");
+    assert!(is_day(body(&one).lines().next().unwrap()), "{one}");
     assert!(
         one.ends_with(&format!("\n{AWAKE}\n")),
         "a short view is one part, with no footer: {one}"

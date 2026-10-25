@@ -20,7 +20,7 @@ mod zoom;
 
 pub use backend::{Backend, Block, Conversation, MakeBackend, Usage};
 pub use claude::{CALLS, ClaudeCode};
-pub use cli::{Cli, Runtime, broken_pipe, default_dir, plural, spawn_summariser, store_dir};
+pub use cli::{AWAKE, Cli, Runtime, broken_pipe, default_dir, plural, spawn_summariser, store_dir};
 pub use compact::{
     COMPACT, Compactor, GaveUp, JOBS, Job, Options, RETRIES, RETRY, RETRY_MAX, SCALE, Spend, Step,
     TRIES, ruler, summarize, write_line,

@@ -37,6 +37,12 @@ use crate::{
     summariser,
 };
 
+/// The view's opening: what the memory is and how to read it; `{memo}` is [`ME`].
+const HEADER: &str = include_str!("prompts/view.txt");
+
+/// The view's last line; `ai view` moves it after the thread.
+pub const AWAKE: &str = "You are awake.\n";
+
 const TEMPLATE: &str = "\
 ## Memory
 
@@ -421,20 +427,21 @@ fn view(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The view's `n` lines under their date headers, then the line that says you are awake.
+/// The view's opening, its `n` lines under their date headers, then [`AWAKE`].
 fn view_text(snap: &Snapshot, n: u64, meta: &Meta) -> Result<String> {
     let t = snap.log_len()?;
     if t == 0 {
         return Ok(format!(
-            "No memories yet. Record the first with: {ME} note \"<one line>\"\nYou are awake.\n"
+            "No memories yet. Record the first with: {ME} note \"<one line>\"\n{AWAKE}"
         ));
     }
     let mut lines = Vec::new();
     for c in cover(t, n) {
         view_lines(snap, c, meta, &mut lines)?;
     }
-    let mut text: String = dated(&lines).into_iter().map(|l| l + "\n").collect();
-    text += "You are awake. Zoom the marked lines that touch your task before you act.\n";
+    let mut text = HEADER.replace("{memo}", ME) + "\n";
+    text.extend(dated(&lines).into_iter().map(|l| l + "\n"));
+    text += AWAKE;
     Ok(text)
 }
 

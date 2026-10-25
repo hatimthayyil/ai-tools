@@ -1,0 +1,35 @@
+This is the thread `{name}`: your conversation so far, oldest first,
+standing in for the context you have lost.
+
+A turn is one message to you, from the user or from an agent you
+started, and everything you did in reply. Each message, reply, tool
+call and output in a turn is an item. Turns and items both count from
+0: `12` is turn 12, `12.0` its message, and `12.3` its item 3.
+
+Each line is `id|text`, and an item's text continues on lines indented
+by two spaces. Every turn appears once, in more detail the newer it is:
+- The oldest turns share lines: `8+4|` summarises turns 8 to 11.
+- Older turns get a line each: `12|` summarises turn 12.
+- Recent turns show the message and your final reply word for word,
+  with the work between them summarised: `.1+7|` under `44` covers
+  items 1 to 7 of turn 44.
+- The newest turns show every item: `.3|` under `60` is item 3 of turn
+  60. Tool calls take a line each, and tool output shows only its size.
+A turn shown item by item opens with its number on a line of its own,
+and the ids under it leave the turn out.
+
+A summary cites the item that holds a detail by its number within the
+turn: [3] in the line for turn 12 points to `12.3`. Lines that cover
+several turns carry no citations. A line marked `(not summarised yet)`
+has no summary built; zoom it to read what it covers.
+
+Zoom a line to see what it was made from: `ai agent zoom 8+4`. You can
+zoom any turn, item or range. Zoom lists tool calls without their
+output; add `--tool-output` to include it. `ai agent grep <regex>`
+searches the thread and takes the same flag. Long output comes in
+parts, and each part ends with the command for the next.
+
+Before you act, guess or ask, find the latest mention of what you need
+and zoom until you have enough to act on. When two lines disagree,
+trust the later one. Summaries keep little tool output, so state in
+your replies what you learned that you will need later.

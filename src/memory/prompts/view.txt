@@ -1,0 +1,10 @@
+This is your memory: what you and other agents noted while working for
+the user, oldest first, under UTC date headers. Each line is `id|text`.
+A line `id+n|text` summarises the n notes from id on, and the older a
+line, the more notes it covers. One that runs past its date header
+shows its last day: `256+8|..10-12|text`.
+
+Zoom a line to read what it was made from: `{memo} zoom 256+8`.
+`{memo} grep <regex>` searches every note word for word. When a line
+only mentions what your task needs, zoom it before you act, guess or
+ask. When two lines disagree, trust the later one.

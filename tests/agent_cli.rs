@@ -909,9 +909,7 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     assert!(alone.contains("\n0|note 0 n") && alone.contains("\n79|note 79 n"));
     assert!(!alone.contains("\nPart "), "{alone}");
     assert!(
-        alone.ends_with(
-            "\nYou are awake. Zoom the marked lines that touch your task before you act.\n"
-        ),
+        alone.ends_with("\nYou are awake.\n"),
         "with no thread, only the memory: {alone}"
     );
     assert_eq!(
@@ -928,8 +926,15 @@ fn ai_view_prints_the_whole_memory_then_a_thread() {
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let both = stdout(&s.top(Some("s-1"), &["view", "--whole"]));
     let (mem, thread) = both.split_once("\n# Thread `dev`\n").expect(&both);
-    assert_eq!(mem, alone);
-    assert!(thread.contains("|user: question 1"), "{thread}");
+    assert_eq!(
+        format!("{mem}You are awake.\n"),
+        alone,
+        "the memory's closing line moves after the thread"
+    );
+    assert!(
+        thread.contains("|user: question 1") && thread.ends_with("\n\nYou are awake.\n"),
+        "{thread}"
+    );
     let first = stdout(&s.top(Some("s-1"), &["view"]));
     assert!(
         first.starts_with("ai view dev, part 1 of 2.\n# Memory\n"),
