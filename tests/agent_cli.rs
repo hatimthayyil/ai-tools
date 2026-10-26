@@ -358,6 +358,24 @@ fn ok(o: Output, want: &str) {
     assert_eq!(stdout(&o), want);
 }
 
+/// Exit 0, with a build's plan and lines, then an end that says `want`: its first line
+/// without the time it took, then what follows its log.
+fn build_ends(o: Output, want: &str) {
+    assert_eq!((code(&o), stderr(&o).as_str()), (0, ""), "{}", stdout(&o));
+    let out = stdout(&o);
+    let end =
+        Regex::new(r"(?s)\nBuilt (\d+ lines?) in [^:]+: ([^\n]*)\n[^\n]*\nLog: [^\n]*\n(.*)$")
+            .unwrap();
+    let c = end
+        .captures(&out)
+        .unwrap_or_else(|| panic!("no end: {out}"));
+    assert_eq!(
+        format!("Built {}: {}\n{}", &c[1], &c[2], &c[3]),
+        want,
+        "{out}"
+    );
+}
+
 /// Exit 1 with this message.
 fn fails(o: Output, err: &str) {
     assert_eq!(
@@ -1568,9 +1586,9 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
         "{log}"
     );
 
-    ok(
+    build_ends(
         s.ai_in("s-1", &["build"]),
-        "Wrote 4 lines, 0 by the model.\n",
+        "Built 4 lines: 0 by the model, 4 joined.\n",
     );
     ok(s.ai(&["build", "-a", "dev"]), "Nothing to write.\n");
     let o = s.ai_in("s-1", &["build", "--rebuild", "--dry-run"]);
@@ -1582,9 +1600,9 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
         "{dry}"
     );
     assert!(dry.ends_with("Dry run: 5 lines, 0 by the model; nothing stored.\n"));
-    ok(
+    build_ends(
         s.ai_in("s-1", &["build", "--rebuild"]),
-        "Dropped 5 lines; wrote 5, 0 by the model.\n",
+        "Built 5 lines: 0 by the model, 5 joined. Dropped 5 lines first.\n",
     );
     let t = s.store().thread("dev").unwrap();
     let line = t
@@ -1607,9 +1625,9 @@ fn build_writes_or_rewrites_one_line() {
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let ends = turn_ends(&s, "dev");
     s.line("dev", 1, ends[0], "by hand");
-    ok(
+    build_ends(
         s.ai_in("s-1", &["build", "0+2"]),
-        "Wrote 3 lines, 0 by the model.\n",
+        "Built 3 lines: 0 by the model, 3 joined.\n",
     );
     ok(
         s.ai_in("s-1", &["build", "0"]),
@@ -1634,13 +1652,13 @@ fn build_writes_or_rewrites_one_line() {
         ],
         "{dry}"
     );
-    ok(
+    build_ends(
         s.ai_in("s-1", &["build"]),
-        "Wrote 7 lines, 0 by the model.\n",
+        "Built 7 lines: 0 by the model, 7 joined.\n",
     );
-    ok(
+    build_ends(
         s.ai_in("s-1", &["build", "0", "--rebuild"]),
-        "Dropped 3 lines; wrote 1, 0 by the model.\n\
+        "Built 1 line: 0 by the model, 1 joined. Dropped 3 lines first.\n\
          The next ai agent build -a dev writes the 2 lines above 0 again.\n",
     );
     let t = s.store().thread("dev").unwrap();
@@ -1652,9 +1670,9 @@ fn build_writes_or_rewrites_one_line() {
     );
     assert!(line(2, ends[1]).is_none() && line(3, ends[3]).is_none());
     assert!(line(2, ends[3]).is_some(), "2+2 is not above 0");
-    ok(
+    build_ends(
         s.ai_in("s-1", &["build"]),
-        "Wrote 2 lines, 0 by the model.\n",
+        "Built 2 lines: 0 by the model, 2 joined.\n",
     );
     fails(
         s.ai_in("s-1", &["build", "4"]),
@@ -1762,7 +1780,7 @@ fn attaching_starts_a_background_summariser_that_builds() {
 }
 
 #[test]
-fn build_off_a_terminal_shows_no_progress() {
+fn build_off_a_terminal_prints_its_plan_each_line_and_its_end() {
     let s = Sandbox::new();
     s.fake_compactor("0.2");
     s.transcript("s-1", &talk(3, |k| long("ok", k)));
@@ -1771,9 +1789,38 @@ fn build_off_a_terminal_shows_no_progress() {
         "Created agent dev. Start it: ai agent resume dev\n",
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
-    ok(
-        s.ai_in("s-1", &["build"]),
-        "Wrote 5 lines, 2 by the model.\n",
+    let o = s.ai_in("s-1", &["build"]);
+    assert_eq!((code(&o), stderr(&o).as_str()), (0, ""), "{}", stdout(&o));
+    let log = regex::escape(&s.store().dir().join("dev.log").display().to_string());
+    let want = format!(
+        "^Building agent dev with sonnet, 8 calls at once\\.
+  level           lines  written  to write
+  L0  work            2        0         2
+  L1  1 turn          2        0         2
+  L2  2 turns         1        0         1
+Up to 5 model calls: a line whose sources fit in one is joined without a call\\.
+No past calls to estimate cost and time from\\.
+Log: {log}
+\\[1/5\\]  joined 0\\.1
+\\[2/5\\]  joined 1\\.1
+\\[3/5\\]   built [01]          \\d+\\.\\ds  6 chars  \\$0\\.0000
+\\[4/5\\]   built [01]          \\d+\\.\\ds  6 chars  \\$0\\.0000
+\\[5/5\\]  joined 0\\+2
+Built 5 lines in \\d+s: 2 by the model, 3 joined\\.
+2 calls \\(0 to shorten a line, 0 after a failure\\), \\$0\\.0000, 0 tokens\\.
+Log: {log}
+$"
+    );
+    assert!(
+        Regex::new(&want).unwrap().is_match(&stdout(&o)),
+        "{}",
+        stdout(&o)
+    );
+    let past = s.ai_in("s-1", &["build", "--rebuild"]);
+    assert!(
+        stdout(&past).contains("\nAbout $0.0000 and 0s, at the average of the last 2 calls.\n"),
+        "{}",
+        stdout(&past)
     );
 }
 

@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ai_tools::progress::Progress;
 use ai_tools::{
     agent::{
         Built, Id, Key, Line, LineKind, Mark, OnFail, Rollup, Source, Store, Thread, build,
@@ -19,7 +20,6 @@ use ai_tools::{
     project::Project,
 };
 use anyhow::{Result, bail};
-use indicatif::ProgressBar;
 use regex::Regex;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -262,7 +262,7 @@ fn key(level: u32, last: u64) -> Key {
 }
 
 fn summarised(t: &Thread, fake: &Arc<Fake>) -> Built {
-    summarise(t, fake.backend(), OnFail::Continue, &ProgressBar::hidden())
+    summarise(t, fake.backend(), OnFail::Continue, &Progress::quiet())
         .unwrap()
         .expect("the lock is free")
 }
@@ -500,7 +500,7 @@ fn a_second_summariser_finds_nothing_to_build() {
     assert_eq!(again.calls(), 0);
     assert_eq!((texts(&t), state(&r)), (before, at), "no write");
     let keys: Vec<Key> = lines(&t).into_keys().collect();
-    let b = build(&t, again.backend(), &keys, &ProgressBar::hidden()).unwrap();
+    let b = build(&t, again.backend(), &keys, &Progress::quiet()).unwrap();
     assert_eq!((b, again.calls()), (Built::default(), 0));
 }
 
@@ -584,7 +584,7 @@ fn build_makes_the_lines_asked_and_what_they_need() {
         &t,
         fake.backend(),
         &[key(2, e1), key(1, e2)],
-        &ProgressBar::hidden(),
+        &Progress::quiet(),
     )
     .unwrap();
     assert_eq!((b.lines, b.calls), (6, 6));
@@ -593,13 +593,7 @@ fn build_makes_the_lines_asked_and_what_they_need() {
     for k in [key(1, e0), key(1, e1), key(2, e1), key(1, e2)] {
         assert!(got.contains(&k.to_string()), "{k}");
     }
-    let err = build(
-        &t,
-        fake.backend(),
-        &[key(1, e0 + 1)],
-        &ProgressBar::hidden(),
-    )
-    .unwrap_err();
+    let err = build(&t, fake.backend(), &[key(1, e0 + 1)], &Progress::quiet()).unwrap_err();
     assert_eq!(
         err.to_string(),
         format!("1@{} is not a line of thread t.", e0 + 1)
@@ -621,7 +615,7 @@ fn build_waits_for_its_slow_calls() {
         &t,
         slow.backend(),
         &[key(1, e0), key(1, e1)],
-        &ProgressBar::hidden(),
+        &Progress::quiet(),
     )
     .unwrap();
     assert!(
@@ -647,7 +641,7 @@ fn a_held_lock_makes_a_second_summariser_exit_at_once() {
     let fake = Fake::new();
     let lock = t.try_lock().unwrap().expect("free");
     assert_eq!(
-        summarise(&t, fake.backend(), OnFail::Continue, &ProgressBar::hidden()).unwrap(),
+        summarise(&t, fake.backend(), OnFail::Continue, &Progress::quiet()).unwrap(),
         None
     );
     assert_eq!(fake.calls(), 0);
@@ -680,7 +674,7 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
         let (path, slow) = (r.path(), slow.clone());
         thread::spawn(move || {
             let t = Store::find(&path).unwrap().unwrap().thread("t").unwrap();
-            summarise(&t, slow.backend(), OnFail::Continue, &ProgressBar::hidden()).unwrap()
+            summarise(&t, slow.backend(), OnFail::Continue, &Progress::quiet()).unwrap()
         })
     };
     while slow.calls() == 0 {
@@ -688,7 +682,7 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
     }
     let fast = Fake::new();
     let at = Instant::now();
-    let b = build(&t, fast.backend(), &keys, &ProgressBar::hidden()).unwrap();
+    let b = build(&t, fast.backend(), &keys, &Progress::quiet()).unwrap();
     assert!(
         at.elapsed() >= Duration::from_millis(200),
         "{:?}",
@@ -724,7 +718,7 @@ fn build_waits_for_a_held_lock_however_long() {
     });
     let fake = Fake::new();
     let at = Instant::now();
-    let b = build(&t, fake.backend(), &[key(1, e0)], &ProgressBar::hidden()).unwrap();
+    let b = build(&t, fake.backend(), &[key(1, e0)], &Progress::quiet()).unwrap();
     assert!(at.elapsed() >= Duration::from_secs(2), "{:?}", at.elapsed());
     assert_eq!((b.lines, b.calls, fake.calls()), (1, 1, 1));
     assert_eq!(lines(&t).into_keys().collect::<Vec<_>>(), [key(1, e0)]);
@@ -813,7 +807,7 @@ fn rewrite_drops_the_line_and_those_above_it() {
         fake.backend(),
         key(1, e0),
         Instant::now() + Duration::from_secs(5),
-        &ProgressBar::hidden(),
+        &Progress::quiet(),
     )
     .unwrap()
     .expect("the lock is free");
@@ -832,7 +826,7 @@ fn rewrite_drops_the_line_and_those_above_it() {
         fake.backend(),
         key(1, e0 + 1),
         Instant::now(),
-        &ProgressBar::hidden(),
+        &Progress::quiet(),
     )
     .unwrap_err();
     assert_eq!(
@@ -889,7 +883,7 @@ fn rebuild_drops_every_line_and_writes_them_again() {
     let before = texts(&t);
     let again = Fake::new();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let (dropped, b) = rebuild(&t, again.backend(), deadline, &ProgressBar::hidden())
+    let (dropped, b) = rebuild(&t, again.backend(), deadline, &Progress::quiet())
         .unwrap()
         .expect("the lock is free");
     assert_eq!(dropped, before.len());
@@ -906,7 +900,7 @@ fn rebuild_drops_every_line_and_writes_them_again() {
             &t,
             again.backend(),
             at + Duration::from_millis(200),
-            &ProgressBar::hidden()
+            &Progress::quiet()
         )
         .unwrap(),
         None
@@ -938,7 +932,7 @@ fn a_run_that_stops_at_a_failure_starts_no_call_after_it() {
         }
         poison
     });
-    let b = summarise(&t, fake.backend(), OnFail::Stop, &ProgressBar::hidden())
+    let b = summarise(&t, fake.backend(), OnFail::Stop, &Progress::quiet())
         .unwrap()
         .expect("the lock is free");
     assert_eq!(b.failed.len(), 1);

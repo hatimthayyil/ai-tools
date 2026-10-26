@@ -276,6 +276,28 @@ impl fmt::Display for GaveUp {
 
 impl std::error::Error for GaveUp {}
 
+/// What happened to a node, for whoever shows the compactor's progress.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// The model wrote it: `chars` characters, in `took`, at `cost`.
+    Built {
+        node: Coord,
+        took: Duration,
+        chars: usize,
+        cost: f64,
+    },
+    /// Its halves fit in one line, so they were joined without a call.
+    Joined(Coord),
+    /// Its call failed with `error`, at `cost`; try `next` starts after `wait`.
+    Failed {
+        node: Coord,
+        error: String,
+        next: usize,
+        wait: Duration,
+        cost: f64,
+    },
+}
+
 type Done = (Coord, Duration, Spend, Result<(Who, String)>);
 
 /// The pump: builds every node whose sources exist and whose context is all summaries,
@@ -286,11 +308,11 @@ pub struct Compactor<'s> {
     opts: Options,
     mem: Mem,
     busy: HashSet<Coord>,
-    failed: HashMap<Coord, ExponentialBackoff>,
+    /// Each failing node's backoff, and its failures in a row.
+    failed: HashMap<Coord, (ExponentialBackoff, usize)>,
     waits: Vec<(Instant, Coord)>,
-    reports: Vec<String>,
+    events: Vec<Event>,
     built: u64,
-    stored: u64,
     spent: Spend,
     tx: Sender<Done>,
     rx: Receiver<Done>,
@@ -323,9 +345,8 @@ impl<'s> Compactor<'s> {
             busy: HashSet::new(),
             failed: HashMap::new(),
             waits: Vec::new(),
-            reports: Vec::new(),
+            events: Vec::new(),
             built: 0,
-            stored: 0,
             spent: Spend::default(),
             tx,
             rx,
@@ -342,19 +363,26 @@ impl<'s> Compactor<'s> {
         self.built
     }
 
-    /// Nodes stored so far: those built by the model, and the free ones they completed.
-    pub fn stored(&self) -> u64 {
-        self.stored
-    }
-
     /// What its requests to the model took so far.
     pub fn spent(&self) -> Spend {
         self.spent
     }
 
-    /// The first failure of each node since it last succeeded, once.
-    pub fn take_reports(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.reports)
+    /// What happened to nodes since last asked, in order.
+    pub fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// The nodes whose calls are running, then those waiting to be tried again.
+    pub fn calls(&self) -> (Vec<Coord>, Vec<Coord>) {
+        let waiting: Vec<Coord> = self.waits.iter().map(|w| w.1).collect();
+        let running = self
+            .busy
+            .iter()
+            .filter(|c| !waiting.contains(c))
+            .copied()
+            .collect();
+        (running, waiting)
     }
 
     /// When the earliest failed node may be tried again.
@@ -413,10 +441,19 @@ impl<'s> Compactor<'s> {
         self.spent += spent;
         match r {
             Ok((who, text)) => {
-                log::spend!(info, spent, { node = %c, chars = text.chars().count(), secs = log::secs(took) }, "built");
+                let chars = text.chars().count();
+                log::spend!(info, spent, { node = %c, chars, secs = log::secs(took) }, "built");
                 let (built, snap) = self.store.put_node(c, &who, &text)?;
-                self.stored += built.len() as u64;
+                self.events.push(Event::Built {
+                    node: c,
+                    took,
+                    chars,
+                    cost: spent.all.cost,
+                });
                 for (k, t) in built {
+                    if k != c {
+                        self.events.push(Event::Joined(k));
+                    }
                     self.mem.set(k, t);
                 }
                 self.mem.absorb(&snap)?;
@@ -428,7 +465,12 @@ impl<'s> Compactor<'s> {
             Err(e) => {
                 let error = format!("{e:#}");
                 let first = !self.failed.contains_key(&c);
-                let backoff = self.failed.entry(c).or_insert_with(|| self.opts.backoff());
+                let (backoff, fails) = self
+                    .failed
+                    .entry(c)
+                    .or_insert_with(|| (self.opts.backoff(), 0));
+                *fails += 1;
+                let next = *fails + 1;
                 let Some(wait) = backoff.next() else {
                     let tries = self.opts.retries + 1;
                     return Err(GaveUp {
@@ -441,10 +483,16 @@ impl<'s> Compactor<'s> {
                 let (secs, wait_secs) = (log::secs(took), log::secs(wait));
                 if first {
                     log::spend!(warn, spent, { node = %c, error, secs, wait = wait_secs }, "failed");
-                    self.reports.push(format!("{c}: {error}"));
                 } else {
                     log::spend!(debug, spent, { node = %c, error, secs, wait = wait_secs }, "failed again");
                 }
+                self.events.push(Event::Failed {
+                    node: c,
+                    error,
+                    next,
+                    wait,
+                    cost: spent.all.cost,
+                });
                 self.waits.push((Instant::now() + wait, c));
             }
         }

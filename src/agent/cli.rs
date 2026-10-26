@@ -6,13 +6,13 @@ use std::{
     os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{self, ExitCode},
+    sync::Arc,
     time::Instant,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use dialoguer::{Confirm, Select};
-use indicatif::ProgressBar;
 use jiff::Timestamp;
 
 use crate::{
@@ -22,15 +22,16 @@ use crate::{
         record::{Binding, Key},
         rollup::Rollup,
         store::{Snapshot, Store, Thread, ThreadInfo},
-        summarise::{Built, OnFail, build, dry_run, first, rebuild, rewrite, summarise},
+        summarise::{Built, OnFail, build, dry_run, rebuild, rewrite, summarise},
         sync::Synced,
         upgrade,
         view::{Branch, Counts},
     },
     config::FILE,
     file::{self, AtPath},
-    memory::{Pattern, broken_pipe, claude::uuid, plural, quote, word},
-    page, progress,
+    memory::{Backend, JOBS, Pattern, broken_pipe, claude::uuid, plural, quote, word},
+    page,
+    progress::{About, Mode, Past, Progress},
     project::committing,
     summariser::WAIT,
 };
@@ -550,22 +551,17 @@ fn ready(
             t,
             store.backend(t, None)?,
             &keys,
-            &ProgressBar::hidden(),
+            &Progress::quiet(),
         )?);
     }
 }
 
 /// Each failed line as `Failed <id>: <error>`, by its id in `snap`.
 fn failures(snap: &Snapshot, failed: &[(Key, String)]) -> Result<Vec<String>> {
-    let tree = snap.tree()?;
-    let roll = Rollup::new(&tree);
-    let place = |seq: u64| tree.place(seq as usize);
+    let roll = Rollup::new(&snap.tree()?);
     Ok(failed
         .iter()
-        .map(|(k, e)| {
-            let id = Id::line(k.level, place(first(&roll, *k)), place(k.last));
-            format!("Failed {id}: {e}")
-        })
+        .map(|(k, e)| format!("Failed {}: {e}", roll.id(*k)))
         .collect())
 }
 
@@ -982,19 +978,18 @@ fn grep(
     Ok(ExitCode::SUCCESS)
 }
 
-/// A bar on stderr for a summariser run when `show` and stderr is a terminal: lines written of
-/// those planned, calls running, failures and time so far. Else hidden.
-fn progress(show: bool) -> ProgressBar {
-    match show {
-        true => progress::bar("lines", "reading the thread"),
-        false => ProgressBar::hidden(),
+/// What one line of level `l` of a thread covers: a turn's work, a turn, or turns.
+fn covers(l: u32) -> String {
+    match l {
+        0 => "work".into(),
+        _ => plural(1 << (l - 1), "turn"),
     }
 }
 
 /// Writes the thread's ready lines, or with `rebuild` rewrites them all; with `id`, that one
-/// line. With `dry_run`, prints what it would write and stores nothing. It stops at the first
-/// line that fails, unless it is the `background` summariser. On a terminal, all but a dry
-/// run and the background summariser show their progress on stderr.
+/// line. It shows its plan, its progress and what it did, unless it is the `background`
+/// summariser, and stops at the first line that fails unless it is. With `dry_run`, prints what
+/// it would write instead, and stores nothing.
 fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
     let Build {
         target,
@@ -1022,114 +1017,121 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         None => None,
     };
     let backend = store.backend(&t, model)?;
-    let bar = progress(!dry && !background);
-    let built = match (dry, again, line) {
-        (false, true, Some((id, key))) => {
-            let Some(r) = rewrite(&t, backend, key, Instant::now() + WAIT, &bar)? else {
-                bail!(
-                    "A summariser is still running on {}. Try again when it ends.",
-                    t.name()
-                );
+    if dry {
+        return dry_cmd(&t, out, backend, again, line.map(|l| l.1));
+    }
+    let name = t.name();
+    let log = t.log_path()?;
+    let about = About {
+        title: match (again, line) {
+            (true, Some((id, _))) => format!("Rewriting line {id} of agent {name}"),
+            (false, Some((id, _))) => format!("Building line {id} of agent {name}"),
+            (true, None) => format!("Rebuilding agent {name}"),
+            (false, None) => format!("Building agent {name}"),
+        },
+        unit: "line",
+        covers,
+        first_bar: 0,
+        model: backend.model().into(),
+        jobs: JOBS,
+        past: Past::read(&log, |id| id.split_once('@')?.0.parse().ok())?,
+        log,
+    };
+    let progress = Progress::new(&mut *out, Mode::of(!background), about);
+    let built = match (again, line) {
+        (true, Some((id, key))) => {
+            let Some(r) = rewrite(&t, backend, key, Instant::now() + WAIT, &progress)? else {
+                bail!("A summariser is still running on {name}. Try again when it ends.");
             };
-            writeln!(
-                out,
-                "Dropped {}; wrote {}, {} by the model.",
-                plural(r.dropped as u64, "line"),
-                r.built.lines,
-                r.built.calls
-            )?;
+            progress.end(Some(r.dropped as u64), r.built.spent)?;
             if r.above > 0 {
                 writeln!(
                     out,
-                    "The next ai agent build -a {} writes the {} above {id} again.",
-                    t.name(),
+                    "The next ai agent build -a {name} writes the {} above {id} again.",
                     plural(r.above as u64, "line")
                 )?;
             }
             r.built
         }
-        (false, false, Some((id, key))) => {
-            let b = build(&t, backend, &[key], &bar)?;
-            match b.lines {
-                0 if b.failed.is_empty() => {
+        (false, Some((id, key))) => {
+            let b = build(&t, backend, &[key], &progress)?;
+            match progress.planned() {
+                true => progress.end(None, b.spent)?,
+                false => {
+                    drop(progress);
                     writeln!(out, "{id} is written already. Rewrite it with --rebuild.")?
                 }
-                n => writeln!(
-                    out,
-                    "Wrote {}, {} by the model.",
-                    plural(n, "line"),
-                    b.calls
-                )?,
             }
             b
         }
-        (true, _, line) => {
-            let d = dry_run(&t, backend, again, line.map(|l| l.1))?;
-            let tree = t.snapshot()?.tree()?;
-            for l in &d.lines {
-                let place = |seq: u64| tree.place(seq as usize);
-                let id = Id::line(l.key.level, place(l.first), place(l.key.last));
-                writeln!(out, "{id}|{}", l.text)?;
-                if let Some(was) = &l.was {
-                    writeln!(out, "  was: {was}")?;
-                }
-            }
-            writeln!(
-                out,
-                "Dry run: {}, {} by the model; nothing stored.",
-                plural(d.built.lines, "line"),
-                d.built.calls
-            )?;
-            d.built
-        }
-        (false, true, None) => {
-            let Some((dropped, b)) = rebuild(&t, backend, Instant::now() + WAIT, &bar)? else {
-                bail!(
-                    "A summariser is still running on {}. Try again when it ends.",
-                    t.name()
-                );
+        (true, None) => {
+            let Some((dropped, b)) = rebuild(&t, backend, Instant::now() + WAIT, &progress)? else {
+                bail!("A summariser is still running on {name}. Try again when it ends.");
             };
-            writeln!(
-                out,
-                "Dropped {}; wrote {}, {} by the model.",
-                plural(dropped as u64, "line"),
-                b.lines,
-                b.calls
-            )?;
+            progress.end(Some(dropped as u64), b.spent)?;
             b
         }
-        (false, false, None) => {
+        (false, None) => {
             let on_fail = match background {
                 true => OnFail::Continue,
                 false => OnFail::Stop,
             };
-            let Some(b) = summarise(&t, backend, on_fail, &bar)? else {
+            let Some(b) = summarise(&t, backend, on_fail, &progress)? else {
+                drop(progress);
                 writeln!(
                     out,
-                    "A summariser is already running on {}; it writes these lines too.",
-                    t.name()
+                    "A summariser is already running on {name}; it writes these lines too."
                 )?;
                 return Ok(ExitCode::SUCCESS);
             };
-            match b.lines {
-                0 => writeln!(out, "Nothing to write.")?,
-                n => writeln!(
-                    out,
-                    "Wrote {}, {} by the model.",
-                    plural(n, "line"),
-                    b.calls
-                )?,
+            match progress.planned() {
+                true => progress.end(None, b.spent)?,
+                false => {
+                    drop(progress);
+                    writeln!(out, "Nothing to write.")?
+                }
             }
             b
         }
     };
-    if !built.failed.is_empty() {
-        for f in failures(&t.snapshot()?, &built.failed)? {
-            writeln!(out, "{f}")?;
+    outcome(&t, out, &built)
+}
+
+/// `build --dry-run`: each line a build would write, or with `again` a rebuild, of `line` and
+/// what it is made from if given, beside the line it replaces; stores nothing.
+fn dry_cmd(
+    t: &Thread,
+    out: &mut dyn Write,
+    backend: Arc<dyn Backend>,
+    again: bool,
+    line: Option<Key>,
+) -> Result<ExitCode> {
+    let d = dry_run(t, backend, again, line)?;
+    let tree = t.snapshot()?.tree()?;
+    for l in &d.lines {
+        let place = |seq: u64| tree.place(seq as usize);
+        let id = Id::line(l.key.level, place(l.first), place(l.key.last));
+        writeln!(out, "{id}|{}", l.text)?;
+        if let Some(was) = &l.was {
+            writeln!(out, "  was: {was}")?;
         }
     }
-    Ok(match built.failed.is_empty() {
-        true => ExitCode::SUCCESS,
-        false => ExitCode::FAILURE,
-    })
+    writeln!(
+        out,
+        "Dry run: {}, {} by the model; nothing stored.",
+        plural(d.built.lines, "line"),
+        d.built.calls
+    )?;
+    outcome(t, out, &d.built)
+}
+
+/// Prints each line of `built` that failed; failure if any did.
+fn outcome(t: &Thread, out: &mut dyn Write, built: &Built) -> Result<ExitCode> {
+    if built.failed.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    for f in failures(&t.snapshot()?, &built.failed)? {
+        writeln!(out, "{f}")?;
+    }
+    Ok(ExitCode::FAILURE)
 }

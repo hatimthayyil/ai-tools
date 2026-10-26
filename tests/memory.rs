@@ -11,10 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ai_tools::file::pretty;
 use ai_tools::memory::{
-    Backend, Block, Cli, Compactor, Config, Conversation, Coord, Field, GaveUp, HIDDEN, Kind,
-    LONG_PROMPT, Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY, REMINDER,
-    Runtime, Store, Usage, VIEW, View, Who, zoom,
+    Backend, Block, Cli, Compactor, Config, Conversation, Coord, Event, Field, GaveUp, HIDDEN,
+    Kind, LONG_PROMPT, Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY,
+    REMINDER, Runtime, Store, Usage, VIEW, View, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -58,6 +59,7 @@ fn runtime(backend: Arc<dyn Backend>) -> Runtime {
     Runtime {
         backend: Box::new(move |_| Ok(backend.clone())),
         terminal: false,
+        bars: false,
         opts: opts(VIEW, 8),
         config: Config::default(),
         summariser: Default::default(),
@@ -114,6 +116,18 @@ fn run(dir: &Path, args: &[&str]) -> Out {
         &runtime(Arc::new(Model(Arc::new(Fake::summaries())))),
         args,
     )
+}
+
+/// What a build's end, after its plan and lines, says it built: in all, by the model and
+/// joined, and how many it dropped first.
+fn ended(out: &str) -> (u64, u64, u64, Option<u64>) {
+    let end = Regex::new(
+        r"(?m)^Built (\d+) summar(?:y|ies) in [^:]+: (\d+) by the model, (\d+) joined\.(?: Dropped (\d+) summar(?:y|ies) first\.)?\n\d+ calls? \(",
+    )
+    .unwrap();
+    let c = end.captures(out).unwrap_or_else(|| panic!("no end: {out}"));
+    let n = |i| c.get(i).map(|m| m.as_str().parse().unwrap());
+    (n(1).unwrap(), n(2).unwrap(), n(3).unwrap(), n(4))
 }
 
 /// [`run`] with the sizes `config` sets.
@@ -656,8 +670,21 @@ fn overshoots_are_retried_in_the_same_conversation() {
     );
 }
 
+/// Each failure in `events`: its node, its error and the try after it.
+fn failures(events: &[Event]) -> Vec<(Coord, &str, usize)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Failed {
+                node, error, next, ..
+            } => Some((*node, error.as_str(), *next)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn failures_are_retried_and_reported_once() {
+fn failures_are_retried_and_each_reported() {
     let (_tmp, d) = store();
     let s = Store::open(&d).unwrap();
     s.append("t", &[msg(Kind::User, long(0))]).unwrap();
@@ -672,13 +699,25 @@ fn failures_are_retried_and_reported_once() {
         Ok("a summary".into())
     }));
     let mut c = compactor(&s, &fake, opts(VIEW, 8));
-    let mut reports = Vec::new();
+    let mut events = Vec::new();
     c.run(|c| {
-        reports.extend(c.take_reports());
+        events.extend(c.take_events());
         Ok(())
     })
     .unwrap();
-    assert_eq!(reports, ["0: overloaded"]);
+    let leaf = Coord::leaf(0);
+    assert_eq!(
+        failures(&events),
+        [
+            (leaf, "overloaded", 2),
+            (leaf, "overloaded", 3),
+            (leaf, "overloaded", 4)
+        ]
+    );
+    assert!(
+        matches!(events.last(), Some(Event::Built { node, chars: 9, .. }) if *node == leaf),
+        "{events:?}"
+    );
     assert_eq!(fake.calls.load(Ordering::SeqCst), 4);
     assert_eq!(c.mem().text(Coord::leaf(0)), Some("a summary"));
     let blanks = AtomicUsize::new(0);
@@ -690,7 +729,16 @@ fn failures_are_retried_and_reported_once() {
     drop(c);
     let mut c = compactor(&s, &empty, opts(VIEW, 8));
     c.run(|_| Ok(())).unwrap();
-    assert_eq!(c.take_reports(), ["1: empty reply"]);
+    let events = c.take_events();
+    let leaf = Coord::leaf(1);
+    assert_eq!(
+        failures(&events),
+        [(leaf, "empty reply", 2), (leaf, "empty reply", 3)]
+    );
+    assert!(
+        events.contains(&Event::Joined(Coord::new(1, 0))),
+        "{events:?}"
+    );
 }
 
 #[test]
@@ -727,16 +775,17 @@ fn a_summariser_on_a_dead_backend_gives_up_and_frees_the_lock() {
     let dead = Fake::new(|_, _| bail!("usage limit reached"));
     let r = run_rt(&d, &runtime(Arc::new(Model(Arc::new(dead)))), &["build"]);
     assert_eq!(r.code, 1, "{}", r.stderr);
-    let failed = |n| {
-        format!(
-            "Failed {n}: usage limit reached. Retrying up to 3 times, waiting longer each time.\n"
-        )
-    };
-    assert!(
-        r.stdout.starts_with(&failed(0)) || r.stdout.starts_with(&failed(1)),
-        "{}",
-        r.stdout
-    );
+    for event in [
+        r"\n\[0/3\]   retry [01]          try 2 of 4 in \d+s: usage limit reached\n",
+        r"\n\[0/3\] gave up [01]          after 4 tries: usage limit reached\n",
+        r"\nBuilt 0 summaries in \d+s: 0 by the model, 0 joined\.\n",
+    ] {
+        assert!(
+            Regex::new(event).unwrap().is_match(&r.stdout),
+            "{event}: {}",
+            r.stdout
+        );
+    }
     assert!(
         Regex::new(r"\nGave up on [01] after 4 failures in a row: usage limit reached\. It stays pending; the summariser after the next note tries again\.\n$")
             .unwrap()
@@ -755,7 +804,7 @@ fn a_summariser_on_a_dead_backend_gives_up_and_frees_the_lock() {
     );
     assert!(!log.contains(" end "), "{log}");
     assert!(!Mem::load(&s.snapshot().unwrap(), VIEW).unwrap().all_built());
-    assert_eq!(run(&d, &["build"]).stdout, "Built 3 summaries.\n");
+    assert_eq!(ended(&run(&d, &["build"]).stdout), (3, 3, 0, None));
 }
 
 #[test]
@@ -816,14 +865,7 @@ fn a_life_through_the_cli() {
 
     let rt = runtime(Arc::new(Model(Arc::new(Fake::summaries()))));
     let r = run_rt(d, &rt, &["build"]);
-    assert!(
-        Regex::new(r"^Built \d+ summaries\.\n$")
-            .unwrap()
-            .is_match(&r.stdout),
-        "{}{}",
-        r.stdout,
-        r.stderr
-    );
+    assert!(ended(&r.stdout).1 > 0, "{}{}", r.stdout, r.stderr);
     let s = Store::open(d).unwrap();
     let snap = s.snapshot().unwrap();
     for l in 0..6 {
@@ -1251,13 +1293,96 @@ fn a_missing_dir_is_reported_not_created() {
 }
 
 #[test]
+fn a_build_off_a_terminal_prints_its_plan_each_summary_and_its_end() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
+        .unwrap();
+    let r = run(&d, &["build"]);
+    let log = regex::escape(&pretty(&d.join("summarise.log")));
+    let want = format!(
+        "^Building memory with sonnet, 8 calls at once\\.
+  level             lines  written  to write
+  L0  1 message         2        0         2
+  L1  2 messages        1        0         1
+Up to 3 model calls: a line whose sources fit in one is joined without a call\\.
+No past calls to estimate cost and time from\\.
+Log: {log}
+\\[1/3\\]   built [01]          \\d+\\.\\ds  300 chars  \\$0\\.0100
+\\[2/3\\]   built [01]          \\d+\\.\\ds  300 chars  \\$0\\.0100
+\\[3/3\\]   built 0\\+2        \\d+\\.\\ds  300 chars  \\$0\\.0100
+Built 3 summaries in \\d+s: 3 by the model, 0 joined\\.
+3 calls \\(0 to shorten a line, 0 after a failure\\), \\$0\\.0300, 330 tokens\\.
+Log: {log}
+$"
+    );
+    assert!(
+        Regex::new(&want).unwrap().is_match(&r.stdout),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn a_dry_run_prints_the_plan_with_past_costs_and_builds_nothing() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
+        .unwrap();
+    assert_eq!(ended(&run(&d, &["build"]).stdout), (3, 3, 0, None));
+    s.append("t", &[msg(Kind::User, long(2)), msg(Kind::User, long(3))])
+        .unwrap();
+    let fake = Arc::new(Fake::summaries());
+    let rt = runtime(Arc::new(Model(fake.clone())));
+    let log = pretty(&d.join("summarise.log"));
+    let r = run_rt(&d, &rt, &["build", "--dry-run"]);
+    assert_eq!(
+        r.stdout,
+        format!(
+            "Building memory with sonnet, 8 calls at once.
+  level             lines  written  to write
+  L0  1 message         4        2         2
+  L1  2 messages        2        1         1
+  L2  4 messages        1        0         1
+Up to 4 model calls: a line whose sources fit in one is joined without a call.
+About $0.0400 and 0s, at the average of the last 3 calls.
+Log: {log}
+"
+        )
+    );
+    let r = run_rt(&d, &rt, &["build", "--dry-run", "--rebuild"]);
+    assert!(
+        r.stdout.starts_with(
+            "Rebuilding memory with sonnet, 8 calls at once.
+  level             lines  written  to write
+  L0  1 message         4        0         4
+  L1  2 messages        2        0         2
+  L2  4 messages        1        0         1
+Up to 7 model calls:"
+        ),
+        "{}",
+        r.stdout
+    );
+    assert_eq!(
+        fake.calls.load(Ordering::SeqCst),
+        0,
+        "a dry run calls no model"
+    );
+    assert_eq!(ended(&run(&d, &["build"]).stdout), (4, 4, 0, None));
+    assert_eq!(
+        run(&d, &["build", "--dry-run"]).stdout,
+        "Nothing to build.\n"
+    );
+}
+
+#[test]
 fn a_summariser_logs_timestamped_events_to_summarise_log() {
     let (_tmp, d) = store();
     let s = Store::open(&d).unwrap();
     s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
         .unwrap();
     let r = run(&d, &["build"]);
-    assert_eq!(r.stdout, "Built 3 summaries.\n", "{}", r.stderr);
+    assert_eq!(ended(&r.stdout), (3, 3, 0, None), "{}", r.stderr);
     let line = |level: &str, event: &str| {
         Regex::new(&format!(
             r"(?m)^\d{{4}}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{{6}}Z  {level} summarise\{{pid={} model=\S+ dir=\S+\}}: ai_tools::memory::\w+: {event}$",
@@ -1287,7 +1412,7 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
         Ok("y".repeat(if attempt == 1 { 600 } else { 300 }))
     });
     let r = run_rt(&d, &runtime(Arc::new(Model(Arc::new(flaky)))), &["build"]);
-    assert!(r.stdout.ends_with("Built 1 summary.\n"), "{}", r.stdout);
+    assert_eq!(ended(&r.stdout), (1, 1, 0, None));
     let log = fs::read_to_string(d.join("summarise.log")).unwrap();
     let warns = [
         format!(r#"failed node=2 error="overloaded" secs=[\d.]+ wait=[\d.]+ {one}"#),
@@ -1330,7 +1455,7 @@ fn a_note_whose_summariser_finds_the_lock_taken_still_gets_built() {
         Some("A compactor is already running; it will build these too.\n"),
         "the late summariser must find the lock taken"
     );
-    assert_eq!(r.stdout, "Built 3 summaries.\n", "{}", r.stderr);
+    assert_eq!(ended(&r.stdout), (3, 3, 0, None), "{}", r.stderr);
     let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
     assert!(m.built(Coord::leaf(1)) && m.built(Coord::new(1, 0)));
     assert_eq!(run(&d, &["build"]).stdout, "Nothing to build.\n");
@@ -1352,7 +1477,7 @@ fn summarised() -> (TempDir, PathBuf) {
         ],
     )
     .unwrap();
-    assert_eq!(run(&d, &["build"]).stdout, "Built 3 summaries.\n");
+    assert_eq!(ended(&run(&d, &["build"]).stdout), (4, 3, 1, None));
     (tmp, d)
 }
 
@@ -1387,11 +1512,13 @@ fn a_rebuild_drops_every_summary_and_builds_them_all_again() {
     let (_tmp, d) = summarised();
     let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
     let r = run_rt(&d, &rt, &["build", "--rebuild"]);
-    assert_eq!(
-        r.stdout, "Dropped 4 summaries; built 4, 3 by the model.\n",
+    assert!(
+        r.stdout
+            .starts_with("Rebuilding memory with sonnet, 8 calls at once.\n"),
         "{}",
-        r.stderr
+        r.stdout
     );
+    assert_eq!(ended(&r.stdout), (4, 3, 1, Some(4)), "{}", r.stderr);
     assert!(all_new(&d));
     let s = Store::open(&d).unwrap();
     let snap = s.snapshot().unwrap();
@@ -1441,11 +1568,7 @@ fn a_rebuild_holds_the_lock_until_every_summary_is_built_again() {
         Some("A compactor is already running; it will build these too.\n"),
         "a note's summariser must find the lock taken"
     );
-    assert_eq!(
-        r.stdout, "Dropped 4 summaries; built 5, 4 by the model.\n",
-        "{}",
-        r.stderr
-    );
+    assert_eq!(ended(&r.stdout), (5, 4, 1, Some(4)), "{}", r.stderr);
     assert_eq!(*held.lock().unwrap(), [true]);
     assert_eq!(*released.lock().unwrap(), [true]);
 }
@@ -1476,11 +1599,7 @@ fn a_rebuild_waits_for_a_running_summariser() {
     let r = run_rt(&d, &rt, &["build", "--rebuild"]);
     held.join().unwrap();
     assert!(start.elapsed() >= Duration::from_millis(300));
-    assert_eq!(
-        r.stdout, "Dropped 4 summaries; built 4, 3 by the model.\n",
-        "{}",
-        r.stderr
-    );
+    assert_eq!(ended(&r.stdout), (4, 3, 1, Some(4)), "{}", r.stderr);
 }
 
 #[test]
@@ -1504,9 +1623,17 @@ fn a_rebuild_that_gives_up_leaves_the_rest_to_the_next_build() {
         "{}",
         r.stdout
     );
+    assert!(
+        Regex::new(r"\n\[\d+/\d+\] gave up 1          after 4 tries: overloaded\n")
+            .unwrap()
+            .is_match(&r.stdout),
+        "{}",
+        r.stdout
+    );
+    assert_eq!(ended(&r.stdout).3, Some(4));
     assert!(!all_new(&d));
     let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
-    assert_eq!(run_rt(&d, &rt, &["build"]).stdout, "Built 2 summaries.\n");
+    assert_eq!(ended(&run_rt(&d, &rt, &["build"]).stdout).1, 2);
     assert!(all_new(&d));
 }
 

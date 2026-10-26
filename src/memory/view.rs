@@ -73,6 +73,13 @@ impl Mem {
         self.text(c).is_some()
     }
 
+    /// How many nodes of level `l` are built.
+    pub fn built_at(&self, l: u32) -> u64 {
+        self.nodes
+            .get(l as usize)
+            .map_or(0, |n| n.iter().flatten().count() as u64)
+    }
+
     /// Whether `c`'s sources exist: its message, or both children.
     pub fn ready(&self, c: Coord) -> bool {
         match c.l {

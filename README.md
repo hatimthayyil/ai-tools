@@ -99,7 +99,7 @@ ai agent list                         # the agents here, newest first, and their
 ai agent view dev                     # dev's view, from the summaries written so far
 ai agent zoom -a dev <id>             # open a line of it; --tool-output adds tool output
 ai agent grep -a dev <regex>          # search it; repeat -a to search several agents
-ai agent build -a dev                 # write its summaries now, with a progress bar on a terminal; --rebuild, --model, --dry-run
+ai agent build -a dev                 # write its summaries now: its plan, then a bar per level (a line per summary off a terminal); --rebuild, --model, --dry-run
 ```
 
 Only `new` creates an agent; `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in `.ai/local/agents/` in the project's main checkout, so its linked worktrees share them; `ai init` adds `/.ai/local/` to `.gitignore`.

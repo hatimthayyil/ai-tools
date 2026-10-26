@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
     agent::{
+        id::Id,
         model::{Item, Kind, Place, Tree, Turn, turns},
         record::{Key, LineKind},
         render::{Cut, clip, item_text},
@@ -375,6 +376,28 @@ impl Rollup {
 
     fn place(&self, seq: u64) -> Place {
         self.places[seq as usize]
+    }
+
+    /// The first item line `key` covers.
+    pub fn first(&self, key: Key) -> u64 {
+        match self.lines.get(&key) {
+            Some(Source::Chunk { items, .. }) => items.first().copied().unwrap_or(key.last),
+            Some(Source::Turn {
+                message,
+                work,
+                reply,
+            }) => message
+                .or_else(|| work.first().map(|&c| self.first(c)))
+                .or(*reply)
+                .unwrap_or(key.last),
+            Some(Source::Node([a, _])) => self.first(*a),
+            None => key.last,
+        }
+    }
+
+    /// Line `key` as the thread's view numbers it: `12.1+7`, `12` or `8+4`.
+    pub fn id(&self, key: Key) -> Id {
+        Id::line(key.level, self.place(self.first(key)), self.place(key.last))
     }
 
     /// What line `key` covers, by [`weight`].

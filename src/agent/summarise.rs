@@ -11,7 +11,6 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use indicatif::ProgressBar;
 use jiff::Timestamp;
 use serde::Deserialize;
 use tracing::{Span, dispatcher, info, info_span, warn};
@@ -19,11 +18,12 @@ use tracing::{Span, dispatcher, info, info_span, warn};
 use crate::{
     agent::{
         record::{Key, Line},
-        rollup::{PROMPT, Rollup, Source},
+        rollup::{PROMPT, Rollup},
         store::{Mark, Store, Thread},
     },
     config::Settings,
     memory::{Backend, Block, JOBS, Spend, TRIES, Who, limit, log, write_line},
+    progress::{Level, Progress},
 };
 
 /// `[chat]` in `ai.toml`.
@@ -123,12 +123,12 @@ pub struct DryLine {
 /// Under the thread's lock, waiting for it however long, builds `keys` and the unbuilt lines
 /// they are made from, up to [`JOBS`] calls at once, until they are built or a line fails;
 /// logs to [`Thread::log_path`]. A key that is no line of the thread is an error. Shows its
-/// progress on `bar`.
+/// progress on `progress`.
 pub fn build(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     keys: &[Key],
-    bar: &ProgressBar,
+    progress: &Progress,
 ) -> Result<Built> {
     let _log = log::init(&thread.log_path()?)?;
     let _build = info_span!("build", pid = process::id(), thread = thread.name()).entered();
@@ -139,7 +139,7 @@ pub fn build(
             thread.lock()?
         }
     };
-    let mut run = Run::new(thread, backend, OnFail::Stop, bar);
+    let mut run = Run::new(thread, backend, OnFail::Stop, progress);
     run.pass(Some(keys))?;
     let built = run.built.clone();
     drop(run);
@@ -150,12 +150,12 @@ pub fn build(
 /// Under the thread's lock, builds every line that is ready on any branch, over each newer
 /// snapshot, until none is or failures stop it as `on_fail` says; logs to
 /// [`Thread::log_path`]. `None` if another compactor holds the lock. Shows its progress on
-/// `bar`.
+/// `progress`.
 pub fn summarise(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     on_fail: OnFail,
-    bar: &ProgressBar,
+    progress: &Progress,
 ) -> Result<Option<Built>> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
@@ -166,7 +166,7 @@ pub fn summarise(
     )
     .entered();
     let start = Instant::now();
-    let mut run = Run::new(thread, backend, on_fail, bar);
+    let mut run = Run::new(thread, backend, on_fail, progress);
     let mut started = false;
     loop {
         let Some(lock) = thread.try_lock()? else {
@@ -202,12 +202,12 @@ pub fn summarise(
 /// Rewrites every line of the thread: under its lock, waiting for it until `deadline`, drops
 /// them all, then builds every line again as [`summarise`] does; logs to [`Thread::log_path`].
 /// How many lines it dropped and what it built; `None` if another summariser still holds the
-/// lock at the deadline. Shows its progress on `bar`.
+/// lock at the deadline. Shows its progress on `progress`.
 pub fn rebuild(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     deadline: Instant,
-    bar: &ProgressBar,
+    progress: &Progress,
 ) -> Result<Option<(usize, Built)>> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
@@ -225,7 +225,7 @@ pub fn rebuild(
     info!("start");
     let dropped = thread.drop_lines()?;
     info!(dropped, "dropped");
-    let mut run = Run::new(thread, backend, OnFail::Stop, bar);
+    let mut run = Run::new(thread, backend, OnFail::Stop, progress);
     loop {
         let tried = run.tried();
         run.pass(None)?;
@@ -260,13 +260,13 @@ pub struct Rewrote {
 /// the lines made from it up to the top, in one commit, then writes it again from the lines
 /// under it; logs to [`Thread::log_path`]. `None` if another summariser still holds the lock
 /// at the deadline. A key that is no line of the thread is an error. Shows its progress on
-/// `bar`.
+/// `progress`.
 pub fn rewrite(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     key: Key,
     deadline: Instant,
-    bar: &ProgressBar,
+    progress: &Progress,
 ) -> Result<Option<Rewrote>> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
@@ -293,7 +293,7 @@ pub fn rewrite(
         .collect::<Result<Vec<bool>>>()?;
     let dropped = thread.drop_keys(&[&[key][..], &above].concat())?;
     info!(dropped, "dropped");
-    let mut run = Run::new(thread, backend, OnFail::Stop, bar);
+    let mut run = Run::new(thread, backend, OnFail::Stop, progress);
     loop {
         let tried = run.tried();
         run.pass(Some(&[key]))?;
@@ -330,7 +330,8 @@ pub fn dry_run(
     )
     .entered();
     info!(rebuild, "start");
-    let mut run = Run::new(thread, backend, OnFail::Stop, &ProgressBar::hidden());
+    let quiet = Progress::quiet();
+    let mut run = Run::new(thread, backend, OnFail::Stop, &quiet);
     run.dry = Some(Vec::new());
     run.anew = match (rebuild, line) {
         (false, _) => Anew::None,
@@ -347,7 +348,7 @@ pub fn dry_run(
     let lines = built
         .into_iter()
         .map(|(key, text)| DryLine {
-            first: first(&roll, key),
+            first: roll.first(key),
             key,
             text,
             was: old.get(&key).map(|l| l.text.clone()),
@@ -359,27 +360,10 @@ pub fn dry_run(
     })
 }
 
-/// The first item line `key` covers.
-pub fn first(roll: &Rollup, key: Key) -> u64 {
-    match roll.source(key) {
-        Some(Source::Chunk { items, .. }) => items.first().copied().unwrap_or(key.last),
-        Some(Source::Turn {
-            message,
-            work,
-            reply,
-        }) => message
-            .or_else(|| work.first().map(|&c| first(roll, c)))
-            .or(*reply)
-            .unwrap_or(key.last),
-        Some(Source::Node([a, _])) => first(roll, *a),
-        None => key.last,
-    }
-}
-
 type Done = (Key, Duration, Spend, Result<(Who, String)>);
 
 /// Builds lines of one thread, each call on its own thread.
-struct Run<'t> {
+struct Run<'t, 'o> {
     thread: &'t Thread,
     backend: Arc<dyn Backend>,
     tx: Sender<Done>,
@@ -394,9 +378,8 @@ struct Run<'t> {
     dry: Option<Vec<(Key, String)>>,
     /// The stored lines read as unbuilt, to build them anew.
     anew: Anew,
-    /// Shows the lines written of those planned, the calls running and the failures; cleared
-    /// when the run ends.
-    bar: ProgressBar,
+    /// Shows the plan, the lines written as they are and the calls running.
+    progress: &'t Progress<'o>,
 }
 
 /// Which stored lines a run reads as unbuilt.
@@ -416,13 +399,13 @@ fn key((last, level): (u64, u32)) -> Key {
     Key { level, last }
 }
 
-impl<'t> Run<'t> {
+impl<'t, 'o> Run<'t, 'o> {
     fn new(
         thread: &'t Thread,
         backend: Arc<dyn Backend>,
         on_fail: OnFail,
-        bar: &ProgressBar,
-    ) -> Run<'t> {
+        progress: &'t Progress<'o>,
+    ) -> Run<'t, 'o> {
         let (tx, rx) = channel();
         Run {
             thread,
@@ -436,7 +419,7 @@ impl<'t> Run<'t> {
             built: Built::default(),
             dry: None,
             anew: Anew::None,
-            bar: bar.clone(),
+            progress,
         }
     }
 
@@ -478,10 +461,11 @@ impl<'t> Run<'t> {
                 .map(|&k| order(k))
                 .collect(),
         };
+        self.show(&roll, &lines, &todo)?;
         loop {
             self.free(&roll, &mut lines, &mut todo)?;
             self.start(&roll, &lines, &todo);
-            self.show(&todo);
+            self.show(&roll, &lines, &todo)?;
             if self.busy.is_empty() {
                 return Ok(snap.mark());
             }
@@ -493,17 +477,32 @@ impl<'t> Run<'t> {
         }
     }
 
-    /// Puts on the bar the lines written of those planned, `todo` being those left, and the
-    /// calls running and failed.
-    fn show(&self, todo: &BTreeSet<(u64, u32)>) {
-        let done = self.built.lines;
-        self.bar.set_length(done + todo.len() as u64);
-        self.bar.set_position(done);
-        self.bar.set_message(format!(
-            "{} running, {} failed",
-            self.busy.len(),
-            self.built.failed.len()
-        ));
+    /// Puts on the progress where the run stands: per level, the lines of `roll`, those of
+    /// `lines` written and those of `todo` left; and the levels of the calls running. Plans
+    /// first if not yet.
+    fn show(
+        &self,
+        roll: &Rollup,
+        lines: &HashMap<Key, String>,
+        todo: &BTreeSet<(u64, u32)>,
+    ) -> Result<()> {
+        let keys = roll.lines().keys();
+        let top = keys
+            .clone()
+            .map(|k| k.level)
+            .chain(todo.iter().map(|o| o.1))
+            .max();
+        let mut levels = vec![Level::default(); top.map_or(0, |t| t as usize + 1)];
+        for k in keys {
+            let v = &mut levels[k.level as usize];
+            v.lines += 1;
+            v.written += u64::from(lines.contains_key(k));
+        }
+        for &(_, l) in todo {
+            levels[l as usize].left += 1;
+        }
+        let running: Vec<u32> = self.busy.iter().map(|k| k.level).collect();
+        self.progress.update(&levels, &running, &[])
     }
 
     /// The unbuilt lines among `keys` and those they are made from.
@@ -569,6 +568,7 @@ impl<'t> Run<'t> {
                 lines.insert(k, text);
                 todo.remove(&order(k));
                 self.built.lines += 1;
+                self.progress.joined(k.level, &roll.id(k))?;
             }
         }
     }
@@ -627,7 +627,8 @@ impl<'t> Run<'t> {
         let secs = log::secs(took);
         match r {
             Ok((who, text)) => {
-                log::spend!(info, spent, { line = %k, chars = text.chars().count(), secs }, "built");
+                let chars = text.chars().count();
+                log::spend!(info, spent, { line = %k, chars, secs }, "built");
                 let text = match &mut self.dry {
                     None => {
                         let kind = roll.source(k).expect("a planned line").kind();
@@ -643,10 +644,13 @@ impl<'t> Run<'t> {
                 self.built.lines += 1;
                 self.built.calls += 1;
                 self.streak = 0;
+                self.progress
+                    .built(k.level, &roll.id(k), took, chars, spent.all.cost)?;
             }
             Err(e) => {
                 let error = format!("{e:#}");
                 log::spend!(warn, spent, { line = %k, error, secs }, "failed");
+                self.progress.failed(&roll.id(k), &error, spent.all.cost)?;
                 self.failed.insert(k);
                 self.built.failed.push((k, error));
                 self.streak += 1;
@@ -665,11 +669,10 @@ impl<'t> Run<'t> {
     }
 }
 
-impl Drop for Run<'_> {
+impl Drop for Run<'_, '_> {
     fn drop(&mut self) {
         if !self.busy.is_empty() {
             self.backend.stop();
         }
-        self.bar.finish_and_clear();
     }
 }

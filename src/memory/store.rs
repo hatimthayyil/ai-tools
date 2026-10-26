@@ -282,9 +282,7 @@ impl Store {
                 had += s.level(l)?.iter().flatten().count() as u64;
                 l += 1;
             }
-            let mut ed = Edit::new(s)?;
-            ed.cleared = true;
-            s.scan(t, |i, m| ed.leaf(i, &m))?;
+            let ed = Edit::own(s)?;
             let kept = ed.built.len() as u64;
             if had == kept {
                 return Ok((0, Changes::default()));
@@ -309,6 +307,14 @@ struct Edit<'a, 's> {
 }
 
 impl<'a, 's> Edit<'a, 's> {
+    /// An edit reading `snap`'s tree as empty, holding the nodes its messages make alone.
+    fn own(snap: &'a Snapshot<'s>) -> Result<Self> {
+        let mut ed = Edit::new(snap)?;
+        ed.cleared = true;
+        snap.scan(ed.t, |i, m| ed.leaf(i, &m))?;
+        Ok(ed)
+    }
+
     fn new(snap: &'a Snapshot<'s>) -> Result<Self> {
         Ok(Edit {
             snap,
@@ -502,6 +508,11 @@ impl Snapshot<'_> {
     pub fn node(&self, c: Coord) -> Result<Option<Node>> {
         let (path, k) = seg_of(c);
         Ok(node(&seg(&self.read(&path)?)?, k))
+    }
+
+    /// The nodes its messages make alone, which [`Store::drop_nodes`] keeps.
+    pub fn own_nodes(&self) -> Result<Vec<Coord>> {
+        Ok(Edit::own(self)?.built.into_iter().map(|(c, _)| c).collect())
     }
 
     /// Every node of level `l`, by index; `None` where not built.

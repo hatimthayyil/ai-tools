@@ -16,7 +16,7 @@ use crate::{
     memory::{
         backend::MakeBackend,
         claude::CALLS,
-        compact::{Compactor, GaveUp, Options, Spend},
+        compact::{Compactor, Event, GaveUp, Options, Spend},
         config::{Config, Knob, note_limit},
         cover::cover,
         grep::{Grep, grep},
@@ -33,6 +33,7 @@ use crate::{
         zoom::zoom,
     },
     page,
+    progress::{self, About, Level, Mode, Past, Progress},
     project::Project,
     summariser,
 };
@@ -111,13 +112,21 @@ enum Command {
         #[arg(allow_hyphen_values = true)]
         text: String,
     },
-    #[command(about = "build every summary that can be built now, with Claude Code.")]
+    #[command(
+        about = "build every summary that can be built now, with Claude Code.",
+        after_help = "It prints its plan first: per level of the memory's tree, the summaries it \
+                      holds, those written and those to write, with the calls, cost and time that \
+                      takes at the average of past calls. On a terminal it then shows a bar per \
+                      level; off one, a line per summary. The full record is in summarise.log."
+    )]
     Build {
         #[arg(
             long,
             help = "drop every summary and build them all again; the old ones stay in the memory's git history"
         )]
         rebuild: bool,
+        #[arg(long, help = "print the plan only; call no model and store nothing")]
+        dry_run: bool,
     },
     #[command(about = "search every message ever recorded, newest first.")]
     Grep(Grep),
@@ -164,9 +173,13 @@ impl Command {
                     .collect(),
             ),
             Command::Note { .. } => ("note", Vec::new()),
-            Command::Build { rebuild } => (
+            Command::Build { rebuild, dry_run } => (
                 "build",
-                rebuild.then(|| "--rebuild".into()).into_iter().collect(),
+                [(rebuild, "--rebuild"), (dry_run, "--dry-run")]
+                    .into_iter()
+                    .filter(|f| *f.0)
+                    .map(|f| f.1.into())
+                    .collect(),
             ),
             Command::Grep(g) => ("grep", g.typed()),
             Command::Zoom { id, meta } => (
@@ -187,6 +200,8 @@ pub struct Runtime {
     pub backend: Box<MakeBackend>,
     /// Whether stdout is a terminal, where views print whole.
     pub terminal: bool,
+    /// Whether stderr is a terminal, where `build` draws its bars.
+    pub bars: bool,
     pub opts: Options,
     /// The sizes `ai.toml` sets.
     pub config: Config,
@@ -206,6 +221,7 @@ impl Default for Runtime {
         Runtime {
             backend: summariser::Config::default().maker(),
             terminal: false,
+            bars: false,
             opts: Options::default(),
             config: Config::default(),
             summariser: summariser::Config::default(),
@@ -258,6 +274,7 @@ impl Cli {
         let rt = Runtime {
             backend: settings.summariser.clone().maker(),
             terminal: io::stdout().is_terminal(),
+            bars: progress::terminal(),
             config: settings.memory,
             opts: Options {
                 jobs: settings.summariser.jobs(),
@@ -320,7 +337,10 @@ impl Command {
             Command::Init | Command::PromptHook => unreachable!(),
             Command::View { whole, meta } => view(s, out, rt, whole || rt.terminal, &meta),
             Command::Note { text } => note(s, out, &text, rt, place, who),
-            Command::Build { rebuild } => build(s, out, rt, rebuild),
+            Command::Build { rebuild, dry_run } => match dry_run {
+                true => plan(s, out, rt, rebuild),
+                false => build(s, out, rt, rebuild),
+            },
             Command::Grep(g) => grep(s, out, &g, rt.terminal, &(rt.views)()?),
             Command::Zoom { id, meta } => zoom_cmd(&s.snapshot()?, out, &id, rt, &meta),
             Command::Show { id } => show(&s.snapshot()?, out, &id),
@@ -482,8 +502,69 @@ fn pending(s: &Store) -> Result<bool> {
     Ok(!mem.due(|_| false, 1).is_empty())
 }
 
+/// What `build` shows its progress about: what it does, with what, and the past calls to
+/// estimate from.
+fn about(s: &Store, rt: &Runtime, again: bool) -> Result<About> {
+    let log = s.dir().join(log::SUMMARISE_LOG);
+    Ok(About {
+        title: match again {
+            true => "Rebuilding memory",
+            false => "Building memory",
+        }
+        .into(),
+        unit: "summary",
+        covers: |l| plural(1 << l, "message"),
+        first_bar: 1,
+        model: rt.summariser.model(),
+        jobs: rt.opts.jobs,
+        past: Past::read(&log, |id| Coord::parse(id).map(|(_, n)| n.trailing_zeros()))?,
+        log,
+    })
+}
+
+/// Each level of a tree over `t` messages, lowest first, with `built(l)` of its nodes built.
+fn tree_levels(t: u64, built: impl Fn(u32) -> u64) -> Vec<Level> {
+    (0..u64::BITS)
+        .take_while(|&l| 1u64 << l <= t)
+        .map(|l| {
+            let (lines, written) = (t >> l, built(l));
+            Level {
+                lines,
+                written,
+                left: lines.saturating_sub(written),
+            }
+        })
+        .collect()
+}
+
+/// The levels of `m`'s tree.
+fn mem_levels(m: &Mem) -> Vec<Level> {
+    tree_levels(m.t(), |l| m.built_at(l))
+}
+
+/// `build --dry-run`: the plan of `build`, or with `again` of `build --rebuild`, and nothing else.
+fn plan(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<ExitCode> {
+    let snap = s.snapshot()?;
+    let levels = match again {
+        true => {
+            let own = snap.own_nodes()?;
+            tree_levels(snap.log_len()?, |l| {
+                own.iter().filter(|c| c.l == l).count() as u64
+            })
+        }
+        false => mem_levels(&Mem::load(&snap, VIEW)?),
+    };
+    let progress = Progress::new(&mut *out, Mode::Plain, about(s, rt, again)?);
+    if !progress.plan(&levels)? {
+        drop(progress);
+        writeln!(out, "Nothing to build.")?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Builds every node that is due; with `again`, drops every node first and builds them all
-/// again. A run that gives up leaves what it has not built pending.
+/// again. A run that gives up leaves what it has not built pending. Shows its plan, then its
+/// progress, then what it did.
 fn build(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<ExitCode> {
     let _log = log::init(&s.dir().join(log::SUMMARISE_LOG))?;
     let _span = info_span!(
@@ -495,37 +576,39 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<Ex
     .entered();
     let start = Instant::now();
     info!("start");
+    let mode = match rt.bars {
+        true => Mode::Bars,
+        false => Mode::Plain,
+    };
+    let progress = Progress::new(&mut *out, mode, about(s, rt, again)?);
     let mut spent = Spend::default();
     let mut ran = Rounds::default();
     let r = match again {
-        false => rounds(s, out, rt, &mut spent, &mut ran).map(|()| None),
-        true => rebuild(s, out, rt, &mut spent, &mut ran).map(Some),
+        false => rounds(s, &progress, rt, &mut spent, &mut ran),
+        true => rebuild(s, &progress, rt, &mut spent, &mut ran),
     };
-    let e = match r {
-        Ok(dropped) => {
-            match (dropped, &ran) {
-                (Some(d), Rounds { built, stored, .. }) => writeln!(
-                    out,
-                    "Dropped {}; built {stored}, {built} by the model.",
-                    plural(d, "summary")
-                )?,
-                (None, Rounds { busy: true, .. }) => writeln!(out, "{BUSY}")?,
-                (None, Rounds { built: 0, .. }) => writeln!(out, "Nothing to build.")?,
-                (None, Rounds { built, .. }) => {
-                    writeln!(out, "Built {}.", plural(*built, "summary"))?
-                }
-            }
-            let (built, secs) = (ran.built, log::secs(start.elapsed()));
-            log::spend!(info, spent, { built, secs }, "end");
-            return Ok(ExitCode::SUCCESS);
+    let Err(e) = r else {
+        let planned = progress.planned();
+        match planned {
+            true => progress.end(ran.dropped, spent)?,
+            false => drop(progress),
         }
-        Err(e) => e,
+        if ran.busy {
+            writeln!(out, "{BUSY}")?;
+        } else if !planned {
+            writeln!(out, "Nothing to build.")?;
+        }
+        let (built, secs) = (ran.built, log::secs(start.elapsed()));
+        log::spend!(info, spent, { built, secs }, "end");
+        return Ok(ExitCode::SUCCESS);
     };
     let Some(g) = e.downcast_ref::<GaveUp>() else {
         log::spend!(error, spent, { error = format!("{e:#}") }, "failed");
         return Err(e);
     };
     log::spend!(error, spent, { node = %g.node, tries = g.tries, error = g.error }, "gave up");
+    progress.gave_up(&g.node, g.tries, &g.error)?;
+    progress.end(ran.dropped, spent)?;
     let then = match again {
         false => "It stays pending; the summariser after the next note tries again.",
         true => {
@@ -536,20 +619,20 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<Ex
     Ok(ExitCode::FAILURE)
 }
 
-/// What compactor rounds did: the nodes the model built, every node they stored, and whether
-/// they stopped at another compactor's lock.
+/// What compactor rounds did: the nodes the model built, how many nodes a rebuild dropped
+/// first, and whether they stopped at another compactor's lock.
 #[derive(Default)]
 struct Rounds {
     built: u64,
-    stored: u64,
+    dropped: Option<u64>,
     busy: bool,
 }
 
-/// Compactor rounds until nothing is due or another compactor holds the lock, counted into
-/// `ran`. What their requests took goes into `spent`, failed or not.
+/// Compactor rounds until nothing is due or another compactor holds the lock, shown on
+/// `progress` and counted into `ran`. What their requests took goes into `spent`, failed or not.
 fn rounds(
     s: &Store,
-    out: &mut dyn Write,
+    progress: &Progress,
     rt: &Runtime,
     spent: &mut Spend,
     ran: &mut Rounds,
@@ -561,63 +644,80 @@ fn rounds(
             ran.busy = true;
             return Ok(());
         };
-        round(c, out, rt, spent, ran)?;
+        round(c, progress, rt, spent, ran)?;
     }
     Ok(())
 }
 
-/// Under the compactor's lock, waiting for it until [`summariser::WAIT`], drops every node in one commit and
-/// builds them all again before letting the lock go, so no other summariser builds any of them;
-/// then the rounds `build` runs, for what notes made due meanwhile. How many nodes it dropped.
+/// Under the compactor's lock, waiting for it until [`summariser::WAIT`], drops every node in
+/// one commit and builds them all again before letting the lock go, so no other summariser
+/// builds any of them; then the rounds `build` runs, for what notes made due meanwhile.
 fn rebuild(
     s: &Store,
-    out: &mut dyn Write,
+    progress: &Progress,
     rt: &Runtime,
     spent: &mut Spend,
     ran: &mut Rounds,
-) -> Result<u64> {
+) -> Result<()> {
     let Some(lock) = s.lock_before(Instant::now() + summariser::WAIT)? else {
         bail!("A summariser is still running on this memory. Try again when it ends.");
     };
     let backend = (rt.backend)(&s.dir().join(CALLS))?;
     let (dropped, _) = s.drop_nodes()?;
     info!(dropped, "dropped");
-    round(
-        Compactor::locked(s, backend, rt.opts, lock)?,
-        out,
-        rt,
-        spent,
-        ran,
-    )?;
-    rounds(s, out, rt, spent, ran)?;
-    Ok(dropped)
+    ran.dropped = Some(dropped);
+    let c = Compactor::locked(s, backend, rt.opts, lock)?;
+    round(c, progress, rt, spent, ran)?;
+    rounds(s, progress, rt, spent, ran)
 }
 
-/// Runs `c` until nothing is due on the latest snapshot, printing each node's first failure,
-/// then lets its lock go; counts what it did into `ran`, and what its requests took into `spent`.
+/// Runs `c` until nothing is due on the latest snapshot, showing on `progress` the plan, the
+/// nodes it writes and its calls, then lets its lock go; counts what the model built into
+/// `ran`, and what its requests took into `spent`.
 fn round(
     mut c: Compactor,
-    out: &mut dyn Write,
+    progress: &Progress,
     rt: &Runtime,
     spent: &mut Spend,
     ran: &mut Rounds,
 ) -> Result<()> {
-    let retries = rt.opts.retries;
-    let r = c.run(|c| {
-        for r in c.take_reports() {
-            writeln!(
-                out,
-                "Failed {r}. Retrying up to {retries} times, waiting longer each time."
-            )?;
-        }
-        Ok(())
-    });
+    let tries = rt.opts.retries + 1;
+    let r = report(&mut c, progress, tries).and_then(|()| c.run(|c| report(c, progress, tries)));
+    let shown = report(&mut c, progress, tries);
     *spent += c.spent();
     r?;
+    shown?;
     ran.built += c.built();
-    ran.stored += c.stored();
     (rt.before_release)();
     Ok(())
+}
+
+/// Shows on `progress` where `c` stands, its plan first, and what happened to nodes since last
+/// asked; a node is tried `tries` times at most.
+fn report(c: &mut Compactor, progress: &Progress, tries: usize) -> Result<()> {
+    let levels = mem_levels(c.mem());
+    progress.plan(&levels)?;
+    for e in c.take_events() {
+        match e {
+            Event::Built {
+                node,
+                took,
+                chars,
+                cost,
+            } => progress.built(node.l, &node, took, chars, cost)?,
+            Event::Joined(node) => progress.joined(node.l, &node)?,
+            Event::Failed {
+                node,
+                error,
+                next,
+                wait,
+                cost,
+            } => progress.retry(&node, &error, (next, tries), wait, cost)?,
+        }
+    }
+    let (running, waiting) = c.calls();
+    let at = |cs: Vec<Coord>| cs.into_iter().map(|c| c.l).collect::<Vec<u32>>();
+    progress.update(&levels, &at(running), &at(waiting))
 }
 
 fn config(out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
