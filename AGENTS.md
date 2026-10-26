@@ -15,6 +15,11 @@
 - Glossary is given in `my/glossary.md`. Maintain `ai/glossary.md` yourself.
 - Backlog is given in `ai/backlog.md`.
 
+## Development
+
+- This repo is in active development. Expect high churn: commands, file formats and code change often, and that is fine.
+- Never cut corners. Build each change completely and correctly: handle every case and failure, and test it.
+
 ## Writing
 - Prefer terse prose
 - Write research notes in `ai/research`
