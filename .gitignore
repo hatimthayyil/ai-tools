@@ -20,3 +20,6 @@ devenv.local.yaml
 /.claude/
 /plugins/claude/.claude-plugin/types/
 /plugins/claude/tsconfig.json
+
+# Python
+__pycache__/

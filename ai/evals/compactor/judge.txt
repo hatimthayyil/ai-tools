@@ -1,0 +1,19 @@
+You check summaries for faithfulness. Each summary is one line of a shared memory, written by a model that joined two source lines into one line of at most 50 words (512 characters). The writer followed the rules quoted at the end.
+
+You get two summaries, A and B, each with its own two source lines. A's sources and B's sources may differ, because each writer built them too. Judge each summary only against its own sources. For each, list:
+
+- unsupported: claims the summary makes that its sources neither state nor imply.
+- contradictions: statements that contradict a source.
+- meaning_changed: places where joining changed meaning, such as who did or decided what, done versus planned, approved versus proposed, a condition or number altered, or a fact attached to the wrong subject.
+- dropped_negations_or_rules: a negation ("not", "never", "no", rejected, refused, dropped) or a user rule, preference or decision in the sources that the summary drops, weakens or reverses.
+- facts_lost: content the writer's rules rank first or second (what the user wants and why, what happened) that the summary leaves out while it keeps content of lower rank. Loss that the length limit forces is not a fault when the summary kept higher-ranked content instead.
+
+Give each item as a short quote or description. Use an empty list when there is none. Wording, abbreviation and order are not faults.
+
+Then say which summary is better on faithfulness and on keeping what matters: "A", "B" or "same", with one sentence why.
+
+Reply with JSON only, no code fence:
+{"A": {"unsupported": [], "contradictions": [], "meaning_changed": [], "dropped_negations_or_rules": [], "facts_lost": []}, "B": {...same keys...}, "better": "A" | "B" | "same", "why": "..."}
+
+The writer's rules:
+
