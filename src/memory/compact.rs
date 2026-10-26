@@ -290,6 +290,7 @@ pub struct Compactor<'s> {
     waits: Vec<(Instant, Coord)>,
     reports: Vec<String>,
     built: u64,
+    stored: u64,
     spent: Spend,
     tx: Sender<Done>,
     rx: Receiver<Done>,
@@ -302,9 +303,19 @@ impl<'s> Compactor<'s> {
         let Some(lock) = store.try_lock()? else {
             return Ok(None);
         };
+        Compactor::locked(store, backend, opts, lock).map(Some)
+    }
+
+    /// Holds `lock`, the memory's compactor lock, taken already.
+    pub fn locked(
+        store: &'s Store,
+        backend: Arc<dyn Backend>,
+        opts: Options,
+        lock: crate::file::Lock,
+    ) -> Result<Self> {
         let mem = Mem::load(&store.snapshot()?, opts.budget)?;
         let (tx, rx) = channel();
-        Ok(Some(Compactor {
+        Ok(Compactor {
             store,
             backend,
             opts,
@@ -314,11 +325,12 @@ impl<'s> Compactor<'s> {
             waits: Vec::new(),
             reports: Vec::new(),
             built: 0,
+            stored: 0,
             spent: Spend::default(),
             tx,
             rx,
             _lock: lock,
-        }))
+        })
     }
 
     pub fn mem(&self) -> &Mem {
@@ -328,6 +340,11 @@ impl<'s> Compactor<'s> {
     /// Nodes built by the model so far.
     pub fn built(&self) -> u64 {
         self.built
+    }
+
+    /// Nodes stored so far: those built by the model, and the free ones they completed.
+    pub fn stored(&self) -> u64 {
+        self.stored
     }
 
     /// What its requests to the model took so far.
@@ -398,6 +415,7 @@ impl<'s> Compactor<'s> {
             Ok((who, text)) => {
                 log::spend!(info, spent, { node = %c, chars = text.chars().count(), secs = log::secs(took) }, "built");
                 let (built, snap) = self.store.put_node(c, &who, &text)?;
+                self.stored += built.len() as u64;
                 for (k, t) in built {
                     self.mem.set(k, t);
                 }

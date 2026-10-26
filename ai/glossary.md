@@ -10,7 +10,7 @@
 - `placeholder`: `(not summarized yet: zoom it)`, the view line of a message whose level-0 node is not built.
 - `compactor`: builds nodes with a model, in rule-3 order (messages one at a time, merges alongside), `JOBS` = 8 at once, size retries, fixed 10 s retry. One per memory (`compact.lock`). Runs as `ai memory build`.
 - `rule 3`: a node is built only when every view line before its end is already a summary, so the compactor never sees a placeholder.
-- `build` (memory): `ai memory build`: run the compactor until nothing is buildable, then exit. `note` starts one in the background when a node is due.
+- `build` (memory): `ai memory build`: run the compactor until nothing is buildable, then exit. `note` starts one in the background when a node is due. `--rebuild` drops every node a model wrote and every node over one, in one commit, then builds them all again before letting go of `compact.lock`; a run that gives up leaves the rest for the next `build`.
 - `backend`: the compactor's model access (`Backend`/`Conversation`); now only Claude Code (`claude -p`, Sonnet, medium effort).
 - `ai memory view`: print the view under date headers: whole on a terminal, else in parts.
 - `part`: one page of a view's output when it is not on a terminal: at most `PART` (20,000) bytes, headed by its command and `part k of n`, ending with `Next: ai page <view>:<part>` while parts remain.

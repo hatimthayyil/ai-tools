@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use genai::chat::ReasoningEffort;
@@ -8,6 +8,9 @@ use crate::{
     config::positive,
     memory::{Api, Backend, ClaudeCode, JOBS, MakeBackend, Witnessed, claude},
 };
+
+/// How long `build --rebuild` waits for a running summariser.
+pub const WAIT: Duration = Duration::from_secs(60);
 
 /// `[summariser]` in `ai.toml`: what writes every summary, for agents, memory and notes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]

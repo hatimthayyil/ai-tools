@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ai_tools::memory::{
@@ -1334,6 +1334,180 @@ fn a_note_whose_summariser_finds_the_lock_taken_still_gets_built() {
     let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
     assert!(m.built(Coord::leaf(1)) && m.built(Coord::new(1, 0)));
     assert_eq!(run(&d, &["build"]).stdout, "Nothing to build.\n");
+}
+
+/// A memory of two messages too long to be their own lines, then two short ones, summarised:
+/// the model wrote 0, 1 and 0+2; 2, 3, 2+2 and 0+4 are free.
+fn summarised() -> (TempDir, PathBuf) {
+    let (tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    let short = |t: &str| msg(Kind::User, t);
+    s.append(
+        "t",
+        &[
+            msg(Kind::User, long(0)),
+            msg(Kind::User, long(1)),
+            short("a"),
+            short("b"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(run(&d, &["build"]).stdout, "Built 3 summaries.\n");
+    (tmp, d)
+}
+
+/// [`Fake::summaries`]'s summary of `step`, marked new.
+fn renewed(step: &str) -> String {
+    format!("{:.<300}", format!("new {}", tag(step)))
+}
+
+/// [`Fake::summaries`], each summary marked new.
+fn renewing() -> Fake {
+    Fake::new(|step, _| Ok(renewed(step)))
+}
+
+/// Whether every node of `d`'s memory is built, and each the model wrote is new.
+fn all_new(d: &Path) -> bool {
+    let s = Store::open(d).unwrap();
+    let snap = s.snapshot().unwrap();
+    let mem = Mem::load(&snap, VIEW).unwrap();
+    let mut l = 0;
+    let mut all = mem.due(|_| false, 1).is_empty();
+    while 1u64 << l <= mem.t() {
+        for n in snap.level(l).unwrap().into_iter().flatten() {
+            all &= n.who != fake_who() || n.text.starts_with("new ");
+        }
+        l += 1;
+    }
+    all
+}
+
+#[test]
+fn a_rebuild_drops_every_summary_and_builds_them_all_again() {
+    let (_tmp, d) = summarised();
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
+    assert_eq!(
+        r.stdout, "Dropped 4 summaries; built 4, 3 by the model.\n",
+        "{}",
+        r.stderr
+    );
+    assert!(all_new(&d));
+    let s = Store::open(&d).unwrap();
+    let snap = s.snapshot().unwrap();
+    let node = |l, i| snap.node(Coord::new(l, i)).unwrap().expect("built");
+    assert!(node(0, 0).text.starts_with("new m0") && node(1, 0).text.starts_with("new join"));
+    assert_eq!(
+        (node(0, 2).text, node(1, 1).text),
+        ("user: a".into(), "user: a user: b".into())
+    );
+    assert!(node(2, 0).text.ends_with(". user: a user: b"));
+    assert_eq!(node(2, 0).who, Who::default());
+    let log = fs::read_to_string(d.join("summarise.log")).unwrap();
+    assert!(log.contains(": dropped dropped=4\n"), "{log}");
+    assert_eq!(run(&d, &["build"]).stdout, "Nothing to build.\n");
+}
+
+#[test]
+fn a_rebuild_holds_the_lock_until_every_summary_is_built_again() {
+    let (_tmp, d) = summarised();
+    let model: Arc<dyn Backend> = Arc::new(Model(Arc::new(renewing())));
+    let (late, held) = (
+        Arc::new(Mutex::new(None::<String>)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let (dir, seen, under, m) = (d.clone(), late.clone(), held.clone(), model.clone());
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let (dir2, at) = (d.clone(), released.clone());
+    let rt = Runtime {
+        // Whether each round starts under the lock; the first also brings a note and its
+        // summariser.
+        backend: Box::new(move |_| {
+            let s = Store::open(&dir).unwrap();
+            under.lock().unwrap().push(s.try_lock().unwrap().is_none());
+            let mut seen = seen.lock().unwrap();
+            if seen.is_none() {
+                s.append("note", &[msg(Kind::User, long(4))]).unwrap();
+                *seen = Some(run(&dir, &["build"]).stdout);
+            }
+            Ok(m.clone())
+        }),
+        before_release: Box::new(move || at.lock().unwrap().push(all_new(&dir2))),
+        ..runtime(model)
+    };
+    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
+    assert_eq!(
+        late.lock().unwrap().as_deref(),
+        Some("A compactor is already running; it will build these too.\n"),
+        "a note's summariser must find the lock taken"
+    );
+    assert_eq!(
+        r.stdout, "Dropped 4 summaries; built 5, 4 by the model.\n",
+        "{}",
+        r.stderr
+    );
+    assert_eq!(*held.lock().unwrap(), [true]);
+    assert_eq!(*released.lock().unwrap(), [true]);
+}
+
+#[test]
+fn a_rebuild_without_a_model_drops_nothing() {
+    let (_tmp, d) = summarised();
+    let rt = Runtime {
+        backend: Box::new(|_| bail!("No claude on PATH: ai runs on Claude Code.")),
+        ..runtime(Arc::new(Model(Arc::new(renewing()))))
+    };
+    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
+    assert_eq!(r.code, 1);
+    assert!(r.stderr.contains("No claude on PATH"), "{}", r.stderr);
+    assert_eq!(run(&d, &["build"]).stdout, "Nothing to build.\n");
+}
+
+#[test]
+fn a_rebuild_waits_for_a_running_summariser() {
+    let (_tmp, d) = summarised();
+    let lock = Store::open(&d).unwrap().try_lock().unwrap().expect("free");
+    let start = Instant::now();
+    let held = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        drop(lock);
+    });
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
+    held.join().unwrap();
+    assert!(start.elapsed() >= Duration::from_millis(300));
+    assert_eq!(
+        r.stdout, "Dropped 4 summaries; built 4, 3 by the model.\n",
+        "{}",
+        r.stderr
+    );
+}
+
+#[test]
+fn a_rebuild_that_gives_up_leaves_the_rest_to_the_next_build() {
+    let (_tmp, d) = summarised();
+    let stuck = Fake::new(|step, _| match tag(step).as_str() {
+        "m1" => bail!("overloaded"),
+        _ => Ok(renewed(step)),
+    });
+    let r = run_rt(
+        &d,
+        &runtime(Arc::new(Model(Arc::new(stuck)))),
+        &["build", "--rebuild"],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stdout.ends_with(
+            "Gave up on 1 after 4 failures in a row: overloaded. It and every other summary not \
+             rebuilt yet stay pending; ai memory build builds them.\n"
+        ),
+        "{}",
+        r.stdout
+    );
+    assert!(!all_new(&d));
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    assert_eq!(run_rt(&d, &rt, &["build"]).stdout, "Built 2 summaries.\n");
+    assert!(all_new(&d));
 }
 
 #[test]

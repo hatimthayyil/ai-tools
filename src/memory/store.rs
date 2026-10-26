@@ -4,6 +4,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     rc::Rc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -29,9 +30,10 @@ const SEG: u64 = 256;
 const ORIGIN: &str = "origin";
 /// The compactor's lock file; an upgrade takes it too.
 const LOCK: &str = "compact.lock";
+const TREE: &str = "tree";
 
 pub fn level_dir(l: u32) -> String {
-    format!("tree/{l}")
+    format!("{TREE}/{l}")
 }
 
 fn seg_of(c: Coord) -> (String, usize) {
@@ -163,6 +165,12 @@ impl Store {
         file::try_lock(&self.dir.join(LOCK))
     }
 
+    /// The compactor's lock, waiting for it until `deadline`; `None` if another process still
+    /// holds it then.
+    pub fn lock_before(&self, deadline: Instant) -> Result<Option<file::Lock>> {
+        file::lock_before(&self.dir.join(LOCK), deadline)
+    }
+
     /// The origin in this store's `origin` file, made by the first open.
     fn load_origin(&self) -> Result<String> {
         let p = self.dir.join(ORIGIN);
@@ -261,6 +269,31 @@ impl Store {
             Ok(ed.finish())
         })
     }
+
+    /// Drops every node in one commit, keeping those the messages make alone, as appending
+    /// them did: what is left for the compactor is every node a model wrote and every node over
+    /// one. How many nodes it dropped.
+    pub fn drop_nodes(&self) -> Result<(u64, Snapshot<'_>)> {
+        self.mutate("drop every node", |s| {
+            let t = s.log_len()?;
+            let mut had = 0;
+            let mut l = 0;
+            while 1u64 << l <= t {
+                had += s.level(l)?.iter().flatten().count() as u64;
+                l += 1;
+            }
+            let mut ed = Edit::new(s)?;
+            ed.cleared = true;
+            s.scan(t, |i, m| ed.leaf(i, &m))?;
+            let kept = ed.built.len() as u64;
+            if had == kept {
+                return Ok((0, Changes::default()));
+            }
+            let (_, mut ch) = ed.finish();
+            ch.remove(TREE.into());
+            Ok((had - kept, ch))
+        })
+    }
 }
 
 /// One mutation: new messages and nodes over a snapshot, free nodes completed as they become ready.
@@ -271,6 +304,8 @@ struct Edit<'a, 's> {
     segs: BTreeMap<String, Seg>,
     built: Built,
     last: Option<String>,
+    /// Whether it reads the snapshot's tree as empty.
+    cleared: bool,
 }
 
 impl<'a, 's> Edit<'a, 's> {
@@ -282,12 +317,17 @@ impl<'a, 's> Edit<'a, 's> {
             segs: BTreeMap::new(),
             built: Vec::new(),
             last: None,
+            cleared: false,
         })
     }
 
     fn seg(&mut self, path: &str) -> Result<&mut Seg> {
         if !self.segs.contains_key(path) {
-            let seg = seg(&self.snap.read(path)?)?;
+            let stored: Rc<[u8]> = match self.cleared {
+                true => Rc::from([]),
+                false => self.snap.read(path)?,
+            };
+            let seg = seg(&stored)?;
             self.segs.insert(path.into(), seg);
         }
         Ok(self.segs.get_mut(path).expect("inserted above"))
@@ -363,6 +403,11 @@ impl<'a, 's> Edit<'a, 's> {
         self.last = Some(m.ts.clone());
         self.ch.put(fan_path(LOG, i), m.encode());
         self.t += 1;
+        self.leaf(i, &m)
+    }
+
+    /// Writes leaf `i`, of message `m`, if it is free, with every free node it completes.
+    fn leaf(&mut self, i: u64, m: &Message) -> Result<()> {
         match free(m.line()) {
             Some(text) => self.put(Coord::leaf(i), &Who::default(), &text),
             None => Ok(()),

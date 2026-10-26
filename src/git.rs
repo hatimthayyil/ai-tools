@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
 };
 
@@ -32,17 +32,24 @@ pub fn fan_path(dir: &str, n: u64) -> String {
     format!("{dir}/{:04x}/{:02x}", n >> 8, n & 255)
 }
 
-/// New blobs by path.
+/// New blobs by path, and paths removed with all under them; removals apply first.
 #[derive(Debug, Default)]
-pub struct Changes(BTreeMap<String, Vec<u8>>);
+pub struct Changes {
+    put: BTreeMap<String, Vec<u8>>,
+    gone: BTreeSet<String>,
+}
 
 impl Changes {
     pub fn put(&mut self, path: String, bytes: Vec<u8>) {
-        self.0.insert(path, bytes);
+        self.put.insert(path, bytes);
+    }
+
+    pub fn remove(&mut self, path: String) {
+        self.gone.insert(path);
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.put.is_empty() && self.gone.is_empty()
     }
 }
 
@@ -156,9 +163,12 @@ impl Ref {
         self.new_commit(msg, tree, base.commit)
     }
 
-    pub fn write_tree(&self, base: ObjectId, Changes(ch): Changes) -> Result<ObjectId> {
+    pub fn write_tree(&self, base: ObjectId, Changes { put, gone }: Changes) -> Result<ObjectId> {
         let mut ed = self.repo.edit_tree(base)?;
-        for (p, bytes) in ch {
+        for p in gone {
+            ed.remove(&p)?;
+        }
+        for (p, bytes) in put {
             let id = self.repo.write_blob(bytes)?;
             ed.upsert(&p, EntryKind::Blob, id)?;
         }

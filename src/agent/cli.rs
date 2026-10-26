@@ -6,7 +6,7 @@ use std::{
     os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{self, ExitCode},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -32,12 +32,11 @@ use crate::{
     memory::{Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page, progress,
     project::committing,
+    summariser::WAIT,
 };
 
 /// The exit code of plumbing for a session attached to no thread; it prints nothing.
 pub const NOT_ATTACHED: u8 = 3;
-/// How long `build --rebuild` waits for a running summariser.
-pub const WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Parser, Debug)]
 #[command(
