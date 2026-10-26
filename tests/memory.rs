@@ -1093,9 +1093,12 @@ fn init_prints_the_block_and_is_idempotent() {
     assert!(r.stdout.starts_with("Found "));
     assert!(
         r.stdout
-            .contains("ai memory note \"<1 line, max 280 characters>\"")
+            .contains("ai memory note \"<one line, at most 280 characters>\"")
     );
-    assert!(r.stdout.contains("ai memory zoom <id+n>"));
+    assert!(
+        r.stdout
+            .contains("run\n`ai memory view` before you do anything else")
+    );
     assert!(!r.stdout.contains("ai memory build"));
 }
 
@@ -1202,7 +1205,7 @@ fn the_note_limit_is_a_knob() {
     assert!(
         run_sized(&d, ten.clone(), &["init"])
             .stdout
-            .contains("max 10 characters")
+            .contains("at most 10 characters")
     );
     assert_eq!(
         run_sized(&d, ten, &["config"]).stdout,

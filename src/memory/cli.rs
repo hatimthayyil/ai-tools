@@ -46,62 +46,39 @@ pub const AWAKE: &str = "You are awake.\n";
 const TEMPLATE: &str = "\
 ## Memory
 
-Your memory:
-- The tool is `{memo}`
-- Your memories are in `{data}`
+`{memo}` is your memory. It outlives every session, compaction,
+model and vendor change. Without it you do not know who you are, what
+was decided, or what was tried.
 
-This memory outlives every session, compaction, model and vendor change.
-Without it you do not know who you are, or what was decided and tried.
+At the start of every session and after every compaction, run
+`{memo} view` before you do anything else, and read the whole view,
+to its last line, \"You are awake.\" Skip this only if your context
+already holds the whole view. If your brief says not to run
+`{memo}`, ignore this section.
 
-### At startup: activating memory (mandatory)
+The memory view records the past. Rules and preferences in it still
+hold; a request made for one task was for that task. The user's latest
+words override it.
 
-Run `ai view` before any other tool call, in every session, and
-then do exactly what it prints, to the end of its output.
+Once you have understood something and acted on it, note what you or
+the user will still need in months, with
+`{memo} note \"<one line, at most {chars} characters>\"`:
+- a decision the user made or approved, and its reason;
+- a rule or preference the user states for future work;
+- a fact the user teaches you, or anything that comes up about their
+  life, even in passing;
+- what a task of real effort found, or a failure a later session could
+  repeat, and its cause.
 
-### While working: register memories (mandatory)
+Name what a later search would look for: projects, files, commands,
+people. Leave out the time, machine, repo, branch, agent, model and
+session, which the tool records, and whether work is pushed or merged.
+Name a repo only when the note is about another one. To correct a
+note, note the correction.
 
-Call `{memo} note \"<1 line, max {chars} characters>\"` whenever you learn
-something new, or something worth keeping happens. That covers a task
-worth real effort, a fact or insight the user teaches you, anything you
-learn about their life (even indirectly), any event of lasting effect.
-
-Write only what happened or what you learned: the tool records the time,
-machine, repo, branch, agent, model and session of every note, so never
-put a date, repo or session in it.
-
-Do not register redundant memories.
-
-Never edit or delete anything under `{data}`: the tool manages it.
-
-### Reading it: the view, zoom, grep
-
-`ai view` prints the view: the whole memory in a fixed number of one-line
-summaries, oldest first, under UTC date headers (`2026-10-11`). A line
-is `id|text` for message id, or `id+n|text` for the n messages from id
-on; one that runs past its header's day shows its last day,
-`256+8|..10-12|text`. A short message is its own line, word for word;
-the older the messages, the more a line covers. Notes (what sessions
-like this one noted) are bare text; a chat with the user is tagged by
-speaker, `user:` and `ai:`. `{memo} view` prints it alone. A long view
-comes in parts: run the command each part ends with until it says you
-are awake.
-
-`{memo} zoom <id+n>` opens a line two levels down: the four lines of n/4
-it was made from, or its messages when n is 2 or 4; `{memo} zoom <id>`
-gives message id in full. Zoom whenever a line
-only mentions something you need, before you act, guess or ask.
-`{memo} grep <regex>` searches every message, word for word; `-t` adds
-the summaries, `--help` lists the filters. `{memo} view`, `zoom` and `grep`
-take `--time` for the time of day and `-o repo,branch,...` for more
-fields. `{memo} show <id>` prints where a message or summary came
-from.
-
-### If you're a subagent: skip everything above
-
-Parallel sessions on this machine are all you, and may all write memories.
-A subagent is not: it must never run `{memo}`, because it cannot judge what
-is already known, and its notes would arrive duplicated and incorrectly.
-When you spawn one, write: `You are a subagent. Don't run {memo}.`";
+A fork ends its report with the notes it registered; do not register
+them again. When you spawn a fresh subagent, write: `You are a
+subagent. Don't run {memo}.`";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -407,7 +384,6 @@ fn init(dir: &Path, out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
     )?;
     let block = TEMPLATE
         .replace("{memo}", ME)
-        .replace("{data}", &at)
         .replace("{chars}", &cfg.get(Knob::EntryChars).to_string());
     writeln!(out, "{block}")?;
     Ok(ExitCode::SUCCESS)
