@@ -79,6 +79,21 @@ fn without_a_file_every_key_has_its_default() {
 }
 
 #[test]
+fn the_api_backend_takes_a_provider_and_its_model() {
+    let t = Tree::new();
+    fs::write(
+        t.user(),
+        "[summariser]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\n",
+    )
+    .unwrap();
+    let s = t.load().unwrap();
+    assert_eq!(
+        (s.summariser.kind(), s.summariser.model()),
+        (Kind::Api, "deepseek/deepseek-flash".to_string())
+    );
+}
+
+#[test]
 fn the_nearest_project_file_overrides_the_users_key_by_key() {
     let t = Tree::new();
     fs::write(
@@ -132,9 +147,9 @@ fn a_bad_key_or_value_names_its_file_and_key() {
         ),
         ("[summariser]\nmodel = \" \"\n", "model", "is empty"),
         (
-            "[summariser]\nbackend = \"api\"\n",
+            "[summariser]\nbackend = \"pi\"\n",
             "backend",
-            "unknown variant `api`, expected `claude`",
+            "unknown variant `pi`, expected `claude` or `api`",
         ),
         ("[chat]\nmodel = \"haiku\"\n", "model", "unknown field"),
         ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),

@@ -1,3 +1,4 @@
+mod api;
 mod backend;
 pub mod claude;
 mod cli;
@@ -18,6 +19,7 @@ mod usage;
 mod view;
 mod zoom;
 
+pub use api::Api;
 pub use backend::{Backend, Block, Conversation, MakeBackend, Usage};
 pub use claude::{CALLS, ClaudeCode};
 pub use cli::{AWAKE, Cli, Runtime, broken_pipe, default_dir, plural, spawn_summariser, store_dir};

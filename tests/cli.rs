@@ -699,6 +699,36 @@ fn a_closed_pipe_is_quiet() {
     assert_eq!(text(&r.stderr), "");
 }
 
+#[test]
+fn the_api_backend_without_its_key_fails_before_building() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    for i in 0..2 {
+        s.ai(&["note", &format!("note {i} {}", "z".repeat(250))]);
+    }
+    s.user_toml("[summariser]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\n");
+    let r = s
+        .cmd(s.path(), Some(&s.store()))
+        .arg("build")
+        .env_remove("DEEPSEEK_API_KEY")
+        .output()
+        .unwrap();
+    assert!(!r.status.success());
+    assert!(
+        text(&r.stderr).contains("Set DEEPSEEK_API_KEY to your deepseek API key"),
+        "{}",
+        text(&r.stderr)
+    );
+    let st = Store::open(&s.store()).unwrap();
+    assert!(
+        st.snapshot()
+            .unwrap()
+            .node(Coord::new(1, 0))
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// A fake `claude`: answers every stream-json message with a fixed result.
 const FAKE_CLAUDE: &str = "while read -r line; do
   printf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"a fake summary\",\"stop_reason\":\"end_turn\",\"session_id\":\"fake-sess\"}'

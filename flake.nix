@@ -36,7 +36,11 @@
               mkdir -p $out/share/ai
               cp -r --no-preserve=mode ${./plugins} $out/share/ai/plugins
             '';
-            nativeCheckInputs = [ pkgs.git ];
+            # cacert: the API backend's HTTP client loads the system's CA certificates, even in tests.
+            nativeCheckInputs = [
+              pkgs.git
+              pkgs.cacert
+            ];
             nativeInstallCheckInputs = [ pkgs.versionCheckHook ];
             doInstallCheck = true;
             postInstallCheck = ''

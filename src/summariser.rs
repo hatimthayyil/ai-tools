@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use anyhow::Result;
 use serde::{Deserialize, Deserializer, de::Error};
 
-use crate::memory::{Backend, ClaudeCode, MakeBackend, claude};
+use crate::memory::{Api, Backend, ClaudeCode, MakeBackend, claude};
 
 /// `[summariser]` in `ai.toml`: what writes every summary, for agents, memory and notes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -11,7 +11,7 @@ use crate::memory::{Backend, ClaudeCode, MakeBackend, claude};
 pub struct Config {
     /// Default [`Kind::Claude`].
     pub backend: Option<Kind>,
-    /// In the backend's own spelling; default Sonnet.
+    /// In the backend's own spelling, `<provider>/<model>` for [`Kind::Api`]; default Sonnet.
     #[serde(deserialize_with = "model")]
     pub model: Option<String>,
 }
@@ -22,6 +22,8 @@ pub struct Config {
 pub enum Kind {
     /// Claude Code in print mode, `claude -p`.
     Claude,
+    /// A provider's API through `genai`, its thinking off; see [`Api`].
+    Api,
 }
 
 fn model<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -55,6 +57,7 @@ impl Config {
         let model = model.map_or_else(|| self.model(), str::to_string);
         Ok(match self.kind() {
             Kind::Claude => Arc::new(ClaudeCode::compactor_at(claude::find()?, &model, calls)?),
+            Kind::Api => Arc::new(Api::new(&model, calls)?),
         })
     }
 

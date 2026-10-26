@@ -131,8 +131,8 @@ recent = 3         # the turns before them, message and final reply word for wor
 single = 0         # the fewest older turns kept on a line each; shared lines take the rest
 
 [summariser]       # what writes every summary: agents, memory, notes
-backend = "claude" # claude -p; the only backend yet
-model = "sonnet"   # in the backend's own spelling
+backend = "claude" # claude: Claude Code's claude -p; api: a provider's API
+model = "sonnet"   # claude's spelling; for api, <provider>/<model>, e.g. "deepseek/deepseek-flash"
 
 [memory]
 entry-chars = 280  # the length a note aims for, in characters, at most 512; 40 more are accepted
@@ -148,6 +148,8 @@ worktree = "../ai-tools-stabiliser"       # the directory it runs in
 An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project; in the private settings, it is relative to the project's root, where their link `ai.local.toml` sits. Instructions add up: the agent gets the user's, then the project's, then the private settings', each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it; in a linked git worktree, the root in the main checkout, so `../dev` names the same directory from every checkout.
 
 `ai agent resume` starts a new session in the agent's `worktree`, else in the current directory, and adds its `instructions` to the harness's system prompt, for a new session and a resumed one (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a git worktree of the project's main checkout, at a commit holding its `ai.toml`, so its sessions find the threads in the main checkout's `.ai/local/agents`; a plain copy, or another clone, has its own. A session in the worktree reads the private settings from the main checkout.
+
+With `backend = "api"`, `ai` calls the provider's API through [genai](https://github.com/jeremychone/rust-genai), with thinking off. `model` names the provider, one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`, `open_router`, `groq`, `together`, `fireworks`, …), then the model as that provider spells it. The key comes from the provider's environment variable (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, …), never from `ai.toml`; a command that needs the summariser fails when it is unset. Each call is kept, like a `claude -p` one, in the store's `calls/`: the request, the provider's reply as it came, and its token counts. Costs count as zero unless the provider reports them (OpenRouter does). In this repository, `secretspec set DEEPSEEK_API_KEY` stores the key once, and `secretspec run -- ai memory build` passes it.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 

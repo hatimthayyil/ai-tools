@@ -1466,9 +1466,13 @@ fn the_hook_reminds_on_long_prompts_only_and_never_fails() {
     assert_eq!((r.code, r.stdout.as_str()), (0, ""), "{}", r.stderr);
     let r = hook(&d, &input(&long));
     assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stdout.matches('\n').count(), 1, "{}", r.stdout);
     assert_eq!(
-        r.stdout,
-        "{\"hookSpecificOutput\":{\"additionalContext\":\"ai memory: zoom or grep before you act.\",\"hookEventName\":\"UserPromptSubmit\"}}\n"
+        serde_json::from_str::<serde_json::Value>(&r.stdout).unwrap(),
+        serde_json::json!({"hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "ai memory: zoom or grep before you act.",
+        }})
     );
     assert_eq!(REMINDER, "ai memory: zoom or grep before you act.");
     let r = hook(&d, &serde_json::json!({ "prompt": long }).to_string());

@@ -23,7 +23,8 @@ use crate::{
     memory::backend::{Backend, Block, Conversation, Usage},
 };
 
-const CALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a model call may take before it fails.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 const KILL_GRACE: Duration = Duration::from_millis(200);
 /// The directory of a store that keeps its compactor's calls, one [`Record`] each.
 pub const CALLS: &str = "calls";
@@ -144,9 +145,10 @@ impl Live {
     }
 }
 
-/// One call's file `<session>.jsonl`, in order: an `ai.call` line with how `claude` was
-/// started and its system prompt, an `ai.sent` line around each line written to its stdin,
-/// and every line it printed, byte for byte.
+/// One call's file `<session>.jsonl`, in order: an `ai.call` line with how the call was made and
+/// its system prompt, then an `ai.sent` line around each user message, each followed, for
+/// `claude`, by every line it printed, byte for byte, and for an [API](super::Api), by its
+/// `ai.reply` or `ai.error` line.
 #[derive(Clone)]
 pub struct Record(Arc<Mutex<RecordFile>>);
 
@@ -159,6 +161,26 @@ struct RecordFile {
 impl Record {
     /// Creates the record of call `session` in `dir`, run as `cmd` under `system`.
     pub fn create(dir: &Path, session: &str, cmd: &Command, system: &str) -> Result<Record> {
+        let os = |s: &OsStr| s.to_string_lossy().into_owned();
+        let env: serde_json::Map<String, Value> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((os(k), Value::String(os(v?)))))
+            .collect();
+        Record::start(
+            dir,
+            session,
+            &json!({
+                "type": "ai.call",
+                "program": os(cmd.get_program()),
+                "args": cmd.get_args().map(os).collect::<Vec<_>>(),
+                "env": env,
+                "system": system,
+            }),
+        )
+    }
+
+    /// Creates the record of call `session` in `dir`, its first line `call`.
+    pub fn start(dir: &Path, session: &str, call: &Value) -> Result<Record> {
         fs::create_dir_all(dir).at(dir)?;
         let path = dir.join(format!("{session}.jsonl"));
         let file = OpenOptions::new()
@@ -166,24 +188,12 @@ impl Record {
             .create_new(true)
             .open(&path)
             .at(&path)?;
-        let os = |s: &OsStr| s.to_string_lossy().into_owned();
-        let env: serde_json::Map<String, Value> = cmd
-            .get_envs()
-            .filter_map(|(k, v)| Some((os(k), Value::String(os(v?)))))
-            .collect();
-        let call = json!({
-            "type": "ai.call",
-            "program": os(cmd.get_program()),
-            "args": cmd.get_args().map(os).collect::<Vec<_>>(),
-            "env": env,
-            "system": system,
-        });
         let r = Record(Arc::new(Mutex::new(RecordFile {
             path,
             file,
             error: None,
         })));
-        r.write(format!("{call}\n").as_bytes());
+        r.event(call);
         r.check()?;
         Ok(r)
     }
@@ -198,13 +208,18 @@ impl Record {
         }
     }
 
-    /// Appends `line`, written to the call's stdin, as `{"type":"ai.sent","line":<line>}`.
-    fn sent(&self, line: &str) {
+    /// Appends `ev` as one line.
+    pub fn event(&self, ev: &Value) {
+        self.write(format!("{ev}\n").as_bytes());
+    }
+
+    /// Appends `line`, a user message sent to the model, as `{"type":"ai.sent","line":<line>}`.
+    pub fn sent(&self, line: &str) {
         self.write(format!("{{\"type\":\"ai.sent\",\"line\":{line}}}\n").as_bytes());
     }
 
     /// An error once a write failed: the record is no longer whole.
-    fn check(&self) -> Result<()> {
+    pub fn check(&self) -> Result<()> {
         let f = self.0.lock().expect("record lock");
         match &f.error {
             Some(e) => bail!("Cannot write {}: {e}", f.path.display()),

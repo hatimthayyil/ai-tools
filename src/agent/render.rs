@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 use crate::{
@@ -98,15 +100,19 @@ fn size(output: &str) -> String {
     }
 }
 
-/// A tool call's input: `key=value` per field, strings verbatim.
+/// A tool call's input: `key=value` per field, by key, strings verbatim.
 fn args(v: &Value) -> String {
     let field = |v: &Value| match v {
         Value::String(s) => s.clone(),
         v => v.to_string(),
     };
     match v {
+        // Sorted here: genai turns on serde_json's `preserve_order`, which keeps the order the
+        // harness wrote.
         Value::Object(m) => m
             .iter()
+            .collect::<BTreeMap<_, _>>()
+            .into_iter()
             .map(|(k, v)| format!("{k}={}", field(v)))
             .collect::<Vec<_>>()
             .join(" "),
