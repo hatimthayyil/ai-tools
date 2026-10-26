@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.16.0 - 2026-10-26
+
+### Breaking changes
+
+- **agent:** size the view by counts in [agent.view]
+
+> [agent.view] lines is removed; use total.
+
+- drop ai/comments
+
+### Bug fixes
+
+- **agent:** keep hashes and work minutiae out of thread summaries
+- **memory:** keep hashes and ids out of memory summaries
+- **agent:** reword the thread summariser prompt around its future reader
+- **memory:** reword the compaction prompt around its future reader
+- **memory:** remind agents to recall before acting, not to note
+
+### Features
+
+- **agent:** number summariser input within its turn
+- **view:** reword the memory and thread headers, kept as text files
+- **memory:** print the tightened memory instructions from ai init
+
+### Performance
+
+- **jsonl:** split lines with memchr
+
 ## v0.15.0 - 2026-10-24
 
 ### Upgrading
