@@ -116,8 +116,8 @@ impl Sandbox {
     /// A `claude` that also answers as the compactor (`-p`), by the first message it gets: one
     /// holding `BAD` fails, one holding `LONG` gets a 600-byte line each time, one holding
     /// `SLOW` never answers while `out/hang` exists (its pid in `out/slow.pid`), any other gets
-    /// a short line after `delay` seconds. Started as Claude Code, it records as
-    /// [`Sandbox::fake_claude`].
+    /// a short line after `delay` seconds. Each message it gets adds a line to `out/calls`.
+    /// Started as Claude Code, it records as [`Sandbox::fake_claude`].
     fn fake_compactor(&self, delay: &str) {
         let path = std::env::var("PATH").unwrap();
         let bash = std::env::split_paths(&path)
@@ -135,6 +135,7 @@ fi
 long=$(printf '%0600d' 0)
 mode=
 while IFS= read -r l; do
+  echo >> {out}/calls
   if [ -z "$mode" ]; then
     case "$l" in
       *BAD*) mode=bad ;;
@@ -163,6 +164,11 @@ done
         fs::remove_file(&dst).unwrap();
         fs::write(&dst, body).unwrap();
         fs::set_permissions(&dst, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
+    /// The messages [`Sandbox::fake_compactor`] has answered.
+    fn calls(&self) -> usize {
+        fs::read_to_string(self.root.join("out/calls")).map_or(0, |c| c.lines().count())
     }
 
     /// Whether thread `name` holds line `level@last`.
@@ -1554,7 +1560,7 @@ fn threads_resolve_in_the_current_repository_only() {
 }
 
 #[test]
-fn build_writes_rewrites_and_dry_runs_the_lines() {
+fn build_writes_rewrites_and_previews_the_lines() {
     let s = Sandbox::new();
     s.transcript("s-1", &talk(3, |k| format!("question {k}")));
     ok(
@@ -1564,25 +1570,25 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     s.line("dev", 1, 1, "first, by hand");
     let fresh = "0|user: question 0 ai: reply 0\n";
-    let o = s.ai_in("s-1", &["build", "--dry-run", "--model", "opus"]);
-    let dry = stdout(&o);
+    let o = s.ai_in("s-1", &["build", "--preview", "--model", "opus"]);
+    let shown = stdout(&o);
     assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
     assert!(
-        !dry.contains(fresh),
-        "the line written by hand stays: {dry}"
+        !shown.contains(fresh),
+        "the line written by hand stays: {shown}"
     );
     assert!(
-        dry.ends_with("Dry run: 4 lines, 0 by the model; nothing stored.\n"),
-        "{dry}"
+        shown.ends_with("Preview: 4 lines, 0 by the model; nothing stored.\n"),
+        "{shown}"
     );
     let all = |s: &Sandbox| {
         let t = s.store().thread("dev").unwrap();
         t.snapshot().unwrap().all_lines().unwrap().len()
     };
-    assert_eq!(all(&s), 1, "a dry run stores nothing");
+    assert_eq!(all(&s), 1, "a preview stores nothing");
     let log = fs::read_to_string(s.store().dir().join("dev.log")).unwrap();
     assert!(
-        log.contains("dry_run{pid=") && log.contains("model=\"opus\""),
+        log.contains("preview{pid=") && log.contains("model=\"opus\""),
         "{log}"
     );
 
@@ -1591,15 +1597,15 @@ fn build_writes_rewrites_and_dry_runs_the_lines() {
         "Built 4 lines: 0 by the model, 4 joined.\n",
     );
     ok(s.ai(&["build", "-a", "dev"]), "Nothing to write.\n");
-    let o = s.ai_in("s-1", &["build", "--rebuild", "--dry-run"]);
-    let dry = stdout(&o);
+    let o = s.ai_in("s-1", &["build", "--rebuild", "--preview"]);
+    let shown = stdout(&o);
     assert!(
-        dry.starts_with(&format!(
+        shown.starts_with(&format!(
             "0.1|ai: reply 0\n  was: ai: reply 0\n{fresh}  was: first, by hand\n"
         )),
-        "{dry}"
+        "{shown}"
     );
-    assert!(dry.ends_with("Dry run: 5 lines, 0 by the model; nothing stored.\n"));
+    assert!(shown.ends_with("Preview: 5 lines, 0 by the model; nothing stored.\n"));
     build_ends(
         s.ai_in("s-1", &["build", "--rebuild"]),
         "Built 5 lines: 0 by the model, 5 joined. Dropped 5 lines first.\n",
@@ -1634,12 +1640,15 @@ fn build_writes_or_rewrites_one_line() {
         "0 is written already. Rewrite it with --rebuild.\n",
     );
     ok(
-        s.ai_in("s-1", &["build", "0", "--rebuild", "--dry-run"]),
+        s.ai_in("s-1", &["build", "0", "--rebuild", "--preview"]),
         "0.1|ai: reply 0\n0|user: question 0 ai: reply 0\n  was: by hand\n\
-         Dry run: 2 lines, 0 by the model; nothing stored.\n",
+         Preview: 2 lines, 0 by the model; nothing stored.\n",
     );
-    let dry = stdout(&s.ai(&["build", "-a", "dev", "2+2", "--dry-run"]));
-    let ids: Vec<&str> = dry.lines().map(|l| l.split('|').next().unwrap()).collect();
+    let shown = stdout(&s.ai(&["build", "-a", "dev", "2+2", "--preview"]));
+    let ids: Vec<&str> = shown
+        .lines()
+        .map(|l| l.split('|').next().unwrap())
+        .collect();
     assert_eq!(
         ids,
         [
@@ -1648,9 +1657,9 @@ fn build_writes_or_rewrites_one_line() {
             "3.1",
             "3",
             "2+2",
-            "Dry run: 5 lines, 0 by the model; nothing stored."
+            "Preview: 5 lines, 0 by the model; nothing stored."
         ],
-        "{dry}"
+        "{shown}"
     );
     build_ends(
         s.ai_in("s-1", &["build"]),
@@ -1710,6 +1719,109 @@ fn failing(s: &Sandbox, n: usize) -> Vec<u64> {
 /// Whether each of the first `n` turns of dev has its line.
 fn built(s: &Sandbox, ends: &[u64], n: usize) -> Vec<bool> {
     ends[..n].iter().map(|&e| s.has_line("dev", 1, e)).collect()
+}
+
+/// The plan `o` printed, up to its log line, after a run that succeeded and printed nothing
+/// else.
+fn plan_of(o: &Output) -> String {
+    assert_eq!((code(o), stderr(o).as_str()), (0, ""), "{}", stdout(o));
+    let out = stdout(o);
+    let (plan, log) = out.rsplit_once("Log: ").expect("a log line");
+    assert!(
+        log.ends_with(".log\n") && !log.trim_end().contains('\n'),
+        "{out}"
+    );
+    plan.to_string()
+}
+
+#[test]
+fn a_dry_run_prints_the_plan_and_calls_no_model() {
+    let s = Sandbox::new();
+    s.fake_compactor("0");
+    s.transcript("s-1", &talk(3, |k| long("ok", k)));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let table = |written: [u64; 3], left: [u64; 3]| {
+        format!(
+            "  level           lines  written  to write\n\
+             \x20 L0  work            2  {:>7}  {:>8}\n\
+             \x20 L1  1 turn          2  {:>7}  {:>8}\n\
+             \x20 L2  2 turns         1  {:>7}  {:>8}\n",
+            written[0], left[0], written[1], left[1], written[2], left[2]
+        )
+    };
+    assert_eq!(
+        plan_of(&s.ai_in("s-1", &["build", "--dry-run"])),
+        format!(
+            "Building agent dev with sonnet, 8 calls at once.\n{}\
+             Up to 5 model calls: a line whose sources fit in one is joined without a call.\n\
+             No past calls to estimate cost and time from.\n",
+            table([0; 3], [2, 2, 1])
+        )
+    );
+    assert!(
+        plan_of(&s.ai_in("s-1", &["build", "--dry-run", "--model", "opus"]))
+            .starts_with("Building agent dev with opus, 8 calls at once.\n")
+    );
+    assert_eq!(s.calls(), 0, "a dry run calls no model");
+    let lines = |s: &Sandbox| {
+        let t = s.store().thread("dev").unwrap();
+        t.snapshot().unwrap().all_lines().unwrap().len()
+    };
+    assert_eq!(lines(&s), 0, "a dry run stores nothing");
+
+    build_ends(
+        s.ai_in("s-1", &["build"]),
+        "Built 5 lines: 2 by the model, 3 joined.\n",
+    );
+    let calls = s.calls();
+    ok(
+        s.ai_in("s-1", &["build", "--dry-run"]),
+        "Nothing to write.\n",
+    );
+    ok(
+        s.ai_in("s-1", &["build", "0", "--dry-run"]),
+        "0 is written already. Rewrite it with --rebuild.\n",
+    );
+    let rewrite = plan_of(&s.ai_in("s-1", &["build", "0", "--rebuild", "--dry-run"]));
+    assert!(
+        rewrite.starts_with(&format!(
+            "Rewriting line 0 of agent dev with sonnet, 8 calls at once.\n{}\
+             Up to 1 model call:",
+            table([2, 1, 0], [0, 1, 0])
+        )),
+        "{rewrite}"
+    );
+    assert!(
+        rewrite.ends_with("at the average of the last 2 calls.\n"),
+        "past calls give the estimate: {rewrite}"
+    );
+    fs::remove_file(s.root.join("bin/claude")).unwrap();
+    let rebuild = plan_of(&s.ai_in("s-1", &["build", "--rebuild", "--dry-run"]));
+    assert!(
+        rebuild.starts_with(&format!(
+            "Rebuilding agent dev with sonnet, 8 calls at once.\n{}",
+            table([0; 3], [2, 2, 1])
+        )),
+        "a dry run needs no claude: {rebuild}"
+    );
+    assert_eq!(s.calls(), calls, "no dry run called the model");
+    assert_eq!(lines(&s), 5, "no dry run dropped a line");
+}
+
+#[test]
+fn dry_run_and_preview_cannot_be_used_together() {
+    let s = Sandbox::new();
+    let o = s.ai(&["build", "-a", "dev", "--dry-run", "--preview"]);
+    assert_eq!(code(&o), 2, "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("'--dry-run' cannot be used with '--preview'"),
+        "{}",
+        stderr(&o)
+    );
 }
 
 #[test]

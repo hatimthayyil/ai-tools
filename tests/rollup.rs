@@ -10,11 +10,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ai_tools::progress::Progress;
+use ai_tools::progress::{Level, Progress};
 use ai_tools::{
     agent::{
-        Built, Id, Key, Line, LineKind, Mark, OnFail, Rollup, Source, Store, Thread, build,
-        dry_run, rebuild, rewrite, rollup, summarise,
+        Built, Id, Key, Line, LineKind, Mark, OnFail, Rollup, Source, Store, Thread, build, plan,
+        preview, rebuild, rewrite, rollup, summarise,
     },
     memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage},
     project::Project,
@@ -728,7 +728,7 @@ fn build_waits_for_a_held_lock_however_long() {
 }
 
 #[test]
-fn a_dry_run_builds_in_memory_and_stores_nothing() {
+fn a_preview_builds_in_memory_and_stores_nothing() {
     let r = Repo::new();
     let mut s = Script::new();
     let e0 = s.turn(0);
@@ -740,13 +740,13 @@ fn a_dry_run_builds_in_memory_and_stores_nothing() {
     let (before, at) = (texts(&t), state(&r));
 
     let fake = Fake::new();
-    let d = dry_run(&t, fake.backend(), false, None).unwrap();
+    let d = preview(&t, fake.backend(), false, None).unwrap();
     assert_eq!(
         (d.built, d.lines.len(), fake.calls()),
         (Built::default(), 0, 0)
     );
 
-    let d = dry_run(&t, fake.backend(), true, None).unwrap();
+    let d = preview(&t, fake.backend(), true, None).unwrap();
     assert_eq!((d.built.lines, d.built.calls, fake.calls()), (3, 3, 3));
     let got: Vec<(u64, Key, bool)> = d
         .lines
@@ -789,16 +789,16 @@ fn rewrite_drops_the_line_and_those_above_it() {
     let before = texts(&t);
 
     let fake = Fake::with(Duration::from_millis(2), |_| false);
-    let d = dry_run(&t, fake.backend(), true, Some(key(2, e1))).unwrap();
+    let d = preview(&t, fake.backend(), true, Some(key(2, e1))).unwrap();
     assert_eq!(
         d.lines
             .iter()
             .map(|l| (l.key, l.was.clone()))
             .collect::<Vec<_>>(),
         [(key(2, e1), Some(before[&format!("2@{e1}")].clone()))],
-        "a dry rewrite writes that line alone"
+        "a previewed rewrite writes that line alone"
     );
-    let d = dry_run(&t, fake.backend(), false, Some(key(1, e0))).unwrap();
+    let d = preview(&t, fake.backend(), false, Some(key(1, e0))).unwrap();
     assert!(d.lines.is_empty(), "a written line has nothing to write");
     assert_eq!(texts(&t), before, "nothing stored");
 
@@ -836,7 +836,93 @@ fn rewrite_drops_the_line_and_those_above_it() {
 }
 
 #[test]
-fn a_dry_run_names_its_lines_by_id() {
+fn the_plan_counts_what_each_run_writes_and_calls_no_model() {
+    let r = Repo::new();
+    let mut s = Script::new();
+    let e0 = s.turn(0);
+    s.turn(1);
+    s.turn(2);
+    s.turn(3);
+    s.user("open");
+    let t = r.thread(&s);
+    let at = state(&r);
+    let level = |lines, written, left| Level {
+        lines,
+        written,
+        left,
+    };
+    let all = [
+        level(0, 0, 0),
+        level(4, 0, 4),
+        level(2, 0, 2),
+        level(1, 0, 1),
+    ];
+    let fresh = plan(&t, false, None).unwrap();
+    assert_eq!(fresh, all);
+    assert_eq!(state(&r), at, "a plan stores nothing");
+    let fake = Fake::new();
+    let b = summarised(&t, &fake);
+    let left: u64 = fresh.iter().map(|l| l.left).sum();
+    assert_eq!(b.lines, left, "the run writes what its plan said");
+
+    let done = [
+        level(0, 0, 0),
+        level(4, 4, 0),
+        level(2, 2, 0),
+        level(1, 1, 0),
+    ];
+    assert_eq!(plan(&t, false, None).unwrap(), done);
+    assert_eq!(
+        plan(&t, true, None).unwrap(),
+        all,
+        "a rebuild writes every line"
+    );
+    assert_eq!(
+        plan(&t, false, Some(key(1, e0))).unwrap(),
+        done,
+        "a written line has nothing to write"
+    );
+    assert_eq!(
+        plan(&t, true, Some(key(1, e0))).unwrap(),
+        [
+            level(0, 0, 0),
+            level(4, 3, 1),
+            level(2, 1, 0),
+            level(1, 0, 0)
+        ],
+        "a rewrite writes its line, and drops the lines above it for the next run"
+    );
+    let calls = fake.calls();
+    let w = rewrite(
+        &t,
+        fake.backend(),
+        key(1, e0),
+        Instant::now() + Duration::from_secs(5),
+        &Progress::quiet(),
+    )
+    .unwrap()
+    .expect("the lock is free");
+    assert_eq!((w.built.lines, fake.calls() - calls), (1, 1));
+    assert_eq!(
+        plan(&t, false, None).unwrap(),
+        [
+            level(0, 0, 0),
+            level(4, 4, 0),
+            level(2, 1, 1),
+            level(1, 0, 1)
+        ],
+        "the plan after a rewrite matches what the rewrite left"
+    );
+
+    let err = plan(&t, true, Some(key(1, e0 + 1))).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!("1@{} is not a line of thread t.", e0 + 1)
+    );
+}
+
+#[test]
+fn a_preview_names_its_lines_by_id() {
     let r = Repo::new();
     let mut s = Script::new();
     s.turn(0);
@@ -848,7 +934,7 @@ fn a_dry_run_names_its_lines_by_id() {
     s.user("next");
     let t = r.thread(&s);
     let tree = t.snapshot().unwrap().tree().unwrap();
-    let d = dry_run(&t, Fake::new().backend(), false, None).unwrap();
+    let d = preview(&t, Fake::new().backend(), false, None).unwrap();
     let place = |seq: u64| tree.place(seq as usize);
     let ids: Vec<String> = d
         .lines

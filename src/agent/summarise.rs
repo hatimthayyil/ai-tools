@@ -19,7 +19,7 @@ use crate::{
     agent::{
         record::{Key, Line},
         rollup::{PROMPT, Rollup},
-        store::{Mark, Store, Thread},
+        store::{Mark, Snapshot, Store, Thread},
     },
     config::Settings,
     memory::{Backend, Block, JOBS, Spend, TRIES, Who, limit, log, write_line},
@@ -66,6 +66,14 @@ impl Store {
             .backend(model, &thread.calls_dir())
     }
 
+    /// The model a run uses: `model`, else the `[summariser]` one.
+    pub fn model(&self, model: Option<&str>) -> Result<String> {
+        Ok(match model {
+            Some(m) => m.into(),
+            None => self.settings()?.summariser.model(),
+        })
+    }
+
     /// Starts `ai agent build -a <name> --background`, unless `ai.toml` sets `chat.background`
     /// false; whether it started.
     pub fn spawn_summariser(&self, thread: &Thread) -> Result<bool> {
@@ -103,17 +111,17 @@ pub struct Built {
     pub spent: Spend,
 }
 
-/// A dry run: what [`summarise`] or [`rebuild`] would write.
+/// A preview: what [`summarise`] or [`rebuild`] would write, written and stored nowhere.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Dry {
+pub struct Preview {
     pub built: Built,
     /// Each line it would write, in build order: its first item, its key, its text and the
     /// text it would replace.
-    pub lines: Vec<DryLine>,
+    pub lines: Vec<PreviewLine>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DryLine {
+pub struct PreviewLine {
     pub first: u64,
     pub key: Key,
     pub text: String,
@@ -312,18 +320,43 @@ pub fn rewrite(
     }))
 }
 
+/// What a run would write, per level of the thread's latest snapshot, as its plan shows it:
+/// [`summarise`]'s, or with `rebuild` [`rebuild`]'s; with `line`, [`build`]'s of that line, or
+/// with `rebuild` [`rewrite`]'s. Takes no lock, calls no model and stores nothing. A line that
+/// is no line of the thread is an error.
+pub fn plan(thread: &Thread, rebuild: bool, line: Option<Key>) -> Result<Vec<Level>> {
+    let snap = thread.snapshot()?;
+    let roll = Rollup::new(&snap.tree()?);
+    let anew = match (rebuild, line) {
+        (true, None) => Anew::All,
+        _ => Anew::None,
+    };
+    let mut lines = written(&snap, anew)?;
+    if let (true, Some(k)) = (rebuild, line) {
+        if roll.source(k).is_none() {
+            bail!("{k} is not a line of thread {}.", thread.name());
+        }
+        for d in [k].into_iter().chain(roll.above(k)) {
+            lines.remove(&d);
+        }
+    }
+    let want = line.map(|k| vec![k]);
+    let todo = todo(thread.name(), &roll, &lines, want.as_deref())?;
+    Ok(levels(&roll, &lines, &todo))
+}
+
 /// What [`summarise`] would write now, or with `rebuild` what [`rebuild`] would; with `line`,
-/// what [`build`] of that line would, or with `rebuild` what [`rewrite`] would. Each line built
-/// with the model and stored nowhere; logs to [`Thread::log_path`].
-pub fn dry_run(
+/// what [`build`] of that line would, or with `rebuild` what [`rewrite`] would. Each line
+/// written by the model and stored nowhere; logs to [`Thread::log_path`].
+pub fn preview(
     thread: &Thread,
     backend: Arc<dyn Backend>,
     rebuild: bool,
     line: Option<Key>,
-) -> Result<Dry> {
+) -> Result<Preview> {
     let _log = log::init(&thread.log_path()?)?;
     let _span = info_span!(
-        "dry_run",
+        "preview",
         pid = process::id(),
         thread = thread.name(),
         model = backend.model()
@@ -332,7 +365,7 @@ pub fn dry_run(
     info!(rebuild, "start");
     let quiet = Progress::quiet();
     let mut run = Run::new(thread, backend, OnFail::Stop, &quiet);
-    run.dry = Some(Vec::new());
+    run.preview = Some(Vec::new());
     run.anew = match (rebuild, line) {
         (false, _) => Anew::None,
         (true, None) => Anew::All,
@@ -343,18 +376,18 @@ pub fn dry_run(
     let snap = thread.snapshot()?;
     let roll = Rollup::new(&snap.tree()?);
     let old = snap.all_lines()?;
-    let mut built = run.dry.take().unwrap_or_default();
+    let mut built = run.preview.take().unwrap_or_default();
     built.sort_by_key(|(k, _)| order(*k));
     let lines = built
         .into_iter()
-        .map(|(key, text)| DryLine {
+        .map(|(key, text)| PreviewLine {
             first: roll.first(key),
             key,
             text,
             was: old.get(&key).map(|l| l.text.clone()),
         })
         .collect();
-    Ok(Dry {
+    Ok(Preview {
         built: run.built.clone(),
         lines,
     })
@@ -374,8 +407,8 @@ struct Run<'t, 'o> {
     /// Calls failed since the last that succeeded.
     streak: usize,
     built: Built,
-    /// A dry run's lines, kept here instead of stored; `None` stores them.
-    dry: Option<Vec<(Key, String)>>,
+    /// A preview's lines, kept here instead of stored; `None` stores them.
+    preview: Option<Vec<(Key, String)>>,
     /// The stored lines read as unbuilt, to build them anew.
     anew: Anew,
     /// Shows the plan, the lines written as they are and the calls running.
@@ -399,6 +432,74 @@ fn key((last, level): (u64, u32)) -> Key {
     Key { level, last }
 }
 
+/// The lines of `snap` a run reads as written: every stored line, but those `anew` reads as
+/// unbuilt.
+fn written(snap: &Snapshot, anew: Anew) -> Result<HashMap<Key, String>> {
+    let mut lines: HashMap<Key, String> = match anew {
+        Anew::All => HashMap::new(),
+        _ => snap
+            .all_lines()?
+            .into_iter()
+            .map(|(k, l)| (k, l.text))
+            .collect(),
+    };
+    if let Anew::Line(k) = anew {
+        lines.remove(&k);
+    }
+    Ok(lines)
+}
+
+/// What a run writes of `roll`, `lines` written, in build order: `want` and the unbuilt lines
+/// they are made from if given, else every unbuilt line. A key of `want` that is no line of
+/// thread `name` is an error.
+fn todo(
+    name: &str,
+    roll: &Rollup,
+    lines: &HashMap<Key, String>,
+    want: Option<&[Key]>,
+) -> Result<BTreeSet<(u64, u32)>> {
+    let Some(keys) = want else {
+        return Ok(roll
+            .lines()
+            .keys()
+            .filter(|k| !lines.contains_key(k))
+            .map(|&k| order(k))
+            .collect());
+    };
+    let mut out = BTreeSet::new();
+    let mut stack = keys.to_vec();
+    while let Some(k) = stack.pop() {
+        if lines.contains_key(&k) || !out.insert(order(k)) {
+            continue;
+        }
+        let Some(s) = roll.source(k) else {
+            bail!("{k} is not a line of thread {name}.");
+        };
+        stack.extend(s.children());
+    }
+    Ok(out)
+}
+
+/// Per level, the lines of `roll`, those of `lines` written and those of `todo` left.
+fn levels(roll: &Rollup, lines: &HashMap<Key, String>, todo: &BTreeSet<(u64, u32)>) -> Vec<Level> {
+    let keys = roll.lines().keys();
+    let top = keys
+        .clone()
+        .map(|k| k.level)
+        .chain(todo.iter().map(|o| o.1))
+        .max();
+    let mut levels = vec![Level::default(); top.map_or(0, |t| t as usize + 1)];
+    for k in keys {
+        let v = &mut levels[k.level as usize];
+        v.lines += 1;
+        v.written += u64::from(lines.contains_key(k));
+    }
+    for &(_, l) in todo {
+        levels[l as usize].left += 1;
+    }
+    levels
+}
+
 impl<'t, 'o> Run<'t, 'o> {
     fn new(
         thread: &'t Thread,
@@ -417,7 +518,7 @@ impl<'t, 'o> Run<'t, 'o> {
             on_fail,
             streak: 0,
             built: Built::default(),
-            dry: None,
+            preview: None,
             anew: Anew::None,
             progress,
         }
@@ -441,26 +542,8 @@ impl<'t, 'o> Run<'t, 'o> {
     fn pass(&mut self, want: Option<&[Key]>) -> Result<Mark> {
         let snap = self.thread.snapshot()?;
         let roll = Rollup::new(&snap.tree()?);
-        let mut lines: HashMap<Key, String> = match self.anew {
-            Anew::All => HashMap::new(),
-            _ => snap
-                .all_lines()?
-                .into_iter()
-                .map(|(k, l)| (k, l.text))
-                .collect(),
-        };
-        if let Anew::Line(k) = self.anew {
-            lines.remove(&k);
-        }
-        let mut todo: BTreeSet<(u64, u32)> = match want {
-            Some(keys) => self.closure(&roll, &lines, keys)?,
-            None => roll
-                .lines()
-                .keys()
-                .filter(|k| !lines.contains_key(k))
-                .map(|&k| order(k))
-                .collect(),
-        };
+        let mut lines = written(&snap, self.anew)?;
+        let mut todo = todo(self.thread.name(), &roll, &lines, want)?;
         self.show(&roll, &lines, &todo)?;
         loop {
             self.free(&roll, &mut lines, &mut todo)?;
@@ -477,53 +560,17 @@ impl<'t, 'o> Run<'t, 'o> {
         }
     }
 
-    /// Puts on the progress where the run stands: per level, the lines of `roll`, those of
-    /// `lines` written and those of `todo` left; and the levels of the calls running. Plans
-    /// first if not yet.
+    /// Puts on the progress where the run stands, as [`levels`] counts it, and the levels of
+    /// the calls running. Plans first if not yet.
     fn show(
         &self,
         roll: &Rollup,
         lines: &HashMap<Key, String>,
         todo: &BTreeSet<(u64, u32)>,
     ) -> Result<()> {
-        let keys = roll.lines().keys();
-        let top = keys
-            .clone()
-            .map(|k| k.level)
-            .chain(todo.iter().map(|o| o.1))
-            .max();
-        let mut levels = vec![Level::default(); top.map_or(0, |t| t as usize + 1)];
-        for k in keys {
-            let v = &mut levels[k.level as usize];
-            v.lines += 1;
-            v.written += u64::from(lines.contains_key(k));
-        }
-        for &(_, l) in todo {
-            levels[l as usize].left += 1;
-        }
         let running: Vec<u32> = self.busy.iter().map(|k| k.level).collect();
-        self.progress.update(&levels, &running, &[])
-    }
-
-    /// The unbuilt lines among `keys` and those they are made from.
-    fn closure(
-        &self,
-        roll: &Rollup,
-        lines: &HashMap<Key, String>,
-        keys: &[Key],
-    ) -> Result<BTreeSet<(u64, u32)>> {
-        let mut out = BTreeSet::new();
-        let mut stack = keys.to_vec();
-        while let Some(k) = stack.pop() {
-            if lines.contains_key(&k) || !out.insert(order(k)) {
-                continue;
-            }
-            let Some(s) = roll.source(k) else {
-                bail!("{k} is not a line of thread {}.", self.thread.name());
-            };
-            stack.extend(s.children());
-        }
-        Ok(out)
+        self.progress
+            .update(&levels(roll, lines, todo), &running, &[])
     }
 
     /// Writes every line of `todo` that needs no call, in one commit per round, until none.
@@ -552,15 +599,15 @@ impl<'t, 'o> Run<'t, 'o> {
                 return Ok(());
             }
             let keys: Vec<Key> = free.iter().map(|f| f.0).collect();
-            let texts: Vec<String> = match &mut self.dry {
+            let texts: Vec<String> = match &mut self.preview {
                 None => self
                     .thread
                     .put_lines(free)?
                     .into_iter()
                     .map(|l| l.text)
                     .collect(),
-                Some(dry) => {
-                    dry.extend(free.iter().map(|(k, l)| (*k, l.text.clone())));
+                Some(preview) => {
+                    preview.extend(free.iter().map(|(k, l)| (*k, l.text.clone())));
                     free.into_iter().map(|(_, l)| l.text).collect()
                 }
             };
@@ -629,13 +676,13 @@ impl<'t, 'o> Run<'t, 'o> {
             Ok((who, text)) => {
                 let chars = text.chars().count();
                 log::spend!(info, spent, { line = %k, chars, secs }, "built");
-                let text = match &mut self.dry {
+                let text = match &mut self.preview {
                     None => {
                         let kind = roll.source(k).expect("a planned line").kind();
                         self.thread.put_line(k, kind, &who, &text)?.text
                     }
-                    Some(dry) => {
-                        dry.push((k, text.clone()));
+                    Some(preview) => {
+                        preview.push((k, text.clone()));
                         text
                     }
                 };

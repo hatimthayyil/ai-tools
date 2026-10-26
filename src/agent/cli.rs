@@ -22,7 +22,7 @@ use crate::{
         record::{Binding, Key},
         rollup::Rollup,
         store::{Snapshot, Store, Thread, ThreadInfo},
-        summarise::{Built, OnFail, build, dry_run, rebuild, rewrite, summarise},
+        summarise::{Built, OnFail, build, plan, preview, rebuild, rewrite, summarise},
         sync::Synced,
         upgrade,
         view::{Branch, Counts},
@@ -149,15 +149,18 @@ struct Build {
         help = "the model for this run [default: summariser.model in ai.toml, else sonnet]"
     )]
     model: Option<String>,
-    #[arg(
-        long,
-        help = "print each line it would write beside the line it replaces; store nothing"
-    )]
+    #[arg(long, help = "print the plan only; call no model and store nothing")]
     dry_run: bool,
     #[arg(
         long,
+        conflicts_with = "dry_run",
+        help = "write each line with the model and print it beside the line it replaces; store nothing"
+    )]
+    preview: bool,
+    #[arg(
+        long,
         hide = true,
-        conflicts_with_all = ["id", "rebuild", "dry_run"],
+        conflicts_with_all = ["id", "rebuild", "dry_run", "preview"],
         help = "run as the background summariser: build what it can past a failed line"
     )]
     background: bool,
@@ -988,8 +991,8 @@ fn covers(l: u32) -> String {
 
 /// Writes the thread's ready lines, or with `rebuild` rewrites them all; with `id`, that one
 /// line. It shows its plan, its progress and what it did, unless it is the `background`
-/// summariser, and stops at the first line that fails unless it is. With `dry_run`, prints what
-/// it would write instead, and stores nothing.
+/// summariser, and stops at the first line that fails unless it is. With `dry_run`, prints its
+/// plan alone; with `preview`, prints what it would write instead, and stores nothing.
 fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
     let Build {
         target,
@@ -997,6 +1000,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         rebuild: again,
         model,
         dry_run: dry,
+        preview,
         background,
     } = a;
     let (id, model) = (id.as_deref(), model.as_deref());
@@ -1016,27 +1020,28 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         }
         None => None,
     };
-    let backend = store.backend(&t, model)?;
-    if dry {
-        return dry_cmd(&t, out, backend, again, line.map(|l| l.1));
+    if preview {
+        let backend = store.backend(&t, model)?;
+        return preview_cmd(&t, out, backend, again, line.map(|l| l.1));
     }
     let name = t.name();
-    let log = t.log_path()?;
-    let about = About {
-        title: match (again, line) {
-            (true, Some((id, _))) => format!("Rewriting line {id} of agent {name}"),
-            (false, Some((id, _))) => format!("Building line {id} of agent {name}"),
-            (true, None) => format!("Rebuilding agent {name}"),
-            (false, None) => format!("Building agent {name}"),
-        },
-        unit: "line",
-        covers,
-        first_bar: 0,
-        model: backend.model().into(),
-        jobs: JOBS,
-        past: Past::read(&log, |id| id.split_once('@')?.0.parse().ok())?,
-        log,
+    let title = match (again, line) {
+        (true, Some((id, _))) => format!("Rewriting line {id} of agent {name}"),
+        (false, Some((id, _))) => format!("Building line {id} of agent {name}"),
+        (true, None) => format!("Rebuilding agent {name}"),
+        (false, None) => format!("Building agent {name}"),
     };
+    if dry {
+        let about = about(&t, title, store.model(model)?)?;
+        let progress = Progress::new(&mut *out, Mode::Plain, about);
+        if !progress.plan(&plan(&t, again, line.map(|l| l.1))?)? {
+            drop(progress);
+            nothing(out, line.map(|l| l.0))?;
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let backend = store.backend(&t, model)?;
+    let about = about(&t, title, backend.model().into())?;
     let progress = Progress::new(&mut *out, Mode::of(!background), about);
     let built = match (again, line) {
         (true, Some((id, key))) => {
@@ -1059,7 +1064,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
                 true => progress.end(None, b.spent)?,
                 false => {
                     drop(progress);
-                    writeln!(out, "{id} is written already. Rewrite it with --rebuild.")?
+                    nothing(out, Some(id))?
                 }
             }
             b
@@ -1088,7 +1093,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
                 true => progress.end(None, b.spent)?,
                 false => {
                     drop(progress);
-                    writeln!(out, "Nothing to write.")?
+                    nothing(out, None)?
                 }
             }
             b
@@ -1097,18 +1102,42 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
     outcome(&t, out, &built)
 }
 
-/// `build --dry-run`: each line a build would write, or with `again` a rebuild, of `line` and
-/// what it is made from if given, beside the line it replaces; stores nothing.
-fn dry_cmd(
+/// What a build of thread `t` titled `title` shows, `model` writing its lines.
+fn about(t: &Thread, title: String, model: String) -> Result<About> {
+    let log = t.log_path()?;
+    Ok(About {
+        title,
+        unit: "line",
+        covers,
+        first_bar: 0,
+        model,
+        jobs: JOBS,
+        past: Past::read(&log, |id| id.split_once('@')?.0.parse().ok())?,
+        log,
+    })
+}
+
+/// Says a build of line `id`, else of the thread, has nothing to write.
+fn nothing(out: &mut dyn Write, id: Option<Id>) -> io::Result<()> {
+    match id {
+        Some(id) => writeln!(out, "{id} is written already. Rewrite it with --rebuild."),
+        None => writeln!(out, "Nothing to write."),
+    }
+}
+
+/// `build --preview`: each line a build would write, or with `again` a rebuild, of `line` and
+/// what it is made from if given, written by the model and printed beside the line it
+/// replaces; stores nothing.
+fn preview_cmd(
     t: &Thread,
     out: &mut dyn Write,
     backend: Arc<dyn Backend>,
     again: bool,
     line: Option<Key>,
 ) -> Result<ExitCode> {
-    let d = dry_run(t, backend, again, line)?;
+    let p = preview(t, backend, again, line)?;
     let tree = t.snapshot()?.tree()?;
-    for l in &d.lines {
+    for l in &p.lines {
         let place = |seq: u64| tree.place(seq as usize);
         let id = Id::line(l.key.level, place(l.first), place(l.key.last));
         writeln!(out, "{id}|{}", l.text)?;
@@ -1118,11 +1147,11 @@ fn dry_cmd(
     }
     writeln!(
         out,
-        "Dry run: {}, {} by the model; nothing stored.",
-        plural(d.built.lines, "line"),
-        d.built.calls
+        "Preview: {}, {} by the model; nothing stored.",
+        plural(p.built.lines, "line"),
+        p.built.calls
     )?;
-    outcome(t, out, &d.built)
+    outcome(t, out, &p.built)
 }
 
 /// Prints each line of `built` that failed; failure if any did.

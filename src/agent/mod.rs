@@ -19,7 +19,8 @@ pub use record::{Agent, Binding, Head, Key, Line, LineKind};
 pub use rollup::{Branch, Part, Rollup, Source};
 pub use store::{Added, FORMAT, Mark, Snapshot, Store, Thread, ThreadInfo, Transcript, check_name};
 pub use summarise::{
-    Built, Config, Dry, DryLine, OnFail, Rewrote, build, dry_run, rebuild, rewrite, summarise,
+    Built, Config, OnFail, Preview, PreviewLine, Rewrote, build, plan, preview, rebuild, rewrite,
+    summarise,
 };
 pub use sync::{Attached, Synced, read, sync};
 pub use view::{Counts, Table, View};
