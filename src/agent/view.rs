@@ -2,7 +2,7 @@ use std::{collections::HashMap, ops::Range};
 
 use anyhow::{Result, bail};
 use regex::Regex;
-use serde::{Deserialize, Deserializer, de::Error as _};
+use serde::Deserialize;
 
 use crate::{
     agent::{
@@ -13,6 +13,7 @@ use crate::{
         rollup::{self, chunk_last},
         store::Snapshot,
     },
+    config::positive,
     memory::{Coord, excerpt, flat},
 };
 
@@ -128,13 +129,6 @@ impl Counts {
     /// The entries left to the fold: `total` less the turns shown item by item.
     fn fold(&self) -> usize {
         self.total.saturating_sub(self.latest + self.recent)
-    }
-}
-
-fn positive<'de, D: Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
-    match usize::deserialize(d)? {
-        0 => Err(D::Error::custom("must be a positive whole number")),
-        n => Ok(Some(n)),
     }
 }
 

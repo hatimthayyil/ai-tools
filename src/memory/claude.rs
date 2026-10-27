@@ -20,7 +20,10 @@ use tempfile::TempDir;
 
 use crate::{
     file::AtPath,
-    memory::backend::{Backend, Block, Conversation, Usage},
+    memory::{
+        JOBS,
+        backend::{Backend, Block, Conversation, Usage},
+    },
 };
 
 /// How long a model call may take before it fails.
@@ -395,22 +398,38 @@ pub struct ClaudeCode {
     program: OsString,
     model: String,
     effort: String,
+    jobs: usize,
     prompts: Prompts,
     live: Live,
     calls: PathBuf,
 }
 
 impl ClaudeCode {
-    /// The compactor: `model` at medium effort, through `program`, keeping its calls in `calls`.
+    /// The compactor: `model` at medium effort, [`JOBS`] calls at once, through `program`,
+    /// keeping its calls in `calls`.
     pub fn compactor_at(program: OsString, model: &str, calls: &Path) -> Result<ClaudeCode> {
         Ok(ClaudeCode {
             program,
             model: model.into(),
             effort: "medium".into(),
+            jobs: JOBS,
             prompts: Prompts::new()?,
             live: Live::default(),
             calls: calls.into(),
         })
+    }
+
+    /// At `effort`, one of `claude --effort`'s levels.
+    pub fn with_effort(self, effort: &str) -> ClaudeCode {
+        ClaudeCode {
+            effort: effort.into(),
+            ..self
+        }
+    }
+
+    /// Run `jobs` calls at once by a build.
+    pub fn with_jobs(self, jobs: usize) -> ClaudeCode {
+        ClaudeCode { jobs, ..self }
     }
 
     pub fn command(&self, system_file: &Path, session: &str) -> Command {
@@ -427,6 +446,10 @@ impl Backend for ClaudeCode {
 
     fn model(&self) -> &str {
         &self.model
+    }
+
+    fn jobs(&self) -> usize {
+        self.jobs
     }
 
     fn open(&self, system: &str) -> Result<Box<dyn Conversation>> {
@@ -475,6 +498,9 @@ pub fn usage(ev: &Value, before: f64) -> Usage {
         cache_write: n("cache_creation_input_tokens"),
         cache_read: n("cache_read_input_tokens"),
         output: n("output_tokens"),
+        thinking: ev["usage"]["output_tokens_details"]["thinking_tokens"]
+            .as_u64()
+            .unwrap_or(0),
         cost: ev["total_cost_usd"].as_f64().map_or(0.0, |t| t - before),
     }
 }

@@ -20,10 +20,12 @@ use crate::memory::{
     claude::{CALL_TIMEOUT, Record, tail, user_message, uuid},
 };
 
-/// A model behind a provider's API, through `genai`, its thinking off. Its `model` is
-/// `<provider>/<model>`, the provider one of genai's adapters (`deepseek`, `openai`,
-/// `anthropic`, `gemini`, `open_router`, …), whose key is read from that adapter's environment
-/// variable (`DEEPSEEK_API_KEY`, …). Each conversation keeps its [`Record`] in `calls`.
+/// A model behind a provider's API, through `genai`. Its `model` is `<provider>/<model>`, the
+/// provider one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`,
+/// `open_router`, …), whose key is read from that adapter's environment variable
+/// (`DEEPSEEK_API_KEY`, …). Its `effort` goes to the provider as genai maps it; unset, none
+/// goes, and the provider's own default holds. Each conversation keeps its [`Record`] in
+/// `calls`.
 pub struct Api {
     shared: Arc<Shared>,
 }
@@ -32,6 +34,8 @@ pub struct Api {
 struct Shared {
     provider: String,
     model: String,
+    effort: Option<ReasoningEffort>,
+    jobs: usize,
     runtime: Runtime,
     client: Client,
     target: ServiceTarget,
@@ -42,9 +46,15 @@ struct Shared {
 }
 
 impl Api {
-    /// `model`, `<provider>/<model>`, keeping its calls in `calls`; fails without the
+    /// `model`, `<provider>/<model>`, thinking at `effort` (`None`: the provider's default),
+    /// `jobs` calls at once in a build, keeping its calls in `calls`; fails without the
     /// provider's key.
-    pub fn new(model: &str, calls: &Path) -> Result<Api> {
+    pub fn new(
+        model: &str,
+        effort: Option<ReasoningEffort>,
+        jobs: usize,
+        calls: &Path,
+    ) -> Result<Api> {
         let (provider, name) = model
             .split_once('/')
             .filter(|(p, m)| !p.is_empty() && !m.is_empty())
@@ -68,27 +78,35 @@ impl Api {
         let runtime = runtime()?;
         let client = Client::new()?;
         let target = runtime.block_on(client.resolve_service_target(ModelIden::new(kind, name)))?;
-        Ok(Api::at(provider, runtime, client, target, calls))
+        Ok(Api::at(
+            provider, effort, jobs, runtime, client, target, calls,
+        ))
     }
 
     fn at(
         provider: &str,
+        effort: Option<ReasoningEffort>,
+        jobs: usize,
         runtime: Runtime,
         client: Client,
         target: ServiceTarget,
         calls: &Path,
     ) -> Api {
         let (stop, _) = watch::channel(false);
+        let mut options = ChatOptions::default().with_capture_raw_body(true);
+        if let Some(e) = &effort {
+            options = options.with_reasoning_effort(e.clone());
+        }
         Api {
             shared: Arc::new(Shared {
                 provider: provider.into(),
                 model: target.model.model_name.to_string(),
+                effort,
+                jobs,
                 runtime,
                 client,
                 target,
-                options: ChatOptions::default()
-                    .with_reasoning_effort(ReasoningEffort::Zero)
-                    .with_capture_raw_body(true),
+                options,
                 stop,
                 calls: calls.into(),
             }),
@@ -115,6 +133,10 @@ impl Backend for Api {
         &self.shared.model
     }
 
+    fn jobs(&self) -> usize {
+        self.shared.jobs
+    }
+
     fn open(&self, system: &str) -> Result<Box<dyn Conversation>> {
         let s = &self.shared;
         if *s.stop.borrow() {
@@ -129,7 +151,7 @@ impl Backend for Api {
                 "api": s.provider,
                 "model": s.model,
                 "endpoint": s.target.endpoint.base_url(),
-                "reasoning_effort": ReasoningEffort::Zero.to_string(),
+                "reasoning_effort": s.effort.as_ref().map(ReasoningEffort::to_string),
                 "system": system,
             }),
         )?;
@@ -226,11 +248,13 @@ impl Conversation for Chat {
 }
 
 /// What `res` took. Input excludes the tokens read from or written to the cache; DeepSeek
-/// counts its cache reads as `prompt_cache_hit_tokens`. The cost is the provider's own figure
-/// (`usage.cost`, as OpenRouter reports it), else zero.
+/// counts its cache reads as `prompt_cache_hit_tokens`. Thinking is the output's reasoning
+/// tokens. The cost is the provider's own figure (`usage.cost`, as OpenRouter reports it), else
+/// zero.
 fn usage(res: &ChatResponse) -> Usage {
     let n = |v: Option<i32>| v.map_or(0, |v| v.max(0) as u64);
     let body = res.captured_raw_body.as_ref().unwrap_or(&Value::Null);
+    let thinking = res.usage.completion_tokens_details.as_ref();
     let details = res.usage.prompt_tokens_details.as_ref();
     let cache_read = match n(details.and_then(|d| d.cached_tokens)) {
         0 => body["usage"]["prompt_cache_hit_tokens"]
@@ -244,6 +268,7 @@ fn usage(res: &ChatResponse) -> Usage {
         cache_write,
         cache_read,
         output: n(res.usage.completion_tokens),
+        thinking: n(thinking.and_then(|d| d.reasoning_tokens)),
         cost: body["usage"]["cost"].as_f64().unwrap_or(0.0),
     }
 }
@@ -288,8 +313,15 @@ mod tests {
     }
 
     impl Server {
-        /// DeepSeek's Flash through this server, keeping its calls in `calls`.
+        /// DeepSeek's Flash through this server at its default effort, keeping its calls in
+        /// `calls`.
         fn api(&self, calls: &Path) -> Api {
+            self.api_at(None, calls)
+        }
+
+        /// DeepSeek's Flash through this server at `effort`, 3 calls at once, keeping its calls
+        /// in `calls`.
+        fn api_at(&self, effort: Option<ReasoningEffort>, calls: &Path) -> Api {
             let http = reqwest::Client::builder()
                 .unix_socket(self.dir.path().join("socket"))
                 .build()
@@ -300,7 +332,15 @@ mod tests {
                 auth: AuthData::from_single("test-key"),
                 model: ModelIden::new(AdapterKind::DeepSeek, "deepseek-flash"),
             };
-            Api::at("deepseek", runtime().unwrap(), client, target, calls)
+            Api::at(
+                "deepseek",
+                effort,
+                3,
+                runtime().unwrap(),
+                client,
+                target,
+                calls,
+            )
         }
     }
 
@@ -363,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn a_conversation_sends_the_exchange_so_far_with_thinking_off_and_keeps_it() {
+    fn a_conversation_sends_the_exchange_so_far_at_the_provider_s_effort_and_keeps_it() {
         let usage = json!({
             "prompt_tokens": 100, "completion_tokens": 7, "total_tokens": 107,
             "prompt_cache_hit_tokens": 60, "prompt_cache_miss_tokens": 40,
@@ -375,18 +415,28 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let calls = tmp.path().join("calls");
         let api = server.api(&calls);
-        assert_eq!((api.agent(), api.model()), ("deepseek", "deepseek-flash"));
+        assert_eq!(
+            (api.agent(), api.model(), api.jobs()),
+            ("deepseek", "deepseek-flash", 3)
+        );
         let mut conv = api.open("Write a line.").unwrap();
         assert_eq!(conv.say(&[Block::new("first")]).unwrap(), "a long line");
         let u = conv.used();
         assert_eq!(
-            (u.input, u.cache_read, u.cache_write, u.output, u.cost),
-            (40, 60, 0, 7, 0.0)
+            (
+                u.input,
+                u.cache_read,
+                u.cache_write,
+                u.output,
+                u.thinking,
+                u.cost
+            ),
+            (40, 60, 0, 7, 0, 0.0)
         );
         assert_eq!(conv.say(&[Block::new("shorter")]).unwrap(), "short");
         let one = server.sent.recv().unwrap();
         assert_eq!(one["model"], "deepseek-flash");
-        assert_eq!(one["thinking"], json!({"type": "disabled"}));
+        assert!(one.get("thinking").is_none(), "{one}");
         assert!(one.get("reasoning_effort").is_none(), "{one}");
         let two = server.sent.recv().unwrap();
         let said: Vec<(&str, &str)> = two["messages"]
@@ -419,7 +469,7 @@ mod tests {
         assert_eq!(lines[0]["api"], "deepseek");
         assert_eq!(lines[0]["model"], "deepseek-flash");
         assert_eq!(lines[0]["system"], "Write a line.");
-        assert_eq!(lines[0]["reasoning_effort"], "zero");
+        assert_eq!(lines[0]["reasoning_effort"], Value::Null);
         assert_eq!(
             lines[1]["line"],
             serde_json::from_str::<Value>(&user_message(&[Block::new("first")])).unwrap()
@@ -438,6 +488,36 @@ mod tests {
             .as_str()
             .or_else(|| content[0]["text"].as_str())
             .unwrap()
+    }
+
+    #[test]
+    fn an_effort_turns_deepseek_s_thinking_on_or_off_and_its_tokens_are_counted() {
+        let usage = json!({
+            "prompt_tokens": 30, "completion_tokens": 50,
+            "completion_tokens_details": {"reasoning_tokens": 42},
+        });
+        for (effort, thinking, sent) in [
+            (ReasoningEffort::High, "enabled", Some("high")),
+            (ReasoningEffort::Max, "enabled", Some("max")),
+            (ReasoningEffort::Zero, "disabled", None),
+        ] {
+            let server = serve(vec![(200, completion("ok", usage.clone()))]);
+            let tmp = TempDir::new().unwrap();
+            let mut conv = server
+                .api_at(Some(effort.clone()), tmp.path())
+                .open("s")
+                .unwrap();
+            conv.say(&[Block::new("m")]).unwrap();
+            let u = conv.used();
+            assert_eq!((u.output, u.thinking), (50, 42), "{effort}");
+            let body = server.sent.recv().unwrap();
+            assert_eq!(body["thinking"], json!({"type": thinking}), "{effort}");
+            assert_eq!(body["reasoning_effort"].as_str(), sent, "{effort}");
+            let record = fs::read_to_string(tmp.path().join(format!("{}.jsonl", conv.session())));
+            let first: Value =
+                serde_json::from_str(record.unwrap().lines().next().unwrap()).unwrap();
+            assert_eq!(first["reasoning_effort"], effort.to_string());
+        }
     }
 
     #[test]
@@ -521,7 +601,10 @@ mod tests {
             if model.starts_with("heabsy") && std::env::var_os("HEABSY_API_KEY").is_some() {
                 continue;
             }
-            let err = Api::new(model, tmp.path()).err().unwrap().to_string();
+            let err = Api::new(model, None, 1, tmp.path())
+                .err()
+                .unwrap()
+                .to_string();
             assert!(err.contains(says), "{model}: {err}");
         }
     }

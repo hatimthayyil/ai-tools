@@ -112,6 +112,14 @@ fn path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
     }
 }
 
+/// A whole number of 1 or more.
+pub(crate) fn positive<'de, D: Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    match usize::deserialize(d)? {
+        0 => Err(D::Error::custom("must be a positive whole number")),
+        n => Ok(Some(n)),
+    }
+}
+
 fn paths<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<PathBuf>, D::Error> {
     Ok(path(d)?.into_iter().collect())
 }

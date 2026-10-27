@@ -94,6 +94,90 @@ fn the_api_backend_takes_a_provider_and_its_model() {
 }
 
 #[test]
+fn an_effort_is_a_genai_effort_or_a_thinking_budget() {
+    for (given, kept) in [
+        ("\"high\"", "high"),
+        ("\" max \"", "max"),
+        ("\"none\"", "zero"),
+        ("\"zero\"", "zero"),
+        ("\"minimal\"", "minimal"),
+        ("\"xhigh\"", "xhigh"),
+        ("4096", "4096"),
+        ("\"4096\"", "4096"),
+    ] {
+        let t = Tree::new();
+        fs::write(t.user(), format!("[summariser]\neffort = {given}\n")).unwrap();
+        let effort = t.load().unwrap().summariser.effort.unwrap();
+        assert_eq!(effort.reasoning().to_string(), kept, "{given}");
+    }
+    for given in ["\"\"", "-5", "\"0\"", "5000000000"] {
+        let t = Tree::new();
+        fs::write(t.user(), format!("[summariser]\neffort = {given}\n")).unwrap();
+        let err = t.load().unwrap_err().to_string();
+        assert!(
+            err.contains("is no effort") || err.contains("is no budget"),
+            "{given}: {err}"
+        );
+    }
+}
+
+#[test]
+fn the_claude_backend_takes_only_the_efforts_claude_does() {
+    for (given, ok) in [
+        ("low", true),
+        ("medium", true),
+        ("high", true),
+        ("xhigh", true),
+        ("max", true),
+        ("zero", false),
+        ("minimal", false),
+        ("4096", false),
+    ] {
+        let t = Tree::new();
+        fs::write(t.user(), format!("[summariser]\neffort = \"{given}\"\n")).unwrap();
+        let effort = t.load().unwrap().summariser.effort.unwrap();
+        match effort.claude() {
+            Ok(e) => assert!(ok && e == given, "{given}"),
+            Err(err) => assert!(
+                !ok && err.to_string().contains("is no effort `claude -p` takes"),
+                "{given}: {err}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn jobs_default_to_eight_and_each_key_merges_on_its_own() {
+    let t = Tree::new();
+    assert_eq!(t.load().unwrap().summariser.jobs(), 8);
+    fs::write(
+        t.user(),
+        "[summariser]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\neffort = \"low\"\njobs = 64\n",
+    )
+    .unwrap();
+    fs::write(
+        t.inner().join("ai.toml"),
+        "[summariser]\neffort = \"max\"\n",
+    )
+    .unwrap();
+    let s = t.load().unwrap().summariser;
+    assert_eq!(
+        (
+            s.kind(),
+            s.model(),
+            s.effort.as_ref().unwrap().reasoning().to_string(),
+            s.jobs()
+        ),
+        (
+            Kind::Api,
+            "deepseek/deepseek-flash".into(),
+            "max".into(),
+            64
+        )
+    );
+}
+
+#[test]
 fn the_nearest_project_file_overrides_the_users_key_by_key() {
     let t = Tree::new();
     fs::write(
@@ -152,6 +236,13 @@ fn a_bad_key_or_value_names_its_file_and_key() {
             "unknown variant `pi`, expected `claude` or `api`",
         ),
         ("[chat]\nmodel = \"haiku\"\n", "model", "unknown field"),
+        (
+            "[summariser]\neffort = \"hard\"\n",
+            "effort",
+            "`hard` is no effort",
+        ),
+        ("[summariser]\neffort = 0\n", "effort", "0 is no budget"),
+        ("[summariser]\njobs = 0\n", "jobs", "positive whole number"),
         ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),
         ("[agents.a]\nworktree = \"\"\n", "worktree", "is empty"),
         ("[agent.view]\nlines = 3\n", "lines", "unknown field"),

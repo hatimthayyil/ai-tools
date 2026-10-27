@@ -2,6 +2,8 @@ use std::{ops::AddAssign, path::Path, sync::Arc};
 
 use anyhow::Result;
 
+use crate::memory::JOBS;
+
 /// Makes the backend of a command, keeping its calls in the directory it is given.
 pub type MakeBackend = dyn Fn(&Path) -> Result<Arc<dyn Backend>>;
 
@@ -25,6 +27,8 @@ pub struct Usage {
     pub cache_write: u64,
     pub cache_read: u64,
     pub output: u64,
+    /// Of `output`, the tokens spent thinking, as the backend reports them.
+    pub thinking: u64,
     pub cost: f64,
 }
 
@@ -40,12 +44,18 @@ impl AddAssign for Usage {
         self.cache_write += u.cache_write;
         self.cache_read += u.cache_read;
         self.output += u.output;
+        self.thinking += u.thinking;
         self.cost += u.cost;
     }
 }
 
 /// A model, reached through some harness or API.
 pub trait Backend: Send + Sync {
+    /// How many calls a build runs through it at once: `[summariser] jobs`.
+    fn jobs(&self) -> usize {
+        JOBS
+    }
+
     /// The harness or API the model runs in, recorded as the agent of what it writes.
     fn agent(&self) -> &str;
 

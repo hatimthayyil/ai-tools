@@ -748,7 +748,7 @@ fn a_summariser_on_a_dead_backend_gives_up_and_frees_the_lock() {
     let errors: Vec<&str> = log.lines().filter(|l| l.contains(" ERROR ")).collect();
     assert_eq!(errors.len(), 1, "{log}");
     assert!(
-        Regex::new(r#": gave up node=[01] tries=4 error="usage limit reached" requests=\d+ retries=0 tokens=\d+ cost=[\d.]+ retry_tokens=0 retry_cost=0.0$"#)
+        Regex::new(r#": gave up node=[01] tries=4 error="usage limit reached" requests=\d+ retries=0 tokens=\d+ thinking=0 cost=[\d.]+ retry_tokens=0 retry_cost=0.0$"#)
             .unwrap()
             .is_match(errors[0]),
         "{log}"
@@ -1266,13 +1266,13 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
         .unwrap()
     };
     let log = fs::read_to_string(d.join("summarise.log")).unwrap();
-    let one = "requests=1 retries=0 tokens=110 cost=0.01 retry_tokens=0 retry_cost=0.0";
+    let one = "requests=1 retries=0 tokens=110 thinking=0 cost=0.01 retry_tokens=0 retry_cost=0.0";
     for event in [
         "start".to_string(),
         format!(r"built node=0 chars=300 secs=[\d.]+ {one}"),
         format!(r"built node=1 chars=300 secs=[\d.]+ {one}"),
         format!(r"built node=0\+2 chars=300 secs=[\d.]+ {one}"),
-        r"end built=3 secs=[\d.]+ requests=3 retries=0 tokens=330 cost=0.03 retry_tokens=0 retry_cost=0.0".to_string(),
+        r"end built=3 secs=[\d.]+ requests=3 retries=0 tokens=330 thinking=0 cost=0.03 retry_tokens=0 retry_cost=0.0".to_string(),
     ] {
         assert!(line("INFO", &event).is_match(&log), "{event}:\n{log}");
     }
@@ -1297,8 +1297,8 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
         assert!(line("WARN", &event).is_match(&log), "{event}:\n{log}");
     }
     for event in [
-        r"built node=2 chars=300 secs=[\d.]+ requests=2 retries=1 tokens=220 cost=0.02 retry_tokens=110 retry_cost=0.01",
-        r"end built=1 secs=[\d.]+ requests=3 retries=1 tokens=330 cost=0.03 retry_tokens=110 retry_cost=0.01",
+        r"built node=2 chars=300 secs=[\d.]+ requests=2 retries=1 tokens=220 thinking=0 cost=0.02 retry_tokens=110 retry_cost=0.01",
+        r"end built=1 secs=[\d.]+ requests=3 retries=1 tokens=330 thinking=0 cost=0.03 retry_tokens=110 retry_cost=0.01",
     ] {
         assert!(line("INFO", event).is_match(&log), "{event}:\n{log}");
     }

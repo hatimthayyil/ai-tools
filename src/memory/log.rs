@@ -73,6 +73,7 @@ macro_rules! spend {
             requests = s.requests,
             retries = s.retries,
             tokens = s.all.tokens(),
+            thinking = s.all.thinking,
             cost = $crate::memory::log::usd(s.all.cost),
             retry_tokens = s.retried.tokens(),
             retry_cost = $crate::memory::log::usd(s.retried.cost),

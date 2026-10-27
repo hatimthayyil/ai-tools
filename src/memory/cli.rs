@@ -250,6 +250,10 @@ impl Cli {
             backend: settings.summariser.clone().maker(),
             terminal: io::stdout().is_terminal(),
             config: settings.memory,
+            opts: Options {
+                jobs: settings.summariser.jobs(),
+                ..Options::default()
+            },
             summariser: settings.summariser,
             ..Runtime::default()
         };

@@ -573,15 +573,15 @@ impl<'t> Run<'t> {
         }
     }
 
-    /// Starts the calls of `todo` that are ready, in order, up to [`JOBS`] running, unless
-    /// failures halted the run. A line still over the [`limit`] of its words after [`TRIES`]
-    /// fails.
+    /// Starts the calls of `todo` that are ready, in order, up to the backend's
+    /// [`Backend::jobs`] running, unless failures halted the run. A line still over the
+    /// [`limit`] of its words after [`TRIES`] fails.
     fn start(&mut self, roll: &Rollup, lines: &HashMap<Key, String>, todo: &BTreeSet<(u64, u32)>) {
         if self.halted() {
             return;
         }
         for k in todo.iter().map(|&o| key(o)) {
-            if self.busy.len() >= JOBS {
+            if self.busy.len() >= self.backend.jobs() {
                 return;
             }
             if self.busy.contains(&k) || self.failed.contains(&k) {

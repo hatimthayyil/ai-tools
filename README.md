@@ -133,6 +133,8 @@ single = 0         # the fewest older turns kept on a line each; shared lines ta
 [summariser]       # what writes every summary: agents, memory, notes
 backend = "claude" # claude: Claude Code's claude -p; api: a provider's API
 model = "sonnet"   # claude's spelling; for api, <provider>/<model>, e.g. "deepseek/deepseek-flash"
+effort = "medium"  # how hard the model thinks; unset, claude runs at medium and api at the provider's default
+jobs = 8           # calls a build runs at once
 
 [memory]
 entry-chars = 280  # the length a note aims for, in characters, at most 512; 40 more are accepted
@@ -149,7 +151,9 @@ An agent's `instructions` is relative to the folder of the file that sets it, so
 
 `ai agent resume` starts a new session in the agent's `worktree`, else in the current directory, and adds its `instructions` to the harness's system prompt, for a new session and a resumed one (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a git worktree of the project's main checkout, at a commit holding its `ai.toml`, so its sessions find the threads in the main checkout's `.ai/local/agents`; a plain copy, or another clone, has its own. A session in the worktree reads the private settings from the main checkout.
 
-With `backend = "api"`, `ai` calls the provider's API through [genai](https://github.com/jeremychone/rust-genai), with thinking off. `model` names the provider, one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`, `open_router`, `groq`, `together`, `fireworks`, …), then the model as that provider spells it. The key comes from the provider's environment variable (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, …), never from `ai.toml`; a command that needs the summariser fails when it is unset. Each call is kept, like a `claude -p` one, in the store's `calls/`: the request, the provider's reply as it came, and its token counts. Costs count as zero unless the provider reports them (OpenRouter does). In this repository, `secretspec set DEEPSEEK_API_KEY` stores the key once, and `secretspec run -- ai memory build` passes it.
+With `backend = "api"`, `ai` calls the provider's API through [genai](https://github.com/jeremychone/rust-genai). `model` names the provider, one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`, `open_router`, `groq`, `together`, `fireworks`, …), then the model as that provider spells it. The key comes from the provider's environment variable (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, …), never from `ai.toml`; a command that needs the summariser fails when it is unset. Each call is kept, like a `claude -p` one, in the store's `calls/`: the request, the provider's reply as it came, and its token counts. Costs count as zero unless the provider reports them (OpenRouter does). In this repository, `secretspec set DEEPSEEK_API_KEY` stores the key once, and `secretspec run -- ai memory build` passes it.
+
+`effort` is one of genai's reasoning efforts, `zero` (or `none`), `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, or a budget of thinking tokens as a number. With `backend = "api"` it goes to the provider as genai maps it: DeepSeek takes `zero` as thinking off and any other as thinking on, mapping `minimal` and `low` to its low, `medium` to `xhigh` to its high, `max` to its max, and a budget to its default; unset, nothing goes and DeepSeek thinks at its default, high. With `backend = "claude"` it is `claude --effort`, so only `low`, `medium`, `high`, `xhigh` and `max` work. Each call's thinking tokens are kept in its record and logged with the rest. `jobs` sets how many calls `ai memory build`, `ai agent build` and `ai notes build` run at once.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 

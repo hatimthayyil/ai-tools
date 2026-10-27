@@ -15,7 +15,7 @@ use crate::{
     file::pretty,
     git::hash,
     memory::{
-        Backend, CALLS, JOBS, MakeBackend, PLACEHOLDER, Pattern, broken_pipe, excerpt, log, plural,
+        Backend, CALLS, MakeBackend, PLACEHOLDER, Pattern, broken_pipe, excerpt, log, plural,
         spawn_summariser, store_dir,
     },
     notes::{
@@ -480,7 +480,7 @@ fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<u64> {
             if jobs.is_empty() {
                 break;
             }
-            for batch in jobs.chunks(JOBS) {
+            for batch in jobs.chunks(backend.jobs()) {
                 built += round(s, &*backend, batch)?;
             }
         }
