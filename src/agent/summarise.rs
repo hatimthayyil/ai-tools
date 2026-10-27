@@ -129,7 +129,7 @@ pub struct PreviewLine {
 }
 
 /// Under the thread's lock, waiting for it however long, builds `keys` and the unbuilt lines
-/// they are made from, up to [`JOBS`] calls at once, until they are built or a line fails;
+/// they are made from, [`Backend::jobs`] calls at once, until they are built or a line fails;
 /// logs to [`Thread::log_path`]. A key that is no line of the thread is an error. Shows its
 /// progress on `progress`.
 pub fn build(

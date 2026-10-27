@@ -29,7 +29,7 @@ use crate::{
     },
     config::FILE,
     file::{self, AtPath},
-    memory::{Backend, JOBS, Pattern, broken_pipe, claude::uuid, plural, quote, word},
+    memory::{Backend, Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page,
     progress::{About, Mode, Past, Progress},
     project::committing,
@@ -1032,7 +1032,8 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         (false, None) => format!("Building agent {name}"),
     };
     if dry {
-        let about = about(&t, title, store.model(model)?)?;
+        let jobs = store.settings()?.summariser.jobs();
+        let about = about(&t, title, store.model(model)?, jobs)?;
         let progress = Progress::new(&mut *out, Mode::Plain, about);
         if !progress.plan(&plan(&t, again, line.map(|l| l.1))?)? {
             drop(progress);
@@ -1041,7 +1042,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     let backend = store.backend(&t, model)?;
-    let about = about(&t, title, backend.model().into())?;
+    let about = about(&t, title, backend.model().into(), backend.jobs())?;
     let progress = Progress::new(&mut *out, Mode::of(!background), about);
     let built = match (again, line) {
         (true, Some((id, key))) => {
@@ -1102,8 +1103,8 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
     outcome(&t, out, &built)
 }
 
-/// What a build of thread `t` titled `title` shows, `model` writing its lines.
-fn about(t: &Thread, title: String, model: String) -> Result<About> {
+/// What a build of thread `t` titled `title` shows, `model` writing its lines, `jobs` at once.
+fn about(t: &Thread, title: String, model: String, jobs: usize) -> Result<About> {
     let log = t.log_path()?;
     Ok(About {
         title,
@@ -1111,7 +1112,7 @@ fn about(t: &Thread, title: String, model: String) -> Result<About> {
         covers,
         first_bar: 0,
         model,
-        jobs: JOBS,
+        jobs,
         past: Past::read(&log, |id| id.split_once('@')?.0.parse().ok())?,
         log,
     })
