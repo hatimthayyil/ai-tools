@@ -21,6 +21,7 @@ use crate::memory::{
     store::Store,
     tree::{Coord, WORDS, limit},
     view::{Mem, VIEW},
+    witness::settle,
 };
 
 pub const COMPACT: &str = include_str!("prompts/compact.txt");
@@ -121,7 +122,7 @@ pub fn summarize(backend: &dyn Backend, job: &Job, spent: &mut Spend) -> Result<
 }
 
 /// `conv`'s reply to `message`; what the request took goes into `spent`, failed or not.
-fn ask(
+pub(super) fn ask(
     conv: &mut dyn Conversation,
     message: &[Block],
     retry: bool,
@@ -133,8 +134,8 @@ fn ask(
 }
 
 /// The line the model writes for `message`, which asks for `words` words, under the system
-/// prompt `system`, retried in the same conversation while over their [`limit`] in characters, up
-/// to [`TRIES`]; the shortest try wins.
+/// prompt `system`: held to their [`limit`] by [`fit`], then, when `backend` has a witness,
+/// checked by it until it finds nothing wrong ([`settle`]).
 /// Returns who wrote it, and the line; `node` names it in the log. What every request took
 /// goes into `spent`, even when the line fails.
 pub fn write_line(
@@ -145,9 +146,50 @@ pub fn write_line(
     node: &dyn fmt::Display,
     spent: &mut Spend,
 ) -> Result<(Who, String)> {
-    let max = limit(words);
     let mut conv = backend.open(system)?;
-    let mut reply = ask(&mut *conv, message, false, spent)?;
+    let reply = ask(&mut *conv, message, false, spent)?;
+    let mut line = fit(&mut *conv, &reply, words, node, spent)?;
+    if let Some(witness) = backend.witness() {
+        line = settle(
+            witness,
+            &mut *conv,
+            &request(message, words),
+            line,
+            String::clone,
+            |conv, reply, spent| fit(conv, reply, words, node, spent),
+            node,
+            spent,
+        )?;
+    }
+    let who = Who {
+        agent: backend.agent().into(),
+        model: backend.model().into(),
+        session: conv.session(),
+    };
+    Ok((who, line))
+}
+
+/// What `message` asks, without the [`ruler`] it starts with: the request a witness reads.
+fn request(message: &[Block], words: usize) -> String {
+    let text: Vec<&str> = message.iter().map(|b| b.text.as_str()).collect();
+    let text = text.join("\n");
+    match text.strip_prefix(&ruler(words)) {
+        Some(rest) => rest.to_string(),
+        None => text,
+    }
+}
+
+/// The line in `reply`, which `conv`'s model wrote for `words` words, retried in the same
+/// conversation while over their [`limit`] in characters, up to [`TRIES`]; the shortest try wins.
+fn fit(
+    conv: &mut dyn Conversation,
+    reply: &str,
+    words: usize,
+    node: &dyn fmt::Display,
+    spent: &mut Spend,
+) -> Result<String> {
+    let max = limit(words);
+    let mut reply = reply.to_string();
     let mut tries: Vec<String> = Vec::new();
     loop {
         let line = flat(reply.trim());
@@ -173,24 +215,13 @@ pub fn write_line(
             tries.push(line);
             break;
         }
-        reply = ask(
-            &mut *conv,
-            &[Block::new(retry_text(&line, words))],
-            true,
-            spent,
-        )?;
+        reply = ask(conv, &[Block::new(retry_text(&line, words))], true, spent)?;
         tries.push(line);
     }
-    let who = Who {
-        agent: backend.agent().into(),
-        model: backend.model().into(),
-        session: conv.session(),
-    };
-    let line = tries
+    Ok(tries
         .into_iter()
         .min_by_key(|l| l.chars().count())
-        .expect("one try at least");
-    Ok((who, line))
+        .expect("one try at least"))
 }
 
 #[derive(Clone, Copy, Debug)]

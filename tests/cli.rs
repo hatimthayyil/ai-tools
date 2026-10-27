@@ -793,6 +793,64 @@ fn a_note_is_summarised_in_the_background() {
     );
 }
 
+/// A fake `claude` as a summariser (Sonnet) and its witness (Opus): the witness finds a fault in
+/// the first summary of a conversation, and none in the next.
+const FAKE_WITNESSED: &str = "prev=; model=
+for a in \"$@\"; do [ \"$prev\" = --model ] && model=$a; prev=$a; done
+n=0
+while read -r line; do
+  n=$((n+1))
+  case $model/$n in
+    opus/1) r='- unsupported: \\\"first\\\" is not in the notes' ;;
+    opus/*) r=OK ;;
+    */1) r='first summary' ;;
+    *) r='second summary' ;;
+  esac
+  printf '%s\\n' \"{\\\"type\\\":\\\"result\\\",\\\"is_error\\\":false,\\\"result\\\":\\\"$r\\\",\\\"stop_reason\\\":\\\"end_turn\\\",\\\"session_id\\\":\\\"s-$model\\\"}\"
+done
+";
+
+#[test]
+fn a_witness_checks_each_summary_until_it_finds_nothing_wrong() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    s.user_toml("[summariser.witness]\nmodel = \"opus\"\n");
+    for i in 0..2 {
+        s.ai(&["note", &format!("note {i} {}", "z".repeat(250))]);
+    }
+    let path = s.fake_claude(FAKE_WITNESSED);
+    let r = s
+        .cmd(s.path(), Some(&s.store()))
+        .arg("build")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    let log = fs::read_to_string(s.store().join("summarise.log")).unwrap();
+    assert!(r.status.success(), "{}\n{log}", text(&r.stderr));
+    let st = Store::open(&s.store()).unwrap();
+    let n = st
+        .snapshot()
+        .unwrap()
+        .node(Coord::new(1, 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            n.text.as_str(),
+            n.who.model.as_str(),
+            n.who.session.as_str()
+        ),
+        ("second summary", "sonnet", "s-sonnet")
+    );
+    for event in [
+        "witness found faults: - unsupported: \"first\" is not in the notes node=0+2 round=1",
+        "summariser answered node=0+2 round=1 chars=14 contested=false",
+        "witnessed node=0+2 rounds=1 witness=opus",
+    ] {
+        assert!(log.contains(event), "{event}\n{log}");
+    }
+}
+
 const V1: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/memory-v1.bundle"

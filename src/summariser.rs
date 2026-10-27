@@ -1,12 +1,12 @@
 use std::{path::Path, sync::Arc};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use genai::chat::ReasoningEffort;
 use serde::{Deserialize, Deserializer, de::Error};
 
 use crate::{
     config::positive,
-    memory::{Api, Backend, ClaudeCode, JOBS, MakeBackend, claude},
+    memory::{Api, Backend, ClaudeCode, JOBS, MakeBackend, Witnessed, claude},
 };
 
 /// `[summariser]` in `ai.toml`: what writes every summary, for agents, memory and notes.
@@ -24,6 +24,9 @@ pub struct Config {
     /// Calls a build runs at once; default [`JOBS`].
     #[serde(deserialize_with = "positive")]
     pub jobs: Option<usize>,
+    /// `[summariser.witness]`: the model that checks every summary ([`Witnessed`]), set by
+    /// `backend`, `model` and `effort`, whose defaults are those above; unset, no witness.
+    pub witness: Option<Box<Config>>,
 }
 
 /// Where a summary is made.
@@ -119,11 +122,44 @@ impl Config {
             model: self.model.or(base.model),
             effort: self.effort.or(base.effort),
             jobs: self.jobs.or(base.jobs),
+            witness: match (self.witness, base.witness) {
+                (Some(w), Some(b)) => Some(Box::new(w.over(*b))),
+                (w, b) => w.or(b),
+            },
         }
     }
 
-    /// The backend, with `model` over the configured one, keeping its calls in `calls`.
+    /// `[summariser.witness]`, if set; an error if it sets `jobs` or a witness of its own.
+    pub fn witness(&self) -> Result<Option<&Config>> {
+        let Some(w) = self.witness.as_deref() else {
+            return Ok(None);
+        };
+        if w.jobs.is_some() || w.witness.is_some() {
+            bail!(
+                "`[summariser.witness]` takes `backend`, `model` and `effort` alone: the witness \
+                 checks within each summariser call, so it has no `jobs`, and no witness of its own."
+            );
+        }
+        Ok(Some(w))
+    }
+
+    /// The backend, with `model` over the configured one, keeping its calls in `calls`; with
+    /// `[summariser.witness]`, the [`Witnessed`] pair, the witness keeping its calls there too.
     pub fn backend(&self, model: Option<&str>, calls: &Path) -> Result<Arc<dyn Backend>> {
+        let writer = self.writer(model, calls)?;
+        Ok(match self.witness()? {
+            None => writer,
+            Some(w) => {
+                let witness = w
+                    .writer(None, calls)
+                    .context("Cannot start the witness of `[summariser.witness]`")?;
+                Arc::new(Witnessed::new(writer, witness))
+            }
+        })
+    }
+
+    /// The model these settings name, alone.
+    fn writer(&self, model: Option<&str>, calls: &Path) -> Result<Arc<dyn Backend>> {
         let model = model.map_or_else(|| self.model(), str::to_string);
         let jobs = self.jobs();
         Ok(match self.kind() {

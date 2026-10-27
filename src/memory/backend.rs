@@ -67,6 +67,12 @@ pub trait Backend: Send + Sync {
 
     /// Ends every conversation still open.
     fn stop(&self) {}
+
+    /// The model that checks every summary this one writes, if any: see
+    /// [`Witnessed`](super::Witnessed).
+    fn witness(&self) -> Option<&dyn Backend> {
+        None
+    }
 }
 
 /// One conversation: each user message gets the model's reply, in the same context.

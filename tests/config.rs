@@ -178,6 +178,46 @@ fn jobs_default_to_eight_and_each_key_merges_on_its_own() {
 }
 
 #[test]
+fn a_witness_is_set_by_the_summarisers_keys_merged_key_by_key() {
+    let t = Tree::new();
+    assert!(t.load().unwrap().summariser.witness().unwrap().is_none());
+    fs::write(
+        t.user(),
+        "[summariser]\nmodel = \"sonnet\"\n\n[summariser.witness]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\neffort = \"low\"\n",
+    )
+    .unwrap();
+    fs::write(
+        t.inner().join("ai.toml"),
+        "[summariser.witness]\neffort = \"max\"\n",
+    )
+    .unwrap();
+    let s = t.load().unwrap().summariser;
+    let w = s.witness().unwrap().unwrap();
+    assert_eq!(
+        (
+            w.kind(),
+            w.model(),
+            w.effort.as_ref().unwrap().reasoning().to_string()
+        ),
+        (Kind::Api, "deepseek/deepseek-flash".into(), "max".into())
+    );
+    assert_eq!((s.kind(), s.model()), (Kind::Claude, "sonnet".into()));
+
+    for (text, says) in [
+        ("[summariser.witness]\njobs = 64\n", "no `jobs`"),
+        (
+            "[summariser.witness.witness]\nmodel = \"opus\"\n",
+            "no witness of its own",
+        ),
+    ] {
+        fs::write(t.inner().join("ai.toml"), text).unwrap();
+        let s = t.load().unwrap().summariser;
+        let err = s.witness().unwrap_err().to_string();
+        assert!(err.contains(says), "{err}");
+    }
+}
+
+#[test]
 fn the_nearest_project_file_overrides_the_users_key_by_key() {
     let t = Tree::new();
     fs::write(
@@ -243,6 +283,11 @@ fn a_bad_key_or_value_names_its_file_and_key() {
         ),
         ("[summariser]\neffort = 0\n", "effort", "0 is no budget"),
         ("[summariser]\njobs = 0\n", "jobs", "positive whole number"),
+        (
+            "[summariser.witness]\nmodle = \"haiku\"\n",
+            "modle",
+            "unknown field",
+        ),
         ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),
         ("[agents.a]\nworktree = \"\"\n", "worktree", "is empty"),
         ("[agent.view]\nlines = 3\n", "lines", "unknown field"),

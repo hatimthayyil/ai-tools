@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use tracing::{error, info, info_span, warn};
+use tracing::{Span, dispatcher, error, info, info_span, warn};
 
 use crate::{
     config::Settings,
@@ -496,14 +496,20 @@ fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<u64> {
 
 /// Makes the summaries of `jobs` at once, then writes each whose input is unchanged.
 fn round(s: &Store, backend: &dyn Backend, jobs: &[Job]) -> Result<u64> {
+    let (span, dispatch) = (Span::current(), dispatcher::get_default(Clone::clone));
     let made: Vec<Result<Option<(String, String)>>> = thread::scope(|sc| {
         let calls: Vec<_> = jobs
             .iter()
             .map(|j| {
-                sc.spawn(|| match (&j.copy, &j.input) {
-                    (Some(c), _) => Ok(Some(c.clone())),
-                    (None, Some(i)) => summarise(backend, i).map(Some),
-                    (None, None) => Ok(None),
+                let (span, dispatch) = (span.clone(), dispatch.clone());
+                sc.spawn(move || {
+                    let _d = dispatcher::set_default(&dispatch);
+                    let _s = span.enter();
+                    match (&j.copy, &j.input) {
+                        (Some(c), _) => Ok(Some(c.clone())),
+                        (None, Some(i)) => summarise(backend, i, &j.topic).map(Some),
+                        (None, None) => Ok(None),
+                    }
                 })
             })
             .collect();

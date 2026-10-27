@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     git::hash,
-    memory::{Backend, Block, NODE, TRIES, flat},
+    memory::{Backend, Block, Conversation, NODE, Spend, TRIES, flat, settle},
     notes::{leaf::Front, store::Node, topic::Topic},
 };
 
@@ -143,11 +143,33 @@ fn split(reply: &str) -> ((String, String), Option<String>) {
     ((scope, gist), problem)
 }
 
-/// The scope and gist the model writes for `input`, retried in the same conversation while they
-/// do not fit, up to [`TRIES`]; past that, the shortest well-formed try.
-pub fn summarise(backend: &dyn Backend, input: &str) -> Result<(String, String)> {
+/// The scope and gist the model writes for `input`, held to their form and limits by [`fit`],
+/// then, when `backend` has a witness, checked by it until it finds nothing wrong ([`settle`]);
+/// `topic` names them in the log.
+pub fn summarise(backend: &dyn Backend, input: &str, topic: &Topic) -> Result<(String, String)> {
     let mut conv = backend.open(PROMPT)?;
-    let mut reply = conv.say(&[Block::new(ask(input))])?;
+    let request = ask(input);
+    let reply = conv.say(&[Block::new(request.as_str())])?;
+    let sg = fit(&mut *conv, &reply)?;
+    let Some(witness) = backend.witness() else {
+        return Ok(sg);
+    };
+    settle(
+        witness,
+        &mut *conv,
+        &request,
+        sg,
+        |(s, g)| format!("{s}\n\n{g}"),
+        |conv, reply, _| fit(conv, reply),
+        topic,
+        &mut Spend::default(),
+    )
+}
+
+/// The scope and gist in `reply`, retried in `conv` while they do not fit, up to [`TRIES`]; past
+/// that, the shortest well-formed try.
+fn fit(conv: &mut dyn Conversation, reply: &str) -> Result<(String, String)> {
+    let mut reply = reply.to_string();
     let mut tries = Vec::new();
     for k in 1..=TRIES {
         let (sg, problem) = split(&reply);
@@ -209,6 +231,45 @@ mod tests {
                 .1
                 .unwrap()
                 .starts_with("The scope is 161 characters")
+        );
+    }
+
+    #[test]
+    fn a_witness_checks_the_scope_and_gist_until_it_finds_nothing() {
+        use std::sync::Arc;
+
+        use serde_json::json;
+        use tempfile::TempDir;
+
+        use crate::memory::{
+            Witnessed,
+            fake_api::{completion, serve, text},
+        };
+
+        let reply = |t: &str| (200, completion(t, json!({"prompt_tokens": 1})));
+        let writer = serve(vec![
+            reply("Syntax.\n\nMerge is unary."),
+            reply("Syntax.\n\nMerge is binary."),
+        ]);
+        let witness = serve(vec![
+            reply("- contradiction: \"unary\", where the notes say binary"),
+            reply("OK"),
+        ]);
+        let tmp = TempDir::new().unwrap();
+        let backend = Witnessed::new(
+            Arc::new(writer.api(tmp.path())),
+            Arc::new(witness.api(tmp.path())),
+        );
+        let topic = Topic::parse("syntax").unwrap();
+        let sg = summarise(&backend, "- merge.md: Merge is binary.", &topic).unwrap();
+        assert_eq!(sg, ("Syntax.".into(), "Merge is binary.".into()));
+        let first = witness.sent.recv().unwrap();
+        assert_eq!(
+            text(&first["messages"][1]["content"]),
+            format!(
+                "<request>\n{}\n</request>\n<summary>\nSyntax.\n\nMerge is unary.\n</summary>",
+                ask("- merge.md: Merge is binary.")
+            )
         );
     }
 

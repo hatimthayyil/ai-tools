@@ -136,6 +136,11 @@ model = "sonnet"   # claude's spelling; for api, <provider>/<model>, e.g. "deeps
 effort = "medium"  # how hard the model thinks; unset, claude runs at medium and api at the provider's default
 jobs = 8           # calls a build runs at once
 
+[summariser.witness]              # a model that checks every summary; unset, none
+backend = "api"                   # the keys of [summariser] but jobs, with its defaults
+model = "deepseek/deepseek-flash"
+effort = "high"
+
 [memory]
 entry-chars = 280  # the length a note aims for, in characters, at most 512; 40 more are accepted
 
@@ -154,6 +159,8 @@ An agent's `instructions` is relative to the folder of the file that sets it, so
 With `backend = "api"`, `ai` calls the provider's API through [genai](https://github.com/jeremychone/rust-genai). `model` names the provider, one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`, `open_router`, `groq`, `together`, `fireworks`, …), then the model as that provider spells it. The key comes from the provider's environment variable (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, …), never from `ai.toml`; a command that needs the summariser fails when it is unset. Each call is kept, like a `claude -p` one, in the store's `calls/`: the request, the provider's reply as it came, and its token counts. Costs count as zero unless the provider reports them (OpenRouter does). In this repository, `secretspec set DEEPSEEK_API_KEY` stores the key once, and `secretspec run -- ai memory build` passes it.
 
 `effort` is one of genai's reasoning efforts, `zero` (or `none`), `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, or a budget of thinking tokens as a number. With `backend = "api"` it goes to the provider as genai maps it: DeepSeek takes `zero` as thinking off and any other as thinking on, mapping `minimal` and `low` to its low, `medium` to `xhigh` to its high, `max` to its max, and a budget to its default; unset, nothing goes and DeepSeek thinks at its default, high. With `backend = "claude"` it is `claude --effort`, so only `low`, `medium`, `high`, `xhigh` and `max` work. Each call's thinking tokens are kept in its record and logged with the rest. `jobs` sets how many calls `ai memory build`, `ai agent build` and `ai notes build` run at once.
+
+With `[summariser.witness]`, a second model, the witness, checks every summary the summariser writes, for memory, agent threads and notes alike. It reads the request the summariser answered, which holds the sources, and the summary. It reports what the summary says that the sources do not, what it contradicts, where it changes their meaning, and any "not", "never" or rule of the user's that it drops; what was left out to fit the length is no fault. The summariser then rewrites the summary, held to the same limit as before, or contests a finding with its reason, and the witness checks again with everything said so far. They go back and forth until the witness finds nothing wrong, with no limit on rounds; a call that fails fails the summary. The log records each round (`witness found faults`, `summariser answered`, then `witnessed`), and the witness's calls are kept in `calls/` and counted with the summariser's. Its keys are those of `[summariser]` but `jobs`, with the same defaults, not the values set there. Its prompt is `src/memory/prompts/witness.txt`.
 
 `ai memory config` prints the memory's sizes in effect. An unknown key or a bad value fails the command, naming the file and the key.
 

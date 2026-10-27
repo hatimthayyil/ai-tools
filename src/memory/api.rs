@@ -274,7 +274,7 @@ fn usage(res: &ChatResponse) -> Usage {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         fs,
         io::{BufRead, BufReader, Read, Write},
@@ -290,15 +290,15 @@ mod tests {
     use super::*;
 
     /// A server speaking OpenAI's chat completions on a Unix socket, so tests need no network.
-    struct Server {
+    pub(crate) struct Server {
         dir: TempDir,
         /// Each request's body.
-        sent: mpsc::Receiver<Value>,
+        pub(crate) sent: mpsc::Receiver<Value>,
     }
 
     /// Answers each request with the next of `replies` (status, body), the last one again once
     /// they run out; status 0 never answers.
-    fn serve(replies: Vec<(u16, Value)>) -> Server {
+    pub(crate) fn serve(replies: Vec<(u16, Value)>) -> Server {
         let dir = TempDir::new().unwrap();
         let listener = UnixListener::bind(dir.path().join("socket")).unwrap();
         let (tx, sent) = mpsc::channel();
@@ -315,13 +315,13 @@ mod tests {
     impl Server {
         /// DeepSeek's Flash through this server at its default effort, keeping its calls in
         /// `calls`.
-        fn api(&self, calls: &Path) -> Api {
+        pub(crate) fn api(&self, calls: &Path) -> Api {
             self.api_at(None, calls)
         }
 
         /// DeepSeek's Flash through this server at `effort`, 3 calls at once, keeping its calls
         /// in `calls`.
-        fn api_at(&self, effort: Option<ReasoningEffort>, calls: &Path) -> Api {
+        pub(crate) fn api_at(&self, effort: Option<ReasoningEffort>, calls: &Path) -> Api {
             let http = reqwest::Client::builder()
                 .unix_socket(self.dir.path().join("socket"))
                 .build()
@@ -388,7 +388,7 @@ mod tests {
         }
     }
 
-    fn completion(text: &str, usage: Value) -> Value {
+    pub(crate) fn completion(text: &str, usage: Value) -> Value {
         json!({
             "id": "c1",
             "object": "chat.completion",
@@ -483,7 +483,7 @@ mod tests {
     }
 
     /// A message's text, whether sent as a string or as parts.
-    fn text(content: &Value) -> &str {
+    pub(crate) fn text(content: &Value) -> &str {
         content
             .as_str()
             .or_else(|| content[0]["text"].as_str())
