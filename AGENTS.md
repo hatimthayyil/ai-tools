@@ -14,6 +14,7 @@
 - The main tree is for AI-assisted files. These are worked on by BOTH AI and humans. And should have minimal changes.
 - Glossary is given in `my/glossary.md`. Maintain `ai/glossary.md` yourself.
 - Backlog is given in `ai/backlog.md`.
+- Use one GitButler branch per feature. Forks commit onto that branch. Do not create a branch for a task, a fork or a single file. Create a second branch only when the user asks.
 
 ## Development
 
