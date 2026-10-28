@@ -4,7 +4,6 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     rc::Rc,
-    time::Instant,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -17,7 +16,7 @@ use crate::{
     memory::{
         meta::stamp,
         record::{COLUMNS, Message, Node, Who, now},
-        tree::{Coord, free, joined},
+        tree::{Coord, LEVELS, free, joined},
         upgrade::{self, FORMAT},
     },
     record::Seg,
@@ -30,18 +29,86 @@ const SEG: u64 = 256;
 const ORIGIN: &str = "origin";
 /// The compactor's lock file; an upgrade takes it too.
 const LOCK: &str = "compact.lock";
-const TREE: &str = "tree";
+/// Every tree of nodes, each under its number.
+const TREES: &str = "trees";
+/// Which tree is current, which is being built, and the highest number given to one.
+pub const STATE: &str = "state";
 
-pub fn level_dir(l: u32) -> String {
-    format!("{TREE}/{l}")
+/// The directory of tree `tree`'s nodes at level `l`.
+pub fn level_dir(tree: u64, l: u32) -> String {
+    format!("{TREES}/{tree}/{l}")
 }
 
-fn seg_of(c: Coord) -> (String, usize) {
-    (fan_path(&level_dir(c.l), c.i / SEG), (c.i % SEG) as usize)
+fn seg_of(tree: u64, c: Coord) -> (String, usize) {
+    (
+        fan_path(&level_dir(tree, c.l), c.i / SEG),
+        (c.i % SEG) as usize,
+    )
 }
 
 /// Nodes a mutation wrote, with their stored text.
 pub type Built = Vec<(Coord, String)>;
+
+/// The trees of this memory, by number. Trees are copies of one another until a rebuild writes
+/// a summary into one; then the others stay as they were.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct State {
+    pub current: u64,
+    /// The tree a rebuild is writing into, if one is.
+    pub building: Option<u64>,
+    /// The highest number ever given to a tree; numbers are not reused.
+    pub last: u64,
+}
+
+impl Default for State {
+    fn default() -> State {
+        State {
+            current: 1,
+            building: None,
+            last: 1,
+        }
+    }
+}
+
+impl State {
+    fn parse(b: &[u8]) -> Result<State> {
+        let corrupt = || anyhow!("The memory's state is corrupt.");
+        let s = std::str::from_utf8(b).map_err(|_| corrupt())?;
+        let mut st = State::default();
+        for line in s.lines() {
+            let (k, v) = line.split_once(' ').ok_or_else(corrupt)?;
+            let v: u64 = v.parse().map_err(|_| corrupt())?;
+            match k {
+                "current" => st.current = v,
+                "building" => st.building = Some(v),
+                "last" => st.last = v,
+                _ => return Err(corrupt()),
+            }
+        }
+        Ok(st)
+    }
+
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut s = format!("current {}\n", self.current);
+        if let Some(b) = self.building {
+            s += &format!("building {b}\n");
+        }
+        s += &format!("last {}\n", self.last);
+        s.into_bytes()
+    }
+
+    /// The tree writes go to: the one being built, else the current one.
+    pub fn working(&self) -> u64 {
+        self.building.unwrap_or(self.current)
+    }
+}
+
+/// `state` as the only change of a mutation.
+fn saved(st: State) -> Changes {
+    let mut ch = Changes::default();
+    ch.put(STATE.into(), st.bytes());
+    ch
+}
 
 pub struct Store {
     git: Ref,
@@ -144,10 +211,7 @@ impl Store {
             }
             let mut tree = base.tree_id();
             for v in from..FORMAT {
-                let s = Snapshot {
-                    store: self,
-                    git: self.git.tree(head, tree),
-                };
+                let s = self.snap_of(self.git.tree(head, tree))?;
                 tree = self.git.write_tree(tree, upgrade::step(&s, v)?)?;
             }
             let msg = format!("upgrade format {from} -> {FORMAT}");
@@ -163,12 +227,6 @@ impl Store {
     /// The compactor's lock on this memory; `None` while another process holds it.
     pub fn try_lock(&self) -> Result<Option<file::Lock>> {
         file::try_lock(&self.dir.join(LOCK))
-    }
-
-    /// The compactor's lock, waiting for it until `deadline`; `None` if another process still
-    /// holds it then.
-    pub fn lock_before(&self, deadline: Instant) -> Result<Option<file::Lock>> {
-        file::lock_before(&self.dir.join(LOCK), deadline)
     }
 
     /// The origin in this store's `origin` file, made by the first open.
@@ -213,8 +271,16 @@ impl Store {
         self.git.head()
     }
 
-    /// The memory as of the latest commit.
+    /// The current tree of the memory as of the latest commit.
     pub fn snapshot(&self) -> Result<Snapshot<'_>> {
+        let s = self.at(self.head()?)?;
+        let current = s.state.current;
+        Ok(s.reading(current))
+    }
+
+    /// The memory as of the latest commit, reading and writing the tree being built if there is
+    /// one, else the current tree.
+    pub fn working(&self) -> Result<Snapshot<'_>> {
         self.at(self.head()?)
     }
 
@@ -228,7 +294,18 @@ impl Store {
                 "This memory is format {v}, older than this ai's {FORMAT}. Run ai view to upgrade it."
             );
         }
-        Ok(Snapshot { store: self, git })
+        self.snap_of(git)
+    }
+
+    /// `git`, with its state read and its working tree selected.
+    fn snap_of<'s>(&'s self, git: Snap<'s>) -> Result<Snapshot<'s>> {
+        let state = State::parse(&git.read(STATE)?)?;
+        Ok(Snapshot {
+            store: self,
+            git,
+            tree: state.working(),
+            state,
+        })
     }
 
     /// Applies `change` to the latest snapshot as one commit, redoing it until the ref update wins.
@@ -240,12 +317,13 @@ impl Store {
         self.git.mutate(msg, |c| self.at(c), change)
     }
 
-    /// Appends `items` in order, with every free node they complete; returns the first new id.
-    /// A message without an origin gets this store's, one without a ts the time it lands, never
-    /// before the last message's: the log is in time order. Every other field is kept as given.
+    /// Appends `items` in order, with every free node they complete, in the tree being built
+    /// and the current one; returns the first new id. A message without an origin gets this
+    /// store's, one without a ts the time it lands, never before the last message's: the log is
+    /// in time order. Every other field is kept as given.
     pub fn append(&self, msg: &str, items: &[Message]) -> Result<(u64, Built, Snapshot<'_>)> {
         let ((first, built), snap) = self.mutate(msg, |s| {
-            let mut ed = Edit::new(s)?;
+            let mut ed = Edit::new(s, s.mirrors())?;
             let first = ed.t;
             for m in items {
                 ed.push(m)?;
@@ -256,102 +334,161 @@ impl Store {
         Ok((first, built, snap))
     }
 
-    /// Writes node `c` unless it is built, with every free node above it it completes.
+    /// Writes node `c` in the tree being built, unless it is fresh there, with every free node
+    /// above it it completes.
     pub fn put_node(&self, c: Coord, who: &Who, text: &str) -> Result<(Built, Snapshot<'_>)> {
         self.mutate(&format!("node {c}"), |s| {
-            let mut ed = Edit::new(s)?;
+            let tree = s.tree;
+            let mut ed = Edit::new(s, vec![tree])?;
             if c.end() > ed.t {
                 bail!("Node {c} is beyond the log: it holds {} messages.", ed.t);
             }
-            if ed.text(c)?.is_none() {
-                ed.put(c, who, text)?;
+            if !ed.fresh(tree, c)? {
+                ed.put(tree, c, who, text)?;
             }
             Ok(ed.finish())
         })
     }
 
-    /// Drops every node in one commit, keeping those the messages make alone, as appending
-    /// them did: what is left for the compactor is every node a model wrote and every node over
-    /// one. How many nodes it dropped.
-    pub fn drop_nodes(&self) -> Result<(u64, Snapshot<'_>)> {
-        self.mutate("drop every node", |s| {
-            let t = s.log_len()?;
-            let mut had = 0;
-            let mut l = 0;
-            while 1u64 << l <= t {
-                had += s.level(l)?.iter().flatten().count() as u64;
-                l += 1;
+    /// Makes a copy of tree `from` as the next tree, which is then being built, and writes into
+    /// it the free nodes that the messages make. Returns its number.
+    pub fn start_building(&self, from: u64) -> Result<u64> {
+        let (b, _) = self.mutate("tree: copy", |s| {
+            if s.state.building.is_some() {
+                bail!("A tree is already being built.");
             }
-            let ed = Edit::own(s)?;
-            let kept = ed.built.len() as u64;
-            if had == kept {
-                return Ok((0, Changes::default()));
+            let n = s.state.last + 1;
+            let mut ch = Changes::default();
+            for l in 0..LEVELS {
+                s.walk(&level_dir(from, l), |k, id| {
+                    ch.put(fan_path(&level_dir(n, l), k), s.fetch(id)?);
+                    Ok(())
+                })?;
             }
-            let (_, mut ch) = ed.finish();
-            ch.remove(TREE.into());
-            Ok((had - kept, ch))
-        })
+            let st = State {
+                building: Some(n),
+                last: n,
+                ..s.state
+            };
+            ch.put(STATE.into(), st.bytes());
+            Ok((n, ch))
+        })?;
+        self.catch_up(b)?;
+        Ok(b)
+    }
+
+    /// Writes into `tree` every free node that the messages make and it lacks.
+    fn catch_up(&self, tree: u64) -> Result<()> {
+        self.mutate("tree: free nodes", |s| {
+            let mut ed = Edit::new(s, vec![tree])?;
+            let end = ed.t;
+            s.scan(end, |i, m| ed.leaf(i, &m))?;
+            Ok(((), ed.finish().1))
+        })?;
+        Ok(())
+    }
+
+    /// Marks each of `nodes` stale in the tree being built, skipping those it lacks; how many it
+    /// marked. A stale node keeps its text until a build rewrites it.
+    pub fn mark_stale(&self, nodes: &[Coord]) -> Result<u64> {
+        let (n, _) = self.mutate("tree: stale", |s| {
+            if s.state.building != Some(s.tree) {
+                bail!("No tree is being built.");
+            }
+            let mut ed = Edit::new(s, vec![s.tree])?;
+            let mut n = 0;
+            for &c in nodes {
+                if ed.mark(s.tree, c)? {
+                    n += 1;
+                }
+            }
+            Ok((n, ed.finish().1))
+        })?;
+        Ok(n)
+    }
+
+    /// Makes the tree being built, `to`, the current tree. The old current tree stays as it was.
+    pub fn switch(&self, to: u64) -> Result<()> {
+        self.mutate("tree: use", |s| {
+            if s.state.building != Some(to) {
+                bail!("Tree {to} is not being built.");
+            }
+            let st = State {
+                current: to,
+                building: None,
+                ..s.state
+            };
+            Ok(((), saved(st)))
+        })?;
+        Ok(())
+    }
+
+    /// Drops tree `n`, which is not the current one; dropping the tree being built cancels it.
+    pub fn drop_tree(&self, n: u64) -> Result<()> {
+        self.mutate("tree: drop", |s| {
+            let mut st = s.state;
+            if st.current == n {
+                bail!("Tree {n} is current.");
+            }
+            if st.building == Some(n) {
+                st.building = None;
+            }
+            let mut ch = saved(st);
+            ch.remove(format!("{TREES}/{n}"));
+            Ok(((), ch))
+        })?;
+        Ok(())
     }
 }
 
-/// One mutation: new messages and nodes over a snapshot, free nodes completed as they become ready.
+/// One mutation: new messages and nodes over a snapshot, free nodes completed as they become ready
+/// in each tree it writes.
 struct Edit<'a, 's> {
     snap: &'a Snapshot<'s>,
+    /// The trees it writes. The first is the one `built` reports.
+    trees: Vec<u64>,
     t: u64,
     ch: Changes,
     segs: BTreeMap<String, Seg>,
     built: Built,
     last: Option<String>,
-    /// Whether it reads the snapshot's tree as empty.
-    cleared: bool,
 }
 
 impl<'a, 's> Edit<'a, 's> {
-    /// An edit reading `snap`'s tree as empty, holding the nodes its messages make alone.
-    fn own(snap: &'a Snapshot<'s>) -> Result<Self> {
-        let mut ed = Edit::new(snap)?;
-        ed.cleared = true;
-        snap.scan(ed.t, |i, m| ed.leaf(i, &m))?;
-        Ok(ed)
-    }
-
-    fn new(snap: &'a Snapshot<'s>) -> Result<Self> {
+    fn new(snap: &'a Snapshot<'s>, trees: Vec<u64>) -> Result<Self> {
         Ok(Edit {
             snap,
+            trees,
             t: snap.log_len()?,
             ch: Changes::default(),
             segs: BTreeMap::new(),
             built: Vec::new(),
             last: None,
-            cleared: false,
         })
     }
 
     fn seg(&mut self, path: &str) -> Result<&mut Seg> {
         if !self.segs.contains_key(path) {
-            let stored: Rc<[u8]> = match self.cleared {
-                true => Rc::from([]),
-                false => self.snap.read(path)?,
-            };
+            let stored = self.snap.read(path)?;
             let seg = seg(&stored)?;
             self.segs.insert(path.into(), seg);
         }
         Ok(self.segs.get_mut(path).expect("inserted above"))
     }
 
-    fn text(&mut self, c: Coord) -> Result<Option<String>> {
-        let (path, k) = seg_of(c);
-        Ok(node(self.seg(&path)?, k).map(|n| n.text))
+    fn node(&mut self, tree: u64, c: Coord) -> Result<Option<Node>> {
+        let (path, k) = seg_of(tree, c);
+        Ok(node(self.seg(&path)?, k))
     }
 
-    fn put(&mut self, c: Coord, who: &Who, text: &str) -> Result<()> {
-        let node = Node {
-            ts: now(),
-            origin: self.snap.store.origin.clone(),
-            who: who.clone(),
-            text: text.into(),
-        };
-        let (path, k) = seg_of(c);
+    /// Whether `c` is built in `tree` and not stale.
+    fn fresh(&mut self, tree: u64, c: Coord) -> Result<bool> {
+        Ok(self.node(tree, c)?.is_some_and(|n| !n.stale))
+    }
+
+    /// Stores `node` as `c` in `tree`; returns its text as it reads back.
+    fn write(&mut self, tree: u64, c: Coord, node: &Node) -> Result<String> {
+        let (path, k) = seg_of(tree, c);
         let seg = self.seg(&path)?;
         let line = node.encode(&seg.cols);
         let text = Node::decode(&line, &seg.cols)
@@ -361,26 +498,55 @@ impl<'a, 's> Edit<'a, 's> {
             seg.lines.resize(k + 1, String::new());
         }
         seg.lines[k] = line;
-        self.built.push((c, text));
-        self.cascade(c)
+        Ok(text)
     }
 
-    fn cascade(&mut self, c: Coord) -> Result<()> {
+    fn put(&mut self, tree: u64, c: Coord, who: &Who, text: &str) -> Result<()> {
+        let node = Node {
+            ts: now(),
+            origin: self.snap.store.origin.clone(),
+            who: who.clone(),
+            stale: false,
+            text: text.into(),
+        };
+        let text = self.write(tree, c, &node)?;
+        if tree == self.trees[0] {
+            self.built.push((c, text));
+        }
+        self.cascade(tree, c)
+    }
+
+    /// Marks node `c` stale in `tree` if it is built there; whether it is.
+    fn mark(&mut self, tree: u64, c: Coord) -> Result<bool> {
+        let Some(mut n) = self.node(tree, c)? else {
+            return Ok(false);
+        };
+        n.stale = true;
+        self.write(tree, c, &n)?;
+        Ok(true)
+    }
+
+    /// Writes the parent of `c` in `tree` if it is missing and both its children are fresh there.
+    fn cascade(&mut self, tree: u64, c: Coord) -> Result<()> {
         let p = c.parent();
-        if p.end() > self.t || self.text(p)?.is_some() {
+        if p.end() > self.t || self.node(tree, p)?.is_some() {
             return Ok(());
         }
         let [a, b] = p.children();
-        let (Some(a), Some(b)) = (self.text(a)?, self.text(b)?) else {
+        let (Some(a), Some(b)) = (self.fresh_node(tree, a)?, self.fresh_node(tree, b)?) else {
             return Ok(());
         };
-        if a.is_empty() || b.is_empty() {
-            return self.put(p, &Who::default(), &joined(&a, &b));
+        if a.text.is_empty() || b.text.is_empty() {
+            return self.put(tree, p, &Who::default(), &joined(&a.text, &b.text));
         }
-        match free(joined(&a, &b)) {
-            Some(text) => self.put(p, &Who::default(), &text),
+        match free(joined(&a.text, &b.text)) {
+            Some(text) => self.put(tree, p, &Who::default(), &text),
             None => Ok(()),
         }
+    }
+
+    fn fresh_node(&mut self, tree: u64, c: Coord) -> Result<Option<Node>> {
+        Ok(self.node(tree, c)?.filter(|n| !n.stale))
     }
 
     fn push(&mut self, m: &Message) -> Result<()> {
@@ -412,12 +578,17 @@ impl<'a, 's> Edit<'a, 's> {
         self.leaf(i, &m)
     }
 
-    /// Writes leaf `i`, of message `m`, if it is free, with every free node it completes.
+    /// Writes leaf `i`, of message `m`, into each tree it lacks, if the message is free.
     fn leaf(&mut self, i: u64, m: &Message) -> Result<()> {
-        match free(m.line()) {
-            Some(text) => self.put(Coord::leaf(i), &Who::default(), &text),
-            None => Ok(()),
+        let Some(text) = free(m.line()) else {
+            return Ok(());
+        };
+        for tree in self.trees.clone() {
+            if !self.fresh(tree, Coord::leaf(i))? {
+                self.put(tree, Coord::leaf(i), &Who::default(), &text)?;
+            }
         }
+        Ok(())
     }
 
     fn finish(mut self) -> (Built, Changes) {
@@ -445,10 +616,13 @@ fn node(seg: &Seg, k: usize) -> Option<Node> {
     Node::decode(seg.lines.get(k)?, &seg.cols)
 }
 
-/// The memory as of one commit: every read through it sees the same state.
+/// The memory as of one commit, reading the tree `tree` of it: every read through it sees the
+/// same state.
 pub struct Snapshot<'s> {
     store: &'s Store,
     git: Snap<'s>,
+    tree: u64,
+    state: State,
 }
 
 impl<'s> AsRef<Snap<'s>> for Snapshot<'s> {
@@ -457,7 +631,47 @@ impl<'s> AsRef<Snap<'s>> for Snapshot<'s> {
     }
 }
 
-impl Snapshot<'_> {
+impl<'s> Snapshot<'s> {
+    /// This snapshot, reading tree `tree`.
+    fn reading(mut self, tree: u64) -> Self {
+        self.tree = tree;
+        self
+    }
+
+    /// This snapshot, reading tree `n`, which must exist.
+    pub fn tree(mut self, n: u64) -> Result<Self> {
+        if n == 0 || n > self.state.last || (n != self.state.current && !self.has_tree(n)?) {
+            bail!("No tree {n}.");
+        }
+        self.tree = n;
+        Ok(self)
+    }
+
+    /// The tree this snapshot reads.
+    pub fn number(&self) -> u64 {
+        self.tree
+    }
+
+    /// Which tree is current, which is being built, and the last number given.
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    /// Whether tree `n` is stored, not dropped.
+    pub fn has_tree(&self, n: u64) -> Result<bool> {
+        Ok(self.git.entry(&format!("{TREES}/{n}"))?.is_some())
+    }
+
+    /// The trees a write through this snapshot changes: the tree being built, and the current
+    /// one.
+    fn mirrors(&self) -> Vec<u64> {
+        let mut trees = vec![self.tree];
+        if self.state.current != self.tree {
+            trees.push(self.state.current);
+        }
+        trees
+    }
+
     pub(crate) fn fetch(&self, id: ObjectId) -> Result<Vec<u8>> {
         self.git.fetch(id)
     }
@@ -504,21 +718,16 @@ impl Snapshot<'_> {
         })
     }
 
-    /// Node `c`, if built.
+    /// Node `c` of the tree this snapshot reads, if built.
     pub fn node(&self, c: Coord) -> Result<Option<Node>> {
-        let (path, k) = seg_of(c);
+        let (path, k) = seg_of(self.tree, c);
         Ok(node(&seg(&self.read(&path)?)?, k))
     }
 
-    /// The nodes its messages make alone, which [`Store::drop_nodes`] keeps.
-    pub fn own_nodes(&self) -> Result<Vec<Coord>> {
-        Ok(Edit::own(self)?.built.into_iter().map(|(c, _)| c).collect())
-    }
-
-    /// Every node of level `l`, by index; `None` where not built.
+    /// Every node of level `l` in the tree this snapshot reads, by index; `None` where not built.
     pub fn level(&self, l: u32) -> Result<Vec<Option<Node>>> {
         let mut out = Vec::new();
-        self.walk(&level_dir(l), |s, id| {
+        self.walk(&level_dir(self.tree, l), |s, id| {
             let seg = seg(&self.fetch(id)?)?;
             for k in 0..seg.lines.len() {
                 let i = (s * SEG) as usize + k;

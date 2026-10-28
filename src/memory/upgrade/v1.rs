@@ -3,17 +3,15 @@
 
 use anyhow::{Context, Result, anyhow};
 
+use super::{COLUMNS_V2, LEVELS, legacy_level_dir};
 use crate::{
     git::{Changes, fan_path},
     memory::{
-        record::{COLUMNS, Kind, Message, Node, Place, Who, valid_ts},
-        store::{LOG, Snapshot, level_dir},
+        record::{Kind, Message, Node, Place, Who, valid_ts},
+        store::{LOG, Snapshot},
     },
     record::Seg,
 };
-
-/// Levels a format-1 tree can hold: a message count fits in 64 bits.
-const LEVELS: u32 = 64;
 
 fn value(v: &str) -> String {
     if v == "-" { String::new() } else { v.into() }
@@ -61,6 +59,7 @@ fn node(line: &str) -> Option<Node> {
             session: value(session),
         },
         text: text.into(),
+        ..Node::default()
     })
 }
 
@@ -73,12 +72,12 @@ pub fn to_v2(s: &Snapshot) -> Result<Changes> {
         Ok(())
     })?;
     for l in 0..LEVELS {
-        let dir = level_dir(l);
+        let dir = legacy_level_dir(l);
         s.walk(&dir, |k, id| {
             let b = s.fetch(id)?;
             let text =
                 std::str::from_utf8(&b).map_err(|_| anyhow!("A tree segment is corrupt."))?;
-            let mut seg = Seg::new(&COLUMNS);
+            let mut seg = Seg::new(&COLUMNS_V2);
             seg.lines = text
                 .strip_suffix('\n')
                 .unwrap_or(text)

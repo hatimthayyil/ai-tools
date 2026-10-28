@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use ai_tools::file::pretty;
@@ -1350,19 +1350,6 @@ Log: {log}
 "
         )
     );
-    let r = run_rt(&d, &rt, &["build", "--dry-run", "--rebuild"]);
-    assert!(
-        r.stdout.starts_with(
-            "Rebuilding memory with sonnet, 8 calls at once.
-  level             lines  written  to write
-  L0  1 message         4        0         4
-  L1  2 messages        2        0         2
-  L2  4 messages        1        0         1
-Up to 7 model calls:"
-        ),
-        "{}",
-        r.stdout
-    );
     assert_eq!(
         fake.calls.load(Ordering::SeqCst),
         0,
@@ -1491,150 +1478,250 @@ fn renewing() -> Fake {
     Fake::new(|step, _| Ok(renewed(step)))
 }
 
-/// Whether every node of `d`'s memory is built, and each the model wrote is new.
-fn all_new(d: &Path) -> bool {
+/// The text of node `c` in tree `n` of the memory at `d`, if built.
+fn text_in(d: &Path, n: u64, c: Coord) -> Option<String> {
     let s = Store::open(d).unwrap();
-    let snap = s.snapshot().unwrap();
-    let mem = Mem::load(&snap, VIEW).unwrap();
-    let mut l = 0;
-    let mut all = mem.due(|_| false, 1).is_empty();
-    while 1u64 << l <= mem.t() {
-        for n in snap.level(l).unwrap().into_iter().flatten() {
-            all &= n.who != fake_who() || n.text.starts_with("new ");
-        }
-        l += 1;
-    }
-    all
+    let snap = s.snapshot().unwrap().tree(n).unwrap();
+    snap.node(c).unwrap().map(|n| n.text)
+}
+
+/// `ai memory tree`'s listing of the memory at `d`.
+fn trees(d: &Path) -> String {
+    run(d, &["tree"]).stdout
 }
 
 #[test]
-fn a_rebuild_drops_every_summary_and_builds_them_all_again() {
+fn a_rebuild_marks_the_summaries_above_a_note_stale_and_builds_them_bottom_up() {
     let (_tmp, d) = summarised();
+    let r = run(&d, &["tree", "rebuild", "0"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        r.stdout,
+        "Tree 2 is being built: 2 stale, 1 to build. Run `ai memory build`, then `ai memory tree use 2`.\n"
+    );
+    assert_eq!(
+        trees(&d),
+        "tree 1 current\ntree 2 building: 2 stale, 1 to build\n"
+    );
+    let old = text_in(&d, 1, Coord::new(2, 0));
+    assert_eq!(
+        text_in(&d, 2, Coord::new(2, 0)),
+        old,
+        "stale text stays until built"
+    );
     let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
-    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
+    let r = run_rt(&d, &rt, &["build"]);
     assert!(
         r.stdout
-            .starts_with("Rebuilding memory with sonnet, 8 calls at once.\n"),
+            .ends_with("Tree 2 is built: `ai memory tree use 2` makes it current.\n"),
         "{}",
         r.stdout
     );
-    assert_eq!(ended(&r.stdout), (4, 3, 1, Some(4)), "{}", r.stderr);
-    assert!(all_new(&d));
-    let s = Store::open(&d).unwrap();
-    let snap = s.snapshot().unwrap();
-    let node = |l, i| snap.node(Coord::new(l, i)).unwrap().expect("built");
-    assert!(node(0, 0).text.starts_with("new m0") && node(1, 0).text.starts_with("new join"));
+    assert!(
+        text_in(&d, 2, Coord::new(1, 0))
+            .unwrap()
+            .starts_with("new ")
+    );
+    assert!(
+        text_in(&d, 2, Coord::new(2, 0))
+            .unwrap()
+            .starts_with("new ")
+    );
     assert_eq!(
-        (node(0, 2).text, node(1, 1).text),
-        ("user: a".into(), "user: a user: b".into())
+        text_in(&d, 1, Coord::new(2, 0)),
+        old,
+        "the current tree is untouched"
     );
-    assert!(node(2, 0).text.ends_with(". user: a user: b"));
-    assert_eq!(node(2, 0).who, Who::default());
-    let log = fs::read_to_string(d.join("summarise.log")).unwrap();
-    assert!(log.contains(": dropped dropped=4\n"), "{log}");
-    assert_eq!(run(&d, &["build"]).stdout, "Nothing to build.\n");
-}
-
-#[test]
-fn a_rebuild_holds_the_lock_until_every_summary_is_built_again() {
-    let (_tmp, d) = summarised();
-    let model: Arc<dyn Backend> = Arc::new(Model(Arc::new(renewing())));
-    let (late, held) = (
-        Arc::new(Mutex::new(None::<String>)),
-        Arc::new(Mutex::new(Vec::new())),
-    );
-    let (dir, seen, under, m) = (d.clone(), late.clone(), held.clone(), model.clone());
-    let released = Arc::new(Mutex::new(Vec::new()));
-    let (dir2, at) = (d.clone(), released.clone());
-    let rt = Runtime {
-        // Whether each round starts under the lock; the first also brings a note and its
-        // summariser.
-        backend: Box::new(move |_| {
-            let s = Store::open(&dir).unwrap();
-            under.lock().unwrap().push(s.try_lock().unwrap().is_none());
-            let mut seen = seen.lock().unwrap();
-            if seen.is_none() {
-                s.append("note", &[msg(Kind::User, long(4))]).unwrap();
-                *seen = Some(run(&dir, &["build"]).stdout);
-            }
-            Ok(m.clone())
-        }),
-        before_release: Box::new(move || at.lock().unwrap().push(all_new(&dir2))),
-        ..runtime(model)
-    };
-    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
     assert_eq!(
-        late.lock().unwrap().as_deref(),
-        Some("A compactor is already running; it will build these too.\n"),
-        "a note's summariser must find the lock taken"
+        text_in(&d, 2, Coord::leaf(0)),
+        text_in(&d, 1, Coord::leaf(0)),
+        "notes are never rebuilt"
     );
-    assert_eq!(ended(&r.stdout), (5, 4, 1, Some(4)), "{}", r.stderr);
-    assert_eq!(*held.lock().unwrap(), [true]);
-    assert_eq!(*released.lock().unwrap(), [true]);
 }
 
 #[test]
-fn a_rebuild_without_a_model_drops_nothing() {
+fn a_range_marks_only_the_summaries_its_notes_are_under_across_an_unaligned_boundary() {
     let (_tmp, d) = summarised();
-    let rt = Runtime {
-        backend: Box::new(|_| bail!("No claude on PATH: ai runs on Claude Code.")),
-        ..runtime(Arc::new(Model(Arc::new(renewing()))))
-    };
-    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
-    assert_eq!(r.code, 1);
-    assert!(r.stderr.contains("No claude on PATH"), "{}", r.stderr);
-    assert_eq!(run(&d, &["build"]).stdout, "Nothing to build.\n");
+    assert_eq!(run(&d, &["tree", "rebuild", "1..3"]).code, 0);
+    assert_eq!(
+        trees(&d),
+        "tree 1 current\ntree 2 building: 3 stale, 2 to build\n"
+    );
 }
 
 #[test]
-fn a_rebuild_waits_for_a_running_summariser() {
+fn a_reroll_marks_one_summary_and_those_above_it() {
     let (_tmp, d) = summarised();
-    let lock = Store::open(&d).unwrap().try_lock().unwrap().expect("free");
-    let start = Instant::now();
-    let held = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(300));
-        drop(lock);
-    });
+    assert_eq!(run(&d, &["tree", "reroll", "0+2"]).code, 0);
+    assert_eq!(
+        trees(&d),
+        "tree 1 current\ntree 2 building: 2 stale, 1 to build\n"
+    );
     let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
-    let r = run_rt(&d, &rt, &["build", "--rebuild"]);
-    held.join().unwrap();
-    assert!(start.elapsed() >= Duration::from_millis(300));
-    assert_eq!(ended(&r.stdout), (4, 3, 1, Some(4)), "{}", r.stderr);
+    run_rt(&d, &rt, &["build"]);
+    let differ: Vec<String> = run(&d, &["tree", "diff", "1", "2"])
+        .stdout
+        .lines()
+        .filter(|l| !l.starts_with("  "))
+        .map(String::from)
+        .collect();
+    assert_eq!(differ, ["0+2", "0+4"], "the children keep their text");
 }
 
 #[test]
-fn a_rebuild_that_gives_up_leaves_the_rest_to_the_next_build() {
+fn a_note_is_never_rerolled() {
     let (_tmp, d) = summarised();
+    let r = run(&d, &["tree", "reroll", "2"]);
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stderr.contains("2 is a note, which is never rebuilt"),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(trees(&d), "tree 1 current\n");
+}
+
+#[test]
+fn a_tree_is_not_used_while_it_is_stale() {
+    let (_tmp, d) = summarised();
+    assert_eq!(run(&d, &["tree", "rebuild"]).code, 0);
+    let r = run(&d, &["tree", "use", "2"]);
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stderr
+            .contains("Tree 2 is not built: 3 stale, 2 to build"),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(
+        trees(&d),
+        "tree 1 current\ntree 2 building: 3 stale, 2 to build\n"
+    );
+}
+
+#[test]
+fn a_rebuild_resumes_where_an_interrupted_build_stopped() {
+    let (_tmp, d) = summarised();
+    run(&d, &["tree", "rebuild"]);
     let stuck = Fake::new(|step, _| match tag(step).as_str() {
-        "m1" => bail!("overloaded"),
+        "join" => bail!("overloaded"),
         _ => Ok(renewed(step)),
     });
-    let r = run_rt(
-        &d,
-        &runtime(Arc::new(Model(Arc::new(stuck)))),
-        &["build", "--rebuild"],
-    );
+    let r = run_rt(&d, &runtime(Arc::new(Model(Arc::new(stuck)))), &["build"]);
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(
-        r.stdout.ends_with(
-            "Gave up on 1 after 4 failures in a row: overloaded. It and every other summary not \
-             rebuilt yet stay pending; ai memory build builds them.\n"
-        ),
+        r.stdout.contains("Gave up on ")
+            && r.stdout.contains("after 4 failures in a row: overloaded."),
         "{}",
         r.stdout
+    );
+    assert_eq!(
+        trees(&d),
+        "tree 1 current\ntree 2 building: 3 stale, 2 to build\n"
+    );
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    let r = run_rt(&d, &rt, &["build"]);
+    assert!(
+        r.stdout
+            .ends_with("Tree 2 is built: `ai memory tree use 2` makes it current.\n"),
+        "{}",
+        r.stdout
+    );
+    assert_eq!(
+        run(&d, &["tree", "use", "2"]).stdout,
+        "Tree 2 is current.\n"
     );
     assert!(
-        Regex::new(r"\n\[\d+/\d+\] gave up 1          after 4 tries: overloaded\n")
+        text_in(&d, 2, Coord::new(1, 0))
             .unwrap()
-            .is_match(&r.stdout),
-        "{}",
-        r.stdout
+            .starts_with("new ")
     );
-    assert_eq!(ended(&r.stdout).3, Some(4));
-    assert!(!all_new(&d));
+    assert!(
+        text_in(&d, 2, Coord::new(2, 0))
+            .unwrap()
+            .starts_with("new ")
+    );
+    assert_eq!(
+        text_in(&d, 2, Coord::leaf(1)),
+        text_in(&d, 1, Coord::leaf(1)),
+        "notes are never rebuilt"
+    );
+}
+
+#[test]
+fn dropping_the_tree_being_built_cancels_it_and_the_current_tree_cannot_be_dropped() {
+    let (_tmp, d) = summarised();
+    run(&d, &["tree", "rebuild", "0"]);
+    assert_eq!(
+        run(&d, &["tree", "drop", "2"]).stdout,
+        "Cancelled the rebuild in tree 2.\n"
+    );
+    assert_eq!(trees(&d), "tree 1 current\n");
+    let r = run(&d, &["tree", "drop", "1"]);
+    assert_eq!(r.code, 1);
+    assert!(r.stderr.contains("Tree 1 is current"), "{}", r.stderr);
+}
+
+#[test]
+fn an_old_tree_is_restored_as_a_copy_made_current() {
+    let (_tmp, d) = summarised();
+    run(&d, &["tree", "rebuild"]);
     let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
-    assert_eq!(ended(&run_rt(&d, &rt, &["build"]).stdout).1, 2);
-    assert!(all_new(&d));
+    run_rt(&d, &rt, &["build"]);
+    assert_eq!(
+        run(&d, &["tree", "use", "2"]).stdout,
+        "Tree 2 is current.\n"
+    );
+    assert_eq!(
+        run(&d, &["tree", "use", "1"]).stdout,
+        "Tree 3 is current: a copy of tree 1.\n"
+    );
+    assert_eq!(trees(&d), "tree 1 saved\ntree 2 saved\ntree 3 current\n");
+    let old = text_in(&d, 1, Coord::new(1, 0)).unwrap();
+    assert!(old.starts_with("join"), "{old}");
+    assert_eq!(text_in(&d, 3, Coord::new(1, 0)), Some(old));
+    assert!(
+        text_in(&d, 2, Coord::new(1, 0))
+            .unwrap()
+            .starts_with("new ")
+    );
+}
+
+#[test]
+fn notes_recorded_during_a_rebuild_join_both_trees() {
+    let (_tmp, d) = summarised();
+    run(&d, &["tree", "rebuild", "0"]);
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, "late")]).unwrap();
+    for n in [1, 2] {
+        assert_eq!(
+            text_in(&d, n, Coord::leaf(4)).as_deref(),
+            Some("user: late"),
+            "tree {n}"
+        );
+    }
+}
+
+#[test]
+fn view_reads_a_tree_by_number() {
+    let (_tmp, d) = summarised();
+    run(&d, &["tree", "rebuild"]);
+    run_rt(
+        &d,
+        &runtime(Arc::new(Model(Arc::new(renewing())))),
+        &["build"],
+    );
+    let one = Config {
+        view: View { lines: Some(1) },
+        ..Config::default()
+    };
+    let v = run_sized(&d, one.clone(), &["view", "--tree", "2"]).stdout;
+    assert!(v.contains("0+4|new join"), "{v}");
+    let v = run_sized(&d, one, &["view"]).stdout;
+    assert!(!v.contains("new join"), "{v}");
+    let r = run(&d, &["view", "--tree", "9"]);
+    assert_eq!(r.code, 1);
+    assert!(r.stderr.contains("No tree 9."), "{}", r.stderr);
 }
 
 #[test]

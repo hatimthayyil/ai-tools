@@ -24,10 +24,10 @@ use crate::{
         log,
         meta::{Line, Meta, dash, dated},
         prov,
-        record::{Kind, Message, Place, Who, midnight},
+        record::{Kind, Message, Node, Place, Who, midnight},
         stats::{Stats, stats},
         store::{ME, Snapshot, Store},
-        tree::Coord,
+        tree::{Coord, LEVELS, ancestors, overlapping},
         usage::{self, Tally, Use},
         view::{Mem, PLACEHOLDER, VIEW},
         zoom::zoom,
@@ -104,6 +104,8 @@ enum Command {
             help = "plumbing: the whole view at once, not in parts"
         )]
         whole: bool,
+        #[arg(long, value_name = "N", help = "read tree N, not the current one")]
+        tree: Option<u64>,
         #[command(flatten)]
         meta: Meta,
     },
@@ -114,19 +116,25 @@ enum Command {
     },
     #[command(
         about = "build every summary that can be built now, with Claude Code.",
-        after_help = "It prints its plan first: per level of the memory's tree, the summaries it \
-                      holds, those written and those to write, with the calls, cost and time that \
-                      takes at the average of past calls. On a terminal it then shows a bar per \
-                      level; off one, a line per summary. The full record is in summarise.log."
+        after_help = "It builds the tree being built (see `tree rebuild`), else the current one. It \
+                      prints its plan first: per level of the tree, the summaries it holds, those \
+                      written and those to write, with the calls, cost and time that takes at the \
+                      average of past calls. On a terminal it then shows a bar per level; off one, \
+                      a line per summary. The full record is in summarise.log."
     )]
     Build {
-        #[arg(
-            long,
-            help = "drop every summary and build them all again; the old ones stay in the memory's git history"
-        )]
-        rebuild: bool,
         #[arg(long, help = "print the plan only; call no model and store nothing")]
         dry_run: bool,
+    },
+    #[command(
+        about = "list the memory's trees, or change them: rebuild, reroll, use, drop, diff.",
+        after_help = "The current tree is what view, zoom and grep read. A rebuild writes into \
+                      a copy of it, the tree being built, which stays until `tree use` makes it \
+                      current. Old trees are kept until dropped."
+    )]
+    Tree {
+        #[command(subcommand)]
+        cmd: Option<TreeCmd>,
     },
     #[command(about = "search every message ever recorded, newest first.")]
     Grep(Grep),
@@ -134,6 +142,8 @@ enum Command {
     Zoom {
         #[arg(help = "a line's id, as printed: 2184+8, or 7 for message 7")]
         id: String,
+        #[arg(long, value_name = "N", help = "read tree N, not the current one")]
+        tree: Option<u64>,
         #[command(flatten)]
         meta: Meta,
     },
@@ -159,32 +169,98 @@ enum Command {
     PromptHook,
 }
 
+#[derive(Subcommand, Debug)]
+enum TreeCmd {
+    #[command(
+        about = "mark notes stale in the tree being built, and the summaries above them",
+        after_help = "A range `a..b` covers notes a up to b, b not included; a line id like \
+                      2184+8 covers the notes under that summary; a bare id covers one note. \
+                      Notes are never rebuilt: the summaries above them are. With no range, every \
+                      note. Summaries that are not built yet are left for `build`."
+    )]
+    Rebuild {
+        #[arg(
+            value_name = "RANGE",
+            help = "notes a..b, or a line id; every note if omitted"
+        )]
+        range: Option<String>,
+    },
+    #[command(
+        about = "mark one summary stale, keeping its children: rebuilt from them, as a re-roll",
+        after_help = "The summaries above it are marked stale too. Build then rewrites them."
+    )]
+    Reroll {
+        #[arg(help = "a summary's line id, like 2184+8")]
+        id: String,
+    },
+    #[command(
+        about = "make tree N the current tree, once it is built",
+        after_help = "An older tree is copied first: the copy is built with what its notes need, \
+                      then made current, and the old tree stays as it was."
+    )]
+    Use {
+        #[arg(help = "a tree's number, as `tree` lists it")]
+        n: u64,
+    },
+    #[command(
+        about = "drop tree N: the current tree cannot be dropped; the tree being built is cancelled"
+    )]
+    Drop {
+        #[arg(help = "a tree's number, as `tree` lists it")]
+        n: u64,
+    },
+    #[command(about = "show the summaries that differ between two trees")]
+    Diff {
+        #[arg(help = "a tree's number")]
+        a: u64,
+        #[arg(help = "another tree's number")]
+        b: u64,
+    },
+}
+
+impl TreeCmd {
+    /// Its name and arguments, as typed.
+    fn typed(&self) -> Vec<String> {
+        match self {
+            TreeCmd::Rebuild { range } => ["rebuild".into()]
+                .into_iter()
+                .chain(range.clone())
+                .collect(),
+            TreeCmd::Reroll { id } => vec!["reroll".into(), id.clone()],
+            TreeCmd::Use { n } => vec!["use".into(), n.to_string()],
+            TreeCmd::Drop { n } => vec!["drop".into(), n.to_string()],
+            TreeCmd::Diff { a, b } => vec!["diff".into(), a.to_string(), b.to_string()],
+        }
+    }
+}
+
 impl Command {
     /// Its name and arguments, as typed; a note's text is in the store.
     fn typed(&self) -> (&'static str, Vec<String>) {
         match self {
             Command::Init => ("init", Vec::new()),
-            Command::View { whole, meta } => (
+            Command::View { whole, tree, meta } => (
                 "view",
                 whole
                     .then(|| "--whole".into())
                     .into_iter()
+                    .chain(tree.map(|n| format!("--tree={n}")))
                     .chain(meta.args())
                     .collect(),
             ),
             Command::Note { .. } => ("note", Vec::new()),
-            Command::Build { rebuild, dry_run } => (
+            Command::Build { dry_run } => (
                 "build",
-                [(rebuild, "--rebuild"), (dry_run, "--dry-run")]
-                    .into_iter()
-                    .filter(|f| *f.0)
-                    .map(|f| f.1.into())
-                    .collect(),
+                dry_run.then(|| "--dry-run".into()).into_iter().collect(),
             ),
+            Command::Tree { cmd } => ("tree", cmd.as_ref().map(TreeCmd::typed).unwrap_or_default()),
             Command::Grep(g) => ("grep", g.typed()),
-            Command::Zoom { id, meta } => (
+            Command::Zoom { id, tree, meta } => (
                 "zoom",
-                std::iter::once(id.clone()).chain(meta.args()).collect(),
+                std::iter::once(id.clone())
+                    .chain(tree.map(|n| format!("--tree={n}")))
+                    .chain(meta.args())
+                    .collect(),
             ),
             Command::Show { id } => ("show", vec![id.clone()]),
             Command::Config => ("config", Vec::new()),
@@ -262,6 +338,7 @@ impl Cli {
         Cli {
             command: Some(Command::View {
                 whole: true,
+                tree: None,
                 meta: Meta::default(),
             }),
         }
@@ -292,6 +369,7 @@ impl Cli {
     pub fn run_with(self, dir: &Path, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             whole: false,
+            tree: None,
             meta: Meta::default(),
         });
         if let Command::Init = command {
@@ -335,14 +413,17 @@ impl Command {
     ) -> Result<ExitCode> {
         match self {
             Command::Init | Command::PromptHook => unreachable!(),
-            Command::View { whole, meta } => view(s, out, rt, whole || rt.terminal, &meta),
+            Command::View { whole, tree, meta } => {
+                view(s, out, rt, whole || rt.terminal, tree, &meta)
+            }
             Command::Note { text } => note(s, out, &text, rt, place, who),
-            Command::Build { rebuild, dry_run } => match dry_run {
-                true => plan(s, out, rt, rebuild),
-                false => build(s, out, rt, rebuild),
+            Command::Build { dry_run } => match dry_run {
+                true => plan(s, out, rt),
+                false => build(s, out, rt),
             },
+            Command::Tree { cmd } => tree(s, out, cmd),
             Command::Grep(g) => grep(s, out, &g, rt.terminal, &(rt.views)()?),
-            Command::Zoom { id, meta } => zoom_cmd(&s.snapshot()?, out, &id, rt, &meta),
+            Command::Zoom { id, tree, meta } => zoom_cmd(&read_tree(s, tree)?, out, &id, rt, &meta),
             Command::Show { id } => show(&s.snapshot()?, out, &id),
             Command::Config => config(out, &rt.config),
             Command::Import { file } => import(s, out, &file),
@@ -428,12 +509,22 @@ fn view(
     out: &mut dyn Write,
     rt: &Runtime,
     whole: bool,
+    tree: Option<u64>,
     meta: &Meta,
 ) -> Result<ExitCode> {
-    let text = view_text(&s.snapshot()?, rt.config.get(Knob::ViewLines), meta)?;
+    let text = view_text(&read_tree(s, tree)?, rt.config.get(Knob::ViewLines), meta)?;
     let command = format!("{ME} view{}", meta.flags());
     page::print(out, &(rt.views)()?, &command, &text, whole)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The memory as of the latest commit, reading tree `n` if given, else the current one.
+fn read_tree(s: &Store, n: Option<u64>) -> Result<Snapshot<'_>> {
+    let snap = s.snapshot()?;
+    match n {
+        Some(n) => snap.tree(n),
+        None => Ok(snap),
+    }
 }
 
 /// The view's opening, its `n` lines under their date headers, then [`AWAKE`].
@@ -496,22 +587,22 @@ fn note(
 /// The compactor's lock is taken: another summariser or chat is building, and will see the new messages.
 const BUSY: &str = "A compactor is already running; it will build these too.";
 
-/// Whether a node can be built now on the latest snapshot.
+/// Whether a node can be built now in the tree `build` writes.
 fn pending(s: &Store) -> Result<bool> {
-    let mem = Mem::load(&s.snapshot()?, VIEW)?;
+    let mem = Mem::load(&s.working()?, VIEW)?;
     Ok(!mem.due(|_| false, 1).is_empty())
 }
 
 /// What `build` shows its progress about: what it does, with what, and the past calls to
 /// estimate from.
-fn about(s: &Store, rt: &Runtime, again: bool) -> Result<About> {
+fn about(s: &Store, rt: &Runtime) -> Result<About> {
     let log = s.dir().join(log::SUMMARISE_LOG);
+    let title = match s.working()?.state().building {
+        Some(n) => format!("Rebuilding tree {n}"),
+        None => "Building memory".into(),
+    };
     Ok(About {
-        title: match again {
-            true => "Rebuilding memory",
-            false => "Building memory",
-        }
-        .into(),
+        title,
         unit: "summary",
         covers: |l| plural(1 << l, "message"),
         first_bar: 1,
@@ -537,24 +628,15 @@ fn tree_levels(t: u64, built: impl Fn(u32) -> u64) -> Vec<Level> {
         .collect()
 }
 
-/// The levels of `m`'s tree.
+/// The levels of `m`'s tree, with the summaries that are fresh written.
 fn mem_levels(m: &Mem) -> Vec<Level> {
-    tree_levels(m.t(), |l| m.built_at(l))
+    tree_levels(m.t(), |l| m.fresh_at(l))
 }
 
-/// `build --dry-run`: the plan of `build`, or with `again` of `build --rebuild`, and nothing else.
-fn plan(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<ExitCode> {
-    let snap = s.snapshot()?;
-    let levels = match again {
-        true => {
-            let own = snap.own_nodes()?;
-            tree_levels(snap.log_len()?, |l| {
-                own.iter().filter(|c| c.l == l).count() as u64
-            })
-        }
-        false => mem_levels(&Mem::load(&snap, VIEW)?),
-    };
-    let progress = Progress::new(&mut *out, Mode::Plain, about(s, rt, again)?);
+/// `build --dry-run`: the plan of `build`, and nothing else.
+fn plan(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+    let levels = mem_levels(&Mem::load(&s.working()?, VIEW)?);
+    let progress = Progress::new(&mut *out, Mode::Plain, about(s, rt)?);
     if !progress.plan(&levels)? {
         drop(progress);
         writeln!(out, "Nothing to build.")?;
@@ -562,10 +644,9 @@ fn plan(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
-/// Builds every node that is due; with `again`, drops every node first and builds them all
-/// again. A run that gives up leaves what it has not built pending. Shows its plan, then its
-/// progress, then what it did.
-fn build(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<ExitCode> {
+/// Builds every node that is due in the tree being built, else the current one. A run that gives
+/// up leaves what it has not built pending. Shows its plan, then its progress, then what it did.
+fn build(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     let _log = log::init(&s.dir().join(log::SUMMARISE_LOG))?;
     let _span = info_span!(
         "summarise",
@@ -580,23 +661,29 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<Ex
         true => Mode::Bars,
         false => Mode::Plain,
     };
-    let progress = Progress::new(&mut *out, mode, about(s, rt, again)?);
+    let progress = Progress::new(&mut *out, mode, about(s, rt)?);
     let mut spent = Spend::default();
     let mut ran = Rounds::default();
-    let r = match again {
-        false => rounds(s, &progress, rt, &mut spent, &mut ran),
-        true => rebuild(s, &progress, rt, &mut spent, &mut ran),
-    };
+    let r = rounds(s, &progress, rt, &mut spent, &mut ran);
     let Err(e) = r else {
         let planned = progress.planned();
         match planned {
-            true => progress.end(ran.dropped, spent)?,
+            true => progress.end(None, spent)?,
             false => drop(progress),
         }
         if ran.busy {
             writeln!(out, "{BUSY}")?;
         } else if !planned {
             writeln!(out, "Nothing to build.")?;
+        }
+        if let Some(b) = s.working()?.state().building
+            && !ran.busy
+            && !pending(s)?
+        {
+            writeln!(
+                out,
+                "Tree {b} is built: `ai memory tree use {b}` makes it current."
+            )?;
         }
         let (built, secs) = (ran.built, log::secs(start.elapsed()));
         log::spend!(info, spent, { built, secs }, "end");
@@ -608,23 +695,19 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime, again: bool) -> Result<Ex
     };
     log::spend!(error, spent, { node = %g.node, tries = g.tries, error = g.error }, "gave up");
     progress.gave_up(&g.node, g.tries, &g.error)?;
-    progress.end(ran.dropped, spent)?;
-    let then = match again {
-        false => "It stays pending; the summariser after the next note tries again.",
-        true => {
-            "It and every other summary not rebuilt yet stay pending; ai memory build builds them."
-        }
-    };
-    writeln!(out, "{g}. {then}")?;
+    progress.end(None, spent)?;
+    writeln!(
+        out,
+        "{g}. It stays pending; the summariser after the next note tries again."
+    )?;
     Ok(ExitCode::FAILURE)
 }
 
-/// What compactor rounds did: the nodes the model built, how many nodes a rebuild dropped
-/// first, and whether they stopped at another compactor's lock.
+/// What compactor rounds did: the nodes the model built, and whether they stopped at another
+/// compactor's lock.
 #[derive(Default)]
 struct Rounds {
     built: u64,
-    dropped: Option<u64>,
     busy: bool,
 }
 
@@ -649,26 +732,206 @@ fn rounds(
     Ok(())
 }
 
-/// Under the compactor's lock, waiting for it until [`summariser::WAIT`], drops every node in
-/// one commit and builds them all again before letting the lock go, so no other summariser
-/// builds any of them; then the rounds `build` runs, for what notes made due meanwhile.
-fn rebuild(
-    s: &Store,
-    progress: &Progress,
-    rt: &Runtime,
-    spent: &mut Spend,
-    ran: &mut Rounds,
-) -> Result<()> {
-    let Some(lock) = s.lock_before(Instant::now() + summariser::WAIT)? else {
-        bail!("A summariser is still running on this memory. Try again when it ends.");
+/// `tree`: lists the trees, or changes them.
+fn tree(s: &Store, out: &mut dyn Write, cmd: Option<TreeCmd>) -> Result<ExitCode> {
+    match cmd {
+        None => list(s, out)?,
+        Some(TreeCmd::Rebuild { range }) => rebuild(s, out, range.as_deref())?,
+        Some(TreeCmd::Reroll { id }) => reroll(s, out, &id)?,
+        Some(TreeCmd::Use { n }) => use_tree(s, out, n)?,
+        Some(TreeCmd::Drop { n }) => drop_tree(s, out, n)?,
+        Some(TreeCmd::Diff { a, b }) => diff(s, out, a, b)?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Every tree the memory holds, the current one, the tree being built and the saved ones; for
+/// the one being built, what it still needs.
+fn list(s: &Store, out: &mut dyn Write) -> Result<()> {
+    let st = s.snapshot()?.state();
+    for n in 1..=st.last {
+        let snap = s.snapshot()?;
+        if n != st.current && !snap.has_tree(n)? {
+            continue;
+        }
+        if n == st.current {
+            writeln!(out, "tree {n} current")?;
+        } else if st.building == Some(n) {
+            let mem = Mem::load(&snap.tree(n)?, VIEW)?;
+            let due = mem.due(|_| false, usize::MAX).len();
+            writeln!(
+                out,
+                "tree {n} building: {} stale, {due} to build",
+                mem.stale_count()
+            )?;
+        } else {
+            writeln!(out, "tree {n} saved")?;
+        }
+    }
+    Ok(())
+}
+
+/// The tree being built: the one started already, else a copy of the current tree.
+fn building(s: &Store) -> Result<u64> {
+    let st = s.snapshot()?.state();
+    match st.building {
+        Some(n) => Ok(n),
+        None => s.start_building(st.current),
+    }
+}
+
+/// Reports the tree being built after a change to it: what it still needs.
+fn report_building(s: &Store, out: &mut dyn Write) -> Result<()> {
+    let w = s.working()?;
+    let n = w.number();
+    let mem = Mem::load(&w, VIEW)?;
+    writeln!(
+        out,
+        "Tree {n} is being built: {} stale, {} to build. Run `ai memory build`, then `ai memory tree use {n}`.",
+        mem.stale_count(),
+        mem.due(|_| false, usize::MAX).len()
+    )?;
+    Ok(())
+}
+
+/// The notes a `tree rebuild` argument names, `[a, b)`: `a..b`, or the notes under a line id.
+fn span(arg: &str, t: u64) -> Result<(u64, u64)> {
+    let Some((a, b)) = arg.split_once("..") else {
+        let c = line_id(arg, t)?;
+        return Ok((c.id(), c.end()));
     };
-    let backend = (rt.backend)(&s.dir().join(CALLS))?;
-    let (dropped, _) = s.drop_nodes()?;
-    info!(dropped, "dropped");
-    ran.dropped = Some(dropped);
-    let c = Compactor::locked(s, backend, rt.opts, lock)?;
-    round(c, progress, rt, spent, ran)?;
-    rounds(s, progress, rt, spent, ran)
+    let num = |x: &str| {
+        x.parse::<u64>()
+            .with_context(|| format!("'{arg}' is not a range: write a..b."))
+    };
+    let (a, b) = (num(a)?, num(b)?);
+    if a >= b || b > t {
+        bail!("No notes {a}..{b}: the memory holds {t} messages.");
+    }
+    Ok((a, b))
+}
+
+/// `tree rebuild`: marks stale, in the tree being built, the summaries above the notes it names.
+fn rebuild(s: &Store, out: &mut dyn Write, arg: Option<&str>) -> Result<()> {
+    let t = s.snapshot()?.log_len()?;
+    let (a, b) = match arg {
+        Some(arg) => span(arg, t)?,
+        None => (0, t),
+    };
+    if t == 0 {
+        bail!("No notes yet to rebuild.");
+    }
+    building(s)?;
+    s.mark_stale(&overlapping(a, b, t))?;
+    report_building(s, out)
+}
+
+/// `tree reroll`: marks one summary stale, and the summaries above it, keeping the ones below.
+fn reroll(s: &Store, out: &mut dyn Write, id: &str) -> Result<()> {
+    let t = s.snapshot()?.log_len()?;
+    let c = line_id(id, t)?;
+    if c.l == 0 {
+        bail!("{id} is a note, which is never rebuilt. Name a summary, like 2184+8.");
+    }
+    building(s)?;
+    if s.working()?.node(c)?.is_none() {
+        bail!("Summary {id} is not built yet: run `ai memory build` first.");
+    }
+    let nodes: Vec<Coord> = std::iter::once(c).chain(ancestors(c, t)).collect();
+    s.mark_stale(&nodes)?;
+    report_building(s, out)
+}
+
+/// `tree use`: makes tree `n` current once the tree being built is `n` and fully built. An
+/// older tree is first copied into a new tree, which is built and then made current.
+fn use_tree(s: &Store, out: &mut dyn Write, n: u64) -> Result<()> {
+    let st = s.snapshot()?.state();
+    if n == st.current {
+        writeln!(out, "Tree {n} is already current.")?;
+        return Ok(());
+    }
+    s.snapshot()?.tree(n)?;
+    let b = match st.building {
+        Some(b) if b != n => bail!(
+            "Tree {b} is being built. Build it and use it, or drop it: `ai memory tree drop {b}`."
+        ),
+        Some(b) => b,
+        None => s.start_building(n)?,
+    };
+    let w = s.working()?;
+    let mem = Mem::load(&w, VIEW)?;
+    let (stale, due) = (mem.stale_count(), mem.due(|_| false, usize::MAX).len());
+    if stale > 0 || due > 0 {
+        bail!(
+            "Tree {b} is not built: {stale} stale, {due} to build. Run `ai memory build`, then \
+             `ai memory tree use {b}`."
+        );
+    }
+    s.switch(b)?;
+    match b == n {
+        true => writeln!(out, "Tree {b} is current.")?,
+        false => writeln!(out, "Tree {b} is current: a copy of tree {n}.")?,
+    }
+    Ok(())
+}
+
+/// `tree drop`: drops tree `n`; the tree being built is cancelled.
+fn drop_tree(s: &Store, out: &mut dyn Write, n: u64) -> Result<()> {
+    let snap = s.snapshot()?;
+    let st = snap.state();
+    if n == st.current {
+        bail!("Tree {n} is current: make another tree current before dropping it.");
+    }
+    if !snap.has_tree(n)? {
+        bail!("No tree {n}.");
+    }
+    s.drop_tree(n)?;
+    match st.building == Some(n) {
+        true => writeln!(out, "Cancelled the rebuild in tree {n}.")?,
+        false => writeln!(out, "Dropped tree {n}.")?,
+    }
+    Ok(())
+}
+
+/// `tree diff`: the summaries whose text differs between trees `a` and `b`.
+fn diff(s: &Store, out: &mut dyn Write, a: u64, b: u64) -> Result<()> {
+    let (sa, sb) = (s.snapshot()?.tree(a)?, s.snapshot()?.tree(b)?);
+    let t = sa.log_len()?;
+    let text = |level: &[Option<Node>], i: usize| {
+        level
+            .get(i)
+            .and_then(|n| n.as_ref())
+            .map(|n| n.text.clone())
+    };
+    let mut any = false;
+    for l in 0..LEVELS {
+        if 1u64 << l > t {
+            break;
+        }
+        let (la, lb) = (sa.level(l)?, sb.level(l)?);
+        for i in 0..la.len().max(lb.len()) {
+            let (ta, tb) = (text(&la, i), text(&lb, i));
+            if ta == tb {
+                continue;
+            }
+            any = true;
+            writeln!(out, "{}", Coord::new(l, i as u64))?;
+            writeln!(
+                out,
+                "  tree {a}: {}",
+                ta.as_deref().unwrap_or("(not built)")
+            )?;
+            writeln!(
+                out,
+                "  tree {b}: {}",
+                tb.as_deref().unwrap_or("(not built)")
+            )?;
+        }
+    }
+    if !any {
+        writeln!(out, "No summaries differ.")?;
+    }
+    Ok(())
 }
 
 /// Runs `c` until nothing is due on the latest snapshot, showing on `progress` the plan, the

@@ -1,5 +1,8 @@
 use std::fmt;
 
+/// Levels a tree can hold: a message count fits in 64 bits.
+pub const LEVELS: u32 = 64;
+
 /// The longest line of a memory view, in characters.
 pub const NODE: usize = 512;
 
@@ -78,6 +81,32 @@ impl fmt::Display for Coord {
     }
 }
 
+/// The summaries above notes `[a, b)` of a memory of `t` messages: every node of a level above
+/// the notes whose span overlaps them. Those are what a rebuild of the notes makes stale.
+pub fn overlapping(a: u64, b: u64, t: u64) -> Vec<Coord> {
+    let mut out = Vec::new();
+    for l in 1..LEVELS {
+        if 1u64 << l > t {
+            break;
+        }
+        for i in (a >> l)..=((b - 1) >> l) {
+            out.push(Coord::new(l, i));
+        }
+    }
+    out
+}
+
+/// The summaries that cover `c` in a memory of `t` messages, lowest first.
+pub fn ancestors(c: Coord, t: u64) -> Vec<Coord> {
+    let mut out = Vec::new();
+    let mut p = c.parent();
+    while p.end() <= t {
+        out.push(p);
+        p = p.parent();
+    }
+    out
+}
+
 /// A source that fits in [`NODE`] characters is its own node: `kind: text`, or two lines joined.
 pub fn free(text: String) -> Option<String> {
     (text.chars().count() <= NODE).then_some(text)
@@ -123,5 +152,33 @@ mod tests {
         assert_eq!(free("x".repeat(NODE + 1)), None);
         assert!(free("é".repeat(NODE)).is_some());
         assert_eq!(joined("a", "b"), "a b");
+    }
+
+    #[test]
+    fn ranges_mark_the_summaries_above_them() {
+        assert_eq!(
+            overlapping(5, 10, 16),
+            [
+                Coord::new(1, 2),
+                Coord::new(1, 3),
+                Coord::new(1, 4),
+                Coord::new(2, 1),
+                Coord::new(2, 2),
+                Coord::new(3, 0),
+                Coord::new(3, 1),
+                Coord::new(4, 0),
+            ]
+        );
+        assert_eq!(overlapping(5, 6, 6), [Coord::new(1, 2), Coord::new(2, 1)]);
+        assert_eq!(
+            ancestors(Coord::leaf(5), 16),
+            [
+                Coord::new(1, 2),
+                Coord::new(2, 1),
+                Coord::new(3, 0),
+                Coord::new(4, 0)
+            ]
+        );
+        assert_eq!(ancestors(Coord::leaf(5), 6), [Coord::new(1, 2)]);
     }
 }

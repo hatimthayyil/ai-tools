@@ -66,11 +66,13 @@ pub struct Node {
     pub ts: String,
     pub origin: String,
     pub who: Who,
+    /// Built from sources that have changed since: the text stays until it is rebuilt.
+    pub stale: bool,
     pub text: String,
 }
 
-/// The columns this ai writes a node segment with; `text` is last.
-pub const COLUMNS: [&str; 6] = ["ts", "origin", "agent", "model", "session", "text"];
+/// The columns this ai writes a node segment with; `text` is last. `stale` is `1` or empty.
+pub const COLUMNS: [&str; 7] = ["ts", "origin", "agent", "model", "session", "stale", "text"];
 
 /// A header or column value: whitespace becomes `_`.
 fn field(v: &str) -> String {
@@ -209,10 +211,11 @@ impl Node {
         n.text = flat(&self.text);
         let vs: Vec<String> = cols
             .iter()
-            .map(|c| match n.slot(c) {
-                Some(v) if c == "text" => v.clone(),
-                Some(v) => field(v),
-                None => String::new(),
+            .map(|c| match (c.as_str(), n.slot(c)) {
+                ("stale", _) => String::from(if self.stale { "1" } else { "" }),
+                (_, Some(v)) if c == "text" => v.clone(),
+                (_, Some(v)) => field(v),
+                (_, None) => String::new(),
             })
             .collect();
         vs.join(" ")
@@ -224,7 +227,9 @@ impl Node {
         let mut vs = line.splitn(cols.len(), ' ');
         for c in cols {
             let v = vs.next()?;
-            if let Some(slot) = n.slot(c) {
+            if c == "stale" {
+                n.stale = v == "1";
+            } else if let Some(slot) = n.slot(c) {
                 *slot = v.into();
             }
         }
@@ -339,12 +344,29 @@ mod tests {
                 model: "".into(),
                 session: "s 1".into(),
             },
+            stale: false,
             text: "a\nb\r\nc".into(),
         };
         let cs = cols(&COLUMNS);
         let line = n.encode(&cs);
-        assert_eq!(line, "20261003T142233Z 7KQ2ZD claude-code  s_1 a b c");
-        let back = Node::decode(&line, &cs).unwrap();
+        assert_eq!(line, "20261003T142233Z 7KQ2ZD claude-code  s_1  a b c");
+        let stale = Node {
+            stale: true,
+            ..n.clone()
+        };
+        let line = stale.encode(&cs);
+        assert_eq!(line, "20261003T142233Z 7KQ2ZD claude-code  s_1 1 a b c");
+        let flat_text = Node {
+            who: Who {
+                session: "s_1".into(),
+                ..n.who.clone()
+            },
+            text: "a b c".into(),
+            ..stale
+        };
+        assert_eq!(Node::decode(&line, &cs), Some(flat_text));
+        let back = Node::decode(&n.encode(&cs), &cs).unwrap();
+        assert!(!back.stale);
         assert_eq!(
             (
                 back.who.model.as_str(),
@@ -356,11 +378,11 @@ mod tests {
         assert_eq!(Node::decode(&back.encode(&cs), &cs), Some(back.clone()));
         assert!(Node::decode("", &cs).is_none());
         assert_eq!(
-            Node::decode("20261003T142233Z O    ", &cs).unwrap().text,
+            Node::decode("20261003T142233Z O     ", &cs).unwrap().text,
             ""
         );
         assert_eq!(
-            Node::decode("20261003T142233Z O    ", &cs).unwrap().origin,
+            Node::decode("20261003T142233Z O     ", &cs).unwrap().origin,
             "O"
         );
         let wider = cols(&["ts", "origin", "agent", "model", "session", "later", "text"]);

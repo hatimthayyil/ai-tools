@@ -415,7 +415,7 @@ fn every_mutation_is_one_named_commit() {
     );
     assert_eq!(
         s.store_git(&["ls-tree", "-r", "--name-only", REF]),
-        "format\nlog/0000/00\nlog/0000/01\ntree/0/0000/00\ntree/1/0000/00"
+        "format\nlog/0000/00\nlog/0000/01\ntrees/1/0/0000/00\ntrees/1/1/0000/00"
     );
     assert_eq!(s.store_git(&["for-each-ref", "--format=%(refname)"]), REF);
     s.store_git(&["fsck", "--strict", "--no-dangling"]);
@@ -903,7 +903,7 @@ fn v1_golden() -> Vec<(Vec<&'static str>, String)> {
 }
 
 fn upgraded(head: &str) -> String {
-    format!("Upgraded memory to format 2; previous state is commit {head}.\n")
+    format!("Upgraded memory to format 3; previous state is commit {head}.\n")
 }
 
 #[test]
@@ -918,9 +918,9 @@ fn a_format_1_store_upgrades_once_and_reads_as_before() {
     let commits = s.commits();
     assert_eq!(commits.len(), 16);
     let new = commits[0].split_once(' ').unwrap();
-    assert_eq!(new.1, "upgrade format 1 -> 2");
+    assert_eq!(new.1, "upgrade format 1 -> 3");
     assert_eq!(s.store_git(&["rev-parse", &format!("{REF}^")]), old);
-    assert_eq!(s.store_git(&["show", &format!("{REF}:format")]), "2");
+    assert_eq!(s.store_git(&["show", &format!("{REF}:format")]), "3");
 
     for (args, want) in &golden[1..] {
         if args[0] == "config" {
@@ -941,15 +941,30 @@ fn a_format_1_store_upgrades_once_and_reads_as_before() {
     );
 
     let paths = s.store_git(&["ls-tree", "-r", "--name-only", &old]);
+    let (logs, nodes): (Vec<&str>, Vec<&str>) = paths.lines().partition(|p| p.starts_with("log/"));
+    let trees: Vec<String> = nodes
+        .iter()
+        .map(|p| format!("trees/1/{}", p.strip_prefix("tree/").unwrap()))
+        .collect();
+    let want: Vec<String> = ["format".to_string()]
+        .into_iter()
+        .chain(logs.iter().map(|p| p.to_string()))
+        .chain(["state".to_string()])
+        .chain(trees)
+        .collect();
     assert_eq!(
         s.store_git(&["ls-tree", "-r", "--name-only", REF]),
-        format!("format\n{paths}")
+        want.join("\n")
     );
     let blob = |rev: &str, p: &str| s.store_git(&["cat-file", "blob", &format!("{rev}:{p}")]);
     let ms = s.memories();
     let mut nodes = 0;
     for p in paths.lines() {
-        let (was, is) = (blob(&old, p), blob(REF, p));
+        let at = match p.strip_prefix("tree/") {
+            Some(rest) => format!("trees/1/{rest}"),
+            None => p.to_string(),
+        };
+        let (was, is) = (blob(&old, p), blob(REF, &at));
         if let Some(n) = p.strip_prefix("log/") {
             let i = usize::from_str_radix(&n.replace('/', ""), 16).unwrap();
             assert_eq!(ms[i].text, was.split_once('\n').unwrap().1, "message {i}");
@@ -957,11 +972,15 @@ fn a_format_1_store_upgrades_once_and_reads_as_before() {
             continue;
         }
         let (cols, lines) = is.split_once('\n').unwrap();
-        assert_eq!(cols, "ts origin agent model session text");
-        let text = |l: &str| l.splitn(6, ' ').nth(5).map(String::from);
+        assert_eq!(cols, "ts origin agent model session stale text");
         let (was, is): (Vec<_>, Vec<_>) = (
-            was.lines().map(text).collect(),
-            lines.lines().map(text).collect(),
+            was.lines()
+                .map(|l| l.splitn(6, ' ').nth(5).map(String::from))
+                .collect(),
+            lines
+                .lines()
+                .map(|l| l.splitn(7, ' ').nth(6).map(String::from))
+                .collect(),
         );
         assert_eq!(was, is, "{p}");
         nodes += was.len();
@@ -997,7 +1016,7 @@ fn concurrent_opens_upgrade_once() {
     let ups = s
         .commits()
         .iter()
-        .filter(|c| c.ends_with(" upgrade format 1 -> 2"))
+        .filter(|c| c.ends_with(" upgrade format 1 -> 3"))
         .count();
     assert_eq!(ups, 1);
 }
@@ -1008,7 +1027,7 @@ fn a_newer_format_is_refused_before_any_write() {
     assert!(s.ai(&["init"]).status.success());
     assert!(s.ai(&["note", "written by this ai"]).status.success());
     let tree = s.store_git(&["ls-tree", REF]);
-    let blob = s.store_git_in(&["hash-object", "-w", "--stdin"], "3\n");
+    let blob = s.store_git_in(&["hash-object", "-w", "--stdin"], "4\n");
     let entries: String = tree
         .lines()
         .map(|l| match l.ends_with("\tformat") {
@@ -1031,7 +1050,7 @@ fn a_newer_format_is_refused_before_any_write() {
             (r.status.success(), text(&r.stderr).as_str()),
             (
                 false,
-                "This memory is format 3; this ai reads up to 2. Upgrade ai.\n"
+                "This memory is format 4; this ai reads up to 3. Upgrade ai.\n"
             ),
             "{args:?}"
         );

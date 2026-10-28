@@ -335,7 +335,7 @@ impl<'s> Compactor<'s> {
         opts: Options,
         lock: crate::file::Lock,
     ) -> Result<Self> {
-        let mem = Mem::load(&store.snapshot()?, opts.budget)?;
+        let mem = Mem::load(&store.working()?, opts.budget)?;
         let (tx, rx) = channel();
         Ok(Compactor {
             store,
@@ -392,7 +392,7 @@ impl<'s> Compactor<'s> {
 
     /// Takes in what other processes wrote since, then pumps.
     pub fn refresh(&mut self) -> Result<()> {
-        self.mem.absorb(&self.store.snapshot()?)?;
+        self.mem.absorb(&self.store.working()?)?;
         self.pump()
     }
 

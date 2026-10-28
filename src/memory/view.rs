@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::Result;
 
 use crate::memory::{store::Snapshot, tree::Coord};
@@ -12,6 +14,9 @@ pub const HIDDEN: &str = "(tool calls: zoom it)";
 pub struct Mem {
     t: u64,
     nodes: Vec<Vec<Option<String>>>,
+    /// Built nodes whose sources have changed since: their text is kept until rebuilt.
+    stale: BTreeSet<Coord>,
+    /// Per level, the lowest index not yet fresh: nothing below it is due.
     low: Vec<u64>,
     view: Vec<Coord>,
     size: u64,
@@ -23,6 +28,7 @@ impl Mem {
         Mem {
             t: 0,
             nodes: Vec::new(),
+            stale: BTreeSet::new(),
             low: Vec::new(),
             view: Vec::new(),
             size: 0,
@@ -38,10 +44,19 @@ impl Mem {
         while 1u64 << l <= t {
             for (i, n) in s.level(l)?.into_iter().enumerate() {
                 if let Some(n) = n {
-                    m.set(Coord::new(l, i as u64), n.text);
+                    let c = Coord::new(l, i as u64);
+                    let stale = n.stale;
+                    m.set(c, n.text);
+                    if stale {
+                        m.mark_stale(c);
+                    }
                 }
             }
             l += 1;
+        }
+        for l in 0..m.low.len() {
+            m.low[l] = 0;
+            m.advance(l);
         }
         m.t = t;
         m.refold();
@@ -73,18 +88,31 @@ impl Mem {
         self.text(c).is_some()
     }
 
-    /// How many nodes of level `l` are built.
-    pub fn built_at(&self, l: u32) -> u64 {
-        self.nodes
-            .get(l as usize)
-            .map_or(0, |n| n.iter().flatten().count() as u64)
+    /// Whether `c` is built and its sources have not changed since.
+    pub fn fresh(&self, c: Coord) -> bool {
+        self.built(c) && !self.stale.contains(&c)
     }
 
-    /// Whether `c`'s sources exist: its message, or both children.
+    /// How many nodes are stale: built from sources that have changed since.
+    pub fn stale_count(&self) -> u64 {
+        self.stale.len() as u64
+    }
+
+    /// How many nodes of level `l` are fresh.
+    pub fn fresh_at(&self, l: u32) -> u64 {
+        self.nodes.get(l as usize).map_or(0, |n| {
+            n.iter()
+                .enumerate()
+                .filter(|(i, t)| t.is_some() && !self.stale.contains(&Coord::new(l, *i as u64)))
+                .count() as u64
+        })
+    }
+
+    /// Whether `c`'s sources exist and are fresh: its message, or both children.
     pub fn ready(&self, c: Coord) -> bool {
         match c.l {
             0 => c.i < self.t,
-            _ => c.children().iter().all(|&k| self.built(k)),
+            _ => c.children().iter().all(|&k| self.fresh(k)),
         }
     }
 
@@ -92,9 +120,9 @@ impl Mem {
         self.text(c).unwrap_or(PLACEHOLDER).len() as u64
     }
 
-    /// Records node `c` unless it is built; returns whether it was new. Does not refit.
+    /// Records node `c` unless it is fresh; returns whether it was new. Does not refit.
     pub fn set(&mut self, c: Coord, text: String) -> bool {
-        if self.built(c) {
+        if self.fresh(c) {
             return false;
         }
         let (l, i) = (c.l as usize, c.i as usize);
@@ -110,10 +138,22 @@ impl Mem {
             level.resize(i + 1, None);
         }
         level[i] = Some(text);
-        while level.get(self.low[l] as usize).is_some_and(Option::is_some) {
+        self.stale.remove(&c);
+        self.advance(l);
+        true
+    }
+
+    fn advance(&mut self, l: usize) {
+        while self.fresh(Coord::new(l as u32, self.low[l])) {
             self.low[l] += 1;
         }
-        true
+    }
+
+    /// Marks built node `c` stale, keeping its text; `low` stays at or below it.
+    fn mark_stale(&mut self, c: Coord) {
+        self.stale.insert(c);
+        let l = c.l as usize;
+        self.low[l] = self.low[l].min(c.i);
     }
 
     pub fn add_message(&mut self) {
@@ -170,7 +210,7 @@ impl Mem {
         self.view.iter().all(|&c| self.built(c))
     }
 
-    /// Nodes to build now, oldest level first: ready, unbuilt, not `busy`. At most `max`.
+    /// Nodes to build now, oldest level first: ready, not fresh, not `busy`. At most `max`.
     pub fn due(&self, busy: impl Fn(Coord) -> bool, max: usize) -> Vec<Coord> {
         let mut out = Vec::new();
         let mut l = 0;
@@ -181,7 +221,7 @@ impl Mem {
                 if c.end() > self.t {
                     break;
                 }
-                if !self.built(c) && !busy(c) && self.ready(c) {
+                if !self.fresh(c) && !busy(c) && self.ready(c) {
                     if out.len() >= max {
                         return out;
                     }
@@ -199,7 +239,11 @@ impl Mem {
         for i in self.t..s.log_len()? {
             let mut c = Coord::leaf(i);
             while let Some(n) = s.node(c)? {
+                let stale = n.stale;
                 self.set(c, n.text);
+                if stale {
+                    self.mark_stale(c);
+                }
                 c = c.parent();
             }
             self.add_message();
