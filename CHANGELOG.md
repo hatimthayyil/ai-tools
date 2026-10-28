@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.17.0 - 2026-10-28
+
+### Breaking changes
+
+- **agent:** make build --dry-run print the plan only; --preview writes without storing
+- **memory:** rebuild into a copy of the current tree, switch once built
+
+> the memory store moves to format 3, which installed ai releases cannot read.
+New `tree` commands: list, rebuild, reroll, use, drop, diff.
+
+### Bug fixes
+
+- **memory:** switch trees without copying, rebuild long messages, finish an interrupted copy
+
+### Features
+
+- **summariser:** write summaries through a provider API with backend = "api"
+- **summariser:** set thinking effort and parallel calls in [summariser]
+- **summariser:** check every summary with a witness model in [summariser.witness]
+- **build:** show the plan, a bar per level and each summary as it is written
+- **build:** show [summariser] jobs in ai agent build's plan
+
 ## v0.16.0 - 2026-10-26
 
 ### Breaking changes
