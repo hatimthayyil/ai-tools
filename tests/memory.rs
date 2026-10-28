@@ -1497,11 +1497,11 @@ fn a_rebuild_marks_the_summaries_above_a_note_stale_and_builds_them_bottom_up() 
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(
         r.stdout,
-        "Tree 2 is being built: 2 stale, 1 to build. Run `ai memory build`, then `ai memory tree use 2`.\n"
+        "Tree 2 is being built: 3 stale, 1 to build. Run `ai memory build`, then `ai memory tree use 2`.\n"
     );
     assert_eq!(
         trees(&d),
-        "tree 1 current\ntree 2 building: 2 stale, 1 to build\n"
+        "tree 1 current\ntree 2 building: 3 stale, 1 to build\n"
     );
     let old = text_in(&d, 1, Coord::new(2, 0));
     assert_eq!(
@@ -1532,20 +1532,19 @@ fn a_rebuild_marks_the_summaries_above_a_note_stale_and_builds_them_bottom_up() 
         old,
         "the current tree is untouched"
     );
-    assert_eq!(
-        text_in(&d, 2, Coord::leaf(0)),
-        text_in(&d, 1, Coord::leaf(0)),
-        "notes are never rebuilt"
+    assert!(
+        text_in(&d, 2, Coord::leaf(0)).unwrap().starts_with("new "),
+        "a long note's summary is rebuilt"
     );
 }
 
 #[test]
-fn a_range_marks_only_the_summaries_its_notes_are_under_across_an_unaligned_boundary() {
+fn a_range_marks_its_long_notes_and_the_summaries_above_them_across_an_unaligned_boundary() {
     let (_tmp, d) = summarised();
     assert_eq!(run(&d, &["tree", "rebuild", "1..3"]).code, 0);
     assert_eq!(
         trees(&d),
-        "tree 1 current\ntree 2 building: 3 stale, 2 to build\n"
+        "tree 1 current\ntree 2 building: 4 stale, 2 to build\n"
     );
 }
 
@@ -1582,20 +1581,47 @@ fn a_note_is_never_rerolled() {
 }
 
 #[test]
-fn a_tree_is_not_used_while_it_is_stale() {
+fn a_stale_tree_can_be_made_current_and_is_built_in_place() {
     let (_tmp, d) = summarised();
     assert_eq!(run(&d, &["tree", "rebuild"]).code, 0);
     let r = run(&d, &["tree", "use", "2"]);
-    assert_eq!(r.code, 1);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        r.stdout,
+        "Tree 2 is current.\nTree 2 is not built: 5 stale, 3 to build. Run `ai memory build`.\n"
+    );
+    assert_eq!(trees(&d), "tree 1 saved\ntree 2 current\n");
+    let old = text_in(&d, 2, Coord::new(1, 0)).unwrap();
+    assert!(old.starts_with("join"), "{old}");
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    assert_eq!(run_rt(&d, &rt, &["build"]).code, 0);
     assert!(
-        r.stderr
-            .contains("Tree 2 is not built: 3 stale, 2 to build"),
-        "{}",
-        r.stderr
+        text_in(&d, 2, Coord::new(1, 0))
+            .unwrap()
+            .starts_with("new ")
+    );
+    assert_eq!(trees(&d), "tree 1 saved\ntree 2 current\n");
+}
+
+#[test]
+fn using_a_tree_leaves_the_tree_being_built_as_it_is() {
+    let (_tmp, d) = summarised();
+    run(&d, &["tree", "rebuild"]);
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    run_rt(&d, &rt, &["build"]);
+    run(&d, &["tree", "use", "2"]);
+    run(&d, &["tree", "rebuild"]);
+    assert_eq!(
+        trees(&d),
+        "tree 1 saved\ntree 2 current\ntree 3 building: 5 stale, 3 to build\n"
+    );
+    assert_eq!(
+        run(&d, &["tree", "use", "1"]).stdout,
+        "Tree 1 is current.\n"
     );
     assert_eq!(
         trees(&d),
-        "tree 1 current\ntree 2 building: 3 stale, 2 to build\n"
+        "tree 1 current\ntree 2 saved\ntree 3 building: 5 stale, 3 to build\n"
     );
 }
 
@@ -1642,9 +1668,53 @@ fn a_rebuild_resumes_where_an_interrupted_build_stopped() {
             .starts_with("new ")
     );
     assert_eq!(
-        text_in(&d, 2, Coord::leaf(1)),
-        text_in(&d, 1, Coord::leaf(1)),
-        "notes are never rebuilt"
+        text_in(&d, 2, Coord::leaf(2)),
+        text_in(&d, 1, Coord::leaf(2)),
+        "a note that fits is never rebuilt"
+    );
+}
+
+#[test]
+fn a_rebuild_re_summarises_a_long_message_and_keeps_the_notes_that_fit() {
+    let (_tmp, d) = summarised();
+    assert_eq!(run(&d, &["tree", "rebuild"]).code, 0);
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    assert_eq!(run_rt(&d, &rt, &["build"]).code, 0);
+    assert!(
+        text_in(&d, 2, Coord::leaf(0)).unwrap().starts_with("new "),
+        "a long message is summarised again"
+    );
+    assert_eq!(
+        text_in(&d, 2, Coord::leaf(2)),
+        text_in(&d, 1, Coord::leaf(2)),
+        "a note that fits is kept as it is"
+    );
+}
+
+#[test]
+fn a_copy_cut_short_by_a_crash_gets_its_missing_notes_on_the_next_rebuild() {
+    let (_tmp, d) = summarised();
+    run(&d, &["tree", "rebuild"]);
+    let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
+    run_rt(&d, &rt, &["build"]);
+    run(&d, &["tree", "use", "2"]);
+    Store::open(&d)
+        .unwrap()
+        .append("t", &[msg(Kind::User, "c")])
+        .unwrap();
+    run(&d, &["tree", "use", "1"]);
+    assert_eq!(text_in(&d, 1, Coord::leaf(4)), None);
+    Store::open(&d).unwrap().copy_building(1).unwrap();
+    assert_eq!(
+        text_in(&d, 3, Coord::leaf(4)),
+        None,
+        "the crash left the copy without its note"
+    );
+    assert_eq!(run(&d, &["tree", "rebuild"]).code, 0);
+    assert_eq!(
+        text_in(&d, 3, Coord::leaf(4)),
+        text_in(&d, 2, Coord::leaf(4)),
+        "the next rebuild writes the missing note"
     );
 }
 
@@ -1663,7 +1733,7 @@ fn dropping_the_tree_being_built_cancels_it_and_the_current_tree_cannot_be_dropp
 }
 
 #[test]
-fn an_old_tree_is_restored_as_a_copy_made_current() {
+fn an_old_tree_is_restored_by_making_it_current_without_a_copy() {
     let (_tmp, d) = summarised();
     run(&d, &["tree", "rebuild"]);
     let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
@@ -1674,12 +1744,11 @@ fn an_old_tree_is_restored_as_a_copy_made_current() {
     );
     assert_eq!(
         run(&d, &["tree", "use", "1"]).stdout,
-        "Tree 3 is current: a copy of tree 1.\n"
+        "Tree 1 is current.\n"
     );
-    assert_eq!(trees(&d), "tree 1 saved\ntree 2 saved\ntree 3 current\n");
+    assert_eq!(trees(&d), "tree 1 current\ntree 2 saved\n");
     let old = text_in(&d, 1, Coord::new(1, 0)).unwrap();
     assert!(old.starts_with("join"), "{old}");
-    assert_eq!(text_in(&d, 3, Coord::new(1, 0)), Some(old));
     assert!(
         text_in(&d, 2, Coord::new(1, 0))
             .unwrap()

@@ -81,11 +81,11 @@ impl fmt::Display for Coord {
     }
 }
 
-/// The summaries above notes `[a, b)` of a memory of `t` messages: every node of a level above
-/// the notes whose span overlaps them. Those are what a rebuild of the notes makes stale.
+/// Every node whose span overlaps notes `[a, b)` of a memory of `t` messages: the notes, then
+/// the summaries above them. A rebuild of the notes marks these stale.
 pub fn overlapping(a: u64, b: u64, t: u64) -> Vec<Coord> {
     let mut out = Vec::new();
-    for l in 1..LEVELS {
+    for l in 0..LEVELS {
         if 1u64 << l > t {
             break;
         }
@@ -155,10 +155,15 @@ mod tests {
     }
 
     #[test]
-    fn ranges_mark_the_summaries_above_them() {
+    fn ranges_mark_the_notes_and_the_summaries_above_them() {
         assert_eq!(
             overlapping(5, 10, 16),
             [
+                Coord::leaf(5),
+                Coord::leaf(6),
+                Coord::leaf(7),
+                Coord::leaf(8),
+                Coord::leaf(9),
                 Coord::new(1, 2),
                 Coord::new(1, 3),
                 Coord::new(1, 4),
@@ -169,7 +174,10 @@ mod tests {
                 Coord::new(4, 0),
             ]
         );
-        assert_eq!(overlapping(5, 6, 6), [Coord::new(1, 2), Coord::new(2, 1)]);
+        assert_eq!(
+            overlapping(5, 6, 6),
+            [Coord::leaf(5), Coord::new(1, 2), Coord::new(2, 1)]
+        );
         assert_eq!(
             ancestors(Coord::leaf(5), 16),
             [

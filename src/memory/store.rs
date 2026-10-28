@@ -353,6 +353,14 @@ impl Store {
     /// Makes a copy of tree `from` as the next tree, which is then being built, and writes into
     /// it the free nodes that the messages make. Returns its number.
     pub fn start_building(&self, from: u64) -> Result<u64> {
+        let b = self.copy_building(from)?;
+        self.complete_building()?;
+        Ok(b)
+    }
+
+    /// The copy of [`Store::start_building`], without the free nodes: a crash after it leaves
+    /// them to [`Store::complete_building`]. Returns the number of the copy.
+    pub fn copy_building(&self, from: u64) -> Result<u64> {
         let (b, _) = self.mutate("tree: copy", |s| {
             if s.state.building.is_some() {
                 bail!("A tree is already being built.");
@@ -373,8 +381,17 @@ impl Store {
             ch.put(STATE.into(), st.bytes());
             Ok((n, ch))
         })?;
-        self.catch_up(b)?;
         Ok(b)
+    }
+
+    /// Writes into the tree being built every free node that the messages make and it lacks,
+    /// which a crash in [`Store::copy_building`] may have left out. Nothing without a tree being
+    /// built, and no commit when nothing is missing.
+    pub fn complete_building(&self) -> Result<()> {
+        match self.snapshot()?.state().building {
+            Some(b) => self.catch_up(b),
+            None => Ok(()),
+        }
     }
 
     /// Writes into `tree` every free node that the messages make and it lacks.
@@ -407,15 +424,13 @@ impl Store {
         Ok(n)
     }
 
-    /// Makes the tree being built, `to`, the current tree. The old current tree stays as it was.
+    /// Makes tree `to` the current tree, stale or not. A tree being built stays as it is, unless
+    /// it is `to`: then it is current, and no longer being built.
     pub fn switch(&self, to: u64) -> Result<()> {
         self.mutate("tree: use", |s| {
-            if s.state.building != Some(to) {
-                bail!("Tree {to} is not being built.");
-            }
             let st = State {
                 current: to,
-                building: None,
+                building: s.state.building.filter(|&b| b != to),
                 ..s.state
             };
             Ok(((), saved(st)))
@@ -516,8 +531,12 @@ impl<'a, 's> Edit<'a, 's> {
         self.cascade(tree, c)
     }
 
-    /// Marks node `c` stale in `tree` if it is built there; whether it is.
+    /// Marks node `c` stale in `tree` if it is built there; whether it is. A note kept as its own
+    /// text has no summary to rebuild, so it is not marked.
     fn mark(&mut self, tree: u64, c: Coord) -> Result<bool> {
+        if c.l == 0 && free(self.snap.message(c.i)?.line()).is_some() {
+            return Ok(false);
+        }
         let Some(mut n) = self.node(tree, c)? else {
             return Ok(false);
         };

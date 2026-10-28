@@ -194,9 +194,10 @@ enum TreeCmd {
         id: String,
     },
     #[command(
-        about = "make tree N the current tree, once it is built",
-        after_help = "An older tree is copied first: the copy is built with what its notes need, \
-                      then made current, and the old tree stays as it was."
+        about = "make tree N the current tree, stale or not",
+        after_help = "Nothing is built by it: a stale summary keeps its old text, and a missing \
+                      one shows the placeholder, until `ai memory build`. A tree being built is \
+                      left as it is."
     )]
     Use {
         #[arg(help = "a tree's number, as `tree` lists it")]
@@ -657,6 +658,7 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     .entered();
     let start = Instant::now();
     info!("start");
+    s.complete_building()?;
     let mode = match rt.bars {
         true => Mode::Bars,
         false => Mode::Plain,
@@ -771,11 +773,15 @@ fn list(s: &Store, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// The tree being built: the one started already, else a copy of the current tree.
+/// The tree being built: the one started already, completed first if a crash left it short,
+/// else a copy of the current tree.
 fn building(s: &Store) -> Result<u64> {
     let st = s.snapshot()?.state();
     match st.building {
-        Some(n) => Ok(n),
+        Some(n) => {
+            s.complete_building()?;
+            Ok(n)
+        }
         None => s.start_building(st.current),
     }
 }
@@ -842,35 +848,23 @@ fn reroll(s: &Store, out: &mut dyn Write, id: &str) -> Result<()> {
     report_building(s, out)
 }
 
-/// `tree use`: makes tree `n` current once the tree being built is `n` and fully built. An
-/// older tree is first copied into a new tree, which is built and then made current.
+/// `tree use`: makes tree `n` current, stale or not. A tree being built is left as it is.
 fn use_tree(s: &Store, out: &mut dyn Write, n: u64) -> Result<()> {
-    let st = s.snapshot()?.state();
-    if n == st.current {
+    if n == s.snapshot()?.state().current {
         writeln!(out, "Tree {n} is already current.")?;
         return Ok(());
     }
     s.snapshot()?.tree(n)?;
-    let b = match st.building {
-        Some(b) if b != n => bail!(
-            "Tree {b} is being built. Build it and use it, or drop it: `ai memory tree drop {b}`."
-        ),
-        Some(b) => b,
-        None => s.start_building(n)?,
-    };
-    let w = s.working()?;
+    s.switch(n)?;
+    writeln!(out, "Tree {n} is current.")?;
+    let w = s.snapshot()?.tree(n)?;
     let mem = Mem::load(&w, VIEW)?;
     let (stale, due) = (mem.stale_count(), mem.due(|_| false, usize::MAX).len());
     if stale > 0 || due > 0 {
-        bail!(
-            "Tree {b} is not built: {stale} stale, {due} to build. Run `ai memory build`, then \
-             `ai memory tree use {b}`."
-        );
-    }
-    s.switch(b)?;
-    match b == n {
-        true => writeln!(out, "Tree {b} is current.")?,
-        false => writeln!(out, "Tree {b} is current: a copy of tree {n}.")?,
+        writeln!(
+            out,
+            "Tree {n} is not built: {stale} stale, {due} to build. Run `ai memory build`."
+        )?;
     }
     Ok(())
 }
