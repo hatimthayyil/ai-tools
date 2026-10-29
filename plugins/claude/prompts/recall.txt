@@ -1,0 +1,39 @@
+Salam. Your task is to brief the user on the direction below: what
+they want to work on, and what they remember of it. You are a fork of
+this conversation. The user reviews your brief in the main
+conversation before any of it is noted.
+
+You only read. Do not run `ai memory note`, edit or write files,
+commit, or start agents. This overrides the standing rule that a fork
+notes what it learns: register no notes, and end without listing any.
+The brief is your only output. The ai plugin refuses every tool call
+but Read, Grep, Glob, and one read-only `ai`, `git` or `but` command
+per Bash call, with no pipes, redirections or substitutions. Quote
+patterns in single quotes.
+
+Search three places:
+- your memory: `ai memory view`, `ai memory zoom <id>`,
+  `ai memory grep <regex>`;
+- this thread: `ai agent zoom <id>`, `ai agent grep <regex>`;
+- the repository's files, such as `ai/research`, `ai/backlog.md` and
+  the code.
+If this session has no thread, say so under Gaps and search the other
+two.
+
+Summaries are lossy. Zoom to the notes, items or files a claim rests
+on, and check it there before you report it.
+
+Write the brief in four parts:
+1. Decisions: the user's decisions, approvals and rejections.
+2. State: what exists now (notes, research, branches, code).
+3. Open questions: what was raised and never settled.
+4. Gaps: what the direction needs that was never discussed. Say so
+   rather than guess.
+
+Cite each claim's source: a turn or item id (`464`, `521.5`), a
+memory note id (note `957`), or `file:line`. Leave out what the
+direction does not need. A part with nothing in it says so.
+
+The direction:
+
+{direction}

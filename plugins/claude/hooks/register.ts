@@ -1,4 +1,5 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { CommandRunResult, EngineInterface, Register } from 'claude-code'
+import type { AiRecall } from '../types'
 
 const NOT_ATTACHED = 3
 const LONG_MS = 600_000
@@ -6,10 +7,31 @@ const FLUSH_MS = 1_100
 const USAGE = 'Usage: /ai | /ai new <name> | /ai attach <name> | /ai detach'
 const WITHHELD =
   "Not compacted: this session's start never reached the ai plugin, so its compaction would not either and /compact would summarise natively. Where an organization manages Claude Code, only a plugin its managed settings install receives these events."
+const RECALL_USAGE = 'Usage: /recall <message>'
+const RELAY =
+  "/recall started a read-only fork on the user's message. When its brief arrives, show it to the user whole and wait for their review. Then write the whole brief again with their corrections, and note nothing from it they have not approved."
+const REFUSED =
+  'A recall only reads: Read, Grep, Glob, and one read-only ai, git or but command per Bash call, with no pipes, redirections or substitutions (quote patterns in single quotes).'
 
 const transcript = { plugin: 'ai', key: 'transcript' } as const
 const prepared = { plugin: 'ai', key: 'view' } as const
 const requested = { plugin: 'ai', key: 'compress' } as const
+const recalls = { plugin: 'ai', key: 'recall' } as const
+
+/** The tools a recall fork may call besides Bash. */
+const READERS = new Set(['Read', 'Grep', 'Glob'])
+/** The commands a recall fork may run in Bash, by their leading words. */
+const READS = [
+  ...['view', 'zoom', 'grep', 'show'].map(verb => ['ai', 'memory', verb]),
+  ...['view', 'zoom', 'grep', 'list'].map(verb => ['ai', 'agent', verb]),
+  ...['view', 'zoom', 'grep', 'show'].map(verb => ['ai', 'notes', verb]),
+  ['ai', 'view'],
+  ['ai', 'page'],
+  ...['log', 'show', 'diff', 'status'].map(verb => ['git', verb]),
+  ...['status', 'diff', 'show'].map(verb => ['but', verb]),
+]
+/** Characters that make a shell do more than split words: operators, redirections, expansions, globs, comments. */
+const SPECIAL = /[\n\r;&|<>()$`\\*?[\]{}~#!]/
 
 type Ran = { exitCode: number; stdout: string; stderr: string }
 
@@ -102,12 +124,89 @@ async function compressNow($: EngineInterface): Promise<void> {
   if (failed !== undefined) $.ui.log(failed)
 }
 
+/**
+ * `command`'s words when it is one simple command, quoted only in single quotes or in double
+ * quotes that hold no expansion; undefined for anything else.
+ */
+function words(command: string): string[] | undefined {
+  const out: string[] = []
+  let word: string | undefined
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (c === ' ' || c === '\t') {
+      if (word !== undefined) out.push(word)
+      word = undefined
+    } else if (c === "'" || c === '"') {
+      const end = command.indexOf(c, i + 1)
+      if (end < 0) return undefined
+      const quoted = command.slice(i + 1, end)
+      if (c === '"' && /[$`\\!]/.test(quoted)) return undefined
+      word = (word ?? '') + quoted
+      i = end
+    } else if (SPECIAL.test(c)) {
+      return undefined
+    } else {
+      word = (word ?? '') + c
+    }
+  }
+  if (word !== undefined) out.push(word)
+  return out
+}
+
+/** Whether `command` is one of `READS`, with no `--output` that would write a file. */
+function isRead(command: string): boolean {
+  const said = words(command)
+  if (said === undefined || said.some(word => word.startsWith('--output'))) return false
+  return READS.some(read => read.every((word, i) => said[i] === word))
+}
+
+async function recalled($: EngineInterface): Promise<AiRecall> {
+  return (await $.state.get(recalls)).value ?? { forks: [], prompts: [] }
+}
+
+/** `state` with `prompt` no longer pending, and `fork` added when given. */
+function known(state: AiRecall, prompt: string, fork?: string): AiRecall {
+  const at = state.prompts.indexOf(prompt)
+  const prompts = at < 0 ? state.prompts : state.prompts.toSpliced(at, 1)
+  const forks = fork === undefined || state.forks.includes(fork) ? state.forks : [...state.forks, fork]
+  return { forks, prompts }
+}
+
+/**
+ * Starts a read-only fork on `direction`. The guard learns the fork's id from whichever comes
+ * first: its first turn's start, which carries the prompt, or the spawn's answer, which covers a
+ * prompt another plugin rewrote.
+ */
+async function recall($: EngineInterface, direction: string): Promise<CommandRunResult> {
+  let template: string
+  try {
+    template = await $.fs.read(`${$.plugin.root}/prompts/recall.txt`)
+  } catch (err) {
+    return { text: `Not recalling: ${String(err)}` }
+  }
+  const prompt = template.replace('{direction}', () => direction)
+  const before = await recalled($)
+  await $.state.set(recalls, { ...before, prompts: [...before.prompts, prompt] })
+  const spawned = await $.agent.spawn({ subagentType: 'fork', description: 'Recall', prompt })
+  if (spawned.deny !== undefined || spawned.agentId !== undefined) {
+    await $.state.set(recalls, known(await recalled($), prompt, spawned.agentId))
+  }
+  if (spawned.deny !== undefined) return { text: `Not recalling: ${spawned.deny}` }
+  return { text: 'Recalling. The brief follows when the fork ends.', context: [RELAY] }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ai',
       description: "ai: compact into your memory, and the thread's view when attached; new <name>, attach <name>, detach",
       argumentHint: '[new <name> | attach <name> | detach]',
+    })
+    await $.command.register({
+      name: 'recall',
+      description:
+        'ai: a read-only fork briefs you on your message from your memory, the thread and the repository',
+      argumentHint: '<message>',
     })
     await $.tool.register({
       name: 'compress',
@@ -166,6 +265,24 @@ export const register: Register = on => {
     }
     return { text: USAGE }
   })
+
+  on('command.run', { command: 'recall' }, async ($, e) => {
+    const direction = e.args.trim()
+    return direction === '' ? { text: RECALL_USAGE } : recall($, direction)
+  })
+
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) return next(e)
+    const state = await recalled($)
+    if (state.prompts.includes(e.text)) await $.state.set(recalls, known(state, e.text, e.agentId))
+    return next(e)
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId === undefined || !(await recalled($)).forks.includes(e.agentId)) return next(e)
+    if (READERS.has(e.tool) || (e.tool === 'Bash' && isRead(e.command))) return next(e)
+    return { deny: REFUSED }
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'ai: the recall guard failed, so it refuses.' }))
 
   on('tool.call', { tool: 'mcp__ai__compress' }, async $ => {
     if (await isWithheld($)) return { result: WITHHELD }

@@ -18,14 +18,17 @@ type World = ReturnType<typeof engine>
 const sub = (args: readonly string[]) => (args[0] === 'agent' ? args[1] : args[0])
 const views = (args: readonly string[]): Answer => [0, sub(args) === 'view' ? WOKE : VIEW, '']
 
-function ai($: Engine, args: string) {
+function run($: Engine, command: string, args: string) {
   return $.command.run({
-    command: 'ai',
+    command,
     args,
     origin: { kind: 'composer' },
     presentation: { isFullscreen: false, columns: 80 },
   })
 }
+
+const ai = ($: Engine, args: string) => run($, 'ai', args)
+const recall = ($: Engine, args: string) => run($, 'recall', args)
 
 function engine(on: On, answer: (args: readonly string[]) => Answer) {
   const clock = mock.clock(on)
@@ -257,6 +260,139 @@ test('/ai new creates the agent, then attaches the session to it; a failed new a
     ['ai', 'agent', 'attach', 'dev', ...ALL_ARGS],
     ['ai', 'agent', 'new', 'taken'],
   ])
+})
+
+const RECALL = 'Recall.\n\n{direction}\n'
+const FORK = 'r1'
+const RECALLING = 'Recalling. The brief follows when the fork ends.'
+
+type Spawn = (prompt: string) => Promise<{ model: string } | { deny: string }>
+
+/**
+ * Stubs the engine under a recall. `spawn` answers the fork's spawn. The kit's engine starts no
+ * agent and keeps no id from a hook's answer, so here the guard learns the fork only from its
+ * turn's start.
+ */
+function recalling(on: On, spawn: Spawn = async () => ({ model: 'm' })) {
+  const reads: string[] = []
+  const prompts: { prompt: string }[] = []
+  const passed: string[] = []
+  on('fs.read', async (_$, e) => {
+    reads.push(e.path)
+    return { value: RECALL }
+  })
+  on('agent.spawn', async (_$, e) => {
+    prompts.push(e)
+    return spawn(e.prompt)
+  })
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+  on('tool.call', async (_$, e) => {
+    passed.push(e.tool === 'Bash' ? e.command : e.tool)
+    return { result: 'ok' }
+  })
+  return { reads, prompts, passed }
+}
+
+function begin($: Engine, text: string, agentId: string) {
+  return $.turn.start({ text, turnId: `t-${agentId}`, agentId })
+}
+
+function call($: Engine, tool: string, input: Record<string, string>, agentId = FORK) {
+  return $.tool.call({ tool, ...input, agentId } as Parameters<typeof $.tool.call>[0])
+}
+
+test('/recall starts a fork on the message and tells the model how to relay its brief', async ($, on) => {
+  const world = engine(on, views)
+  const got = recalling(on)
+  const message = 'I want to resume  work on ai task.\nPerhaps a compiler, $& and all.'
+  const ran = await recall($, ` ${message} `)
+  expect(ran.text).toBe(RECALLING)
+  expect(ran.context).toHaveLength(1)
+  expect(ran.context![0]).toMatch(/^\/recall started a read-only fork/)
+  expect(ran.context![0]).not.toContain(message)
+  expect(got.reads).toHaveLength(1)
+  expect(got.reads[0]).toMatch(/\/prompts\/recall\.txt$/)
+  // The kit's engine hands `agent.spawn` the Agent tool's input for it.
+  expect(got.prompts).toEqual([
+    {
+      tool: 'Agent',
+      prompt: `Recall.\n\n${message}\n`,
+      description: 'Recall',
+      run_in_background: true,
+      subagent_type: 'fork',
+    },
+  ])
+  expect(world.calls).toEqual([])
+})
+
+test('/recall with no message prints its usage and starts nothing', async ($, on) => {
+  const got = recalling(on)
+  expect((await recall($, '')).text).toBe('Usage: /recall <message>')
+  expect((await recall($, '   ')).text).toBe('Usage: /recall <message>')
+  expect(got.prompts).toEqual([])
+})
+
+test('a recall the engine refuses says why, and leaves nothing to guard', async ($, on) => {
+  const got = recalling(on, async () => ({ deny: 'past a Stop' }))
+  expect((await recall($, 'the compiler')).text).toBe('Not recalling: past a Stop')
+  await begin($, got.prompts[0]!.prompt, FORK)
+  expect((await call($, 'Bash', { command: 'ai memory note x' })).deny).toBeUndefined()
+})
+
+test('a recall fork reads, and every tool call that could write is refused', async ($, on) => {
+  const got = recalling(on)
+  await recall($, 'the compiler')
+  await begin($, got.prompts[0]!.prompt, FORK)
+  await begin($, 'Another task.', 'other')
+  const reads = [
+    "ai memory grep 'TaskJuggler|compiler'",
+    'ai memory zoom 256+8',
+    'ai agent zoom 464 --tool-output',
+    'ai page 1:2',
+    'git log --oneline -5',
+    'but status',
+    'ai agent grep "task compiler"',
+  ]
+  for (const command of reads) expect([command, (await call($, 'Bash', { command })).deny]).toEqual([command, undefined])
+  expect((await call($, 'Read', { file_path: '/r/ai/backlog.md' })).deny).toBeUndefined()
+  const writes = [
+    'ai memory note "a note"',
+    'ai memory view; ai memory note x',
+    'ai memory view && touch x',
+    'ai agent zoom 3 > out',
+    'ai memory grep "$(rm x)"',
+    'ai memory grep `rm x`',
+    "ai memory grep 'x",
+    'git diff --output=x',
+    'git branch x',
+    'ai memory tree use 1',
+    'echo x',
+    'ai memory view\nai memory note x',
+    'ai memory grep foo*',
+    'ai memory grep \\x',
+    'ai memory view # x',
+  ]
+  for (const command of writes) {
+    expect(`${command} → ${(await call($, 'Bash', { command })).deny}`).toMatch(/ → A recall only reads/)
+  }
+  const edit = { file_path: '/r/x', old_string: 'a', new_string: 'b' }
+  expect((await call($, 'Edit', edit)).deny).toMatch(/^A recall only reads/)
+  expect((await call($, 'Write', { file_path: '/r/x', content: 'b' })).deny).toMatch(/^A recall only reads/)
+  expect((await call($, 'Agent', { prompt: 'p', description: 'd' })).deny).toMatch(/^A recall only reads/)
+  expect((await call($, 'mcp__ai__compress', {})).deny).toMatch(/^A recall only reads/)
+  expect((await call($, 'Bash', { command: 'ai memory note x' }, 'other')).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Bash', command: 'ai memory note y' })).deny).toBeUndefined()
+  expect(got.passed).toEqual([...reads, 'Read', 'ai memory note x', 'ai memory note y'])
+})
+
+test('a recall fork whose start comes before the spawn answers is guarded', async ($, on) => {
+  const got = recalling(on, async prompt => {
+    await begin($, prompt, FORK)
+    return { model: 'm' }
+  })
+  expect((await recall($, 'the compiler')).text).toBe(RECALLING)
+  expect((await call($, 'Bash', { command: 'ai memory note x' })).deny).toMatch(/^A recall only reads/)
+  expect(got.passed).toEqual([])
 })
 
 async function turnEnd($: Engine, world: World) {

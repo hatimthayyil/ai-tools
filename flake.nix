@@ -57,6 +57,7 @@
             postInstallCheck = ''
               test -f $out/share/ai/plugins/.claude-plugin/marketplace.json
               test -f $out/share/ai/plugins/claude/.claude-plugin/plugin.json
+              test -f $out/share/ai/plugins/claude/prompts/recall.txt
             '';
             meta = {
               description = "All-in-one AI tool: permanent memory for AI agents";
