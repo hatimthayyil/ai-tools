@@ -2,7 +2,7 @@
 
 Author: Claude Code (Claude Opus 5.5)
 
-How Claude Code records a message the `ai` plugin delivers, and what the delivery layer can build on. It serves `20261030T142550--agent-team.md` §4 (delivery through `$.prompt.submit` plus the Stop hook). Nothing here is built.
+How Claude Code records a message the `ai` plugin delivers, and what the delivery layer can build on. It serves `20261030T142550--agent-team.md` §4 (delivery through `$.prompt.submit`). Nothing here is built.
 
 Sources: Claude Code 2.1.314; its plugin engine types, `plugin-authoring/types/claude-code.d.ts` ("types"); its docs in `~/.claude-code-docs/docs`. **Checked here** marks what two headless sessions (`claude -p`, Haiku) on this machine showed: a throwaway plugin `mailprobe` loaded with `--plugin-dir`, and a Stop command hook passed with `--settings`. The probes are in the scratchpad, not the repo. Everything else was read.
 
@@ -87,7 +87,7 @@ The envelope `<ai-mail id=… from=… approved=…>` held quotes, `&`, `&lt;/ai
 
 ## What the delivery layer should build on
 
-1. **`$.prompt.submit` alone covers both states.** Idle, the message starts a turn at once. Busy, it queues and runs as its own turn when the running turn ends: the moment a Stop block would deliver it. The submit carries an engine-set origin naming `ai`, its own turn and no hook error. A Stop block adds weaker provenance (no origin), an error notice, a cap of 8, and a turn the message shares with the agent's previous work. The agreed design pairs `$.prompt.submit` with the Stop hook (team note §4); the evidence here says the Stop hook is not needed.
+1. **`$.prompt.submit` alone covers both states** (Agreed, team note §4). Idle, the message starts a turn at once. Busy, it queues and runs as its own turn when the running turn ends: the moment a Stop block would deliver it. The submit carries an engine-set origin naming `ai`, its own turn and no hook error. A Stop block adds weaker provenance (no origin), an error notice, a cap of 8, and a turn the message shares with the agent's previous work.
 2. **Keep the frame.** The framed form tells the model the text came from the `ai` plugin, not the user. The reader strips it by taking the envelope out.
 3. **The reader treats an envelope as a pointer, not as the record.** A turn becomes `Kind::Work { from, text }` only when:
    - its origin is `{"kind":"plugin","name":"ai"}`;

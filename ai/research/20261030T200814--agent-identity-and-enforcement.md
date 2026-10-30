@@ -41,6 +41,7 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 5. One git repository per thread (recommendation 3).
 6. Every agent has full network for now.
 7. `main` runs sandboxed like every other agent.
+8. No sandbox gets the ssh agent by default; a setting in the agent's `[agents.<name>]` table grants it (recommendation 1). The key's name is the implementation's.
 
 ## Recommendation
 
@@ -50,8 +51,8 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 | :-- | :-- |
 | read-write | the checkouts it works in; its own thread; its own outbox; its own harness state; a private `/tmp`; `ai memory` (shared by design) |
 | read-only | the threads of every agent below it; its own inbox; the `ai.toml` files; the system and `/nix/store` |
-| absent | every other thread and outbox; other agents' harness state; herdr's socket; Claude's peer sockets; the session D-Bus and systemd's user socket; ssh and gpg agents; other processes (own PID namespace) |
-| allowed | network; the Nix daemon socket, for builds |
+| absent | every other thread and outbox; other agents' harness state; herdr's socket; Claude's peer sockets; the session D-Bus and systemd's user socket; the gpg agent; the ssh agent, unless granted; other processes (own PID namespace) |
+| allowed | network; the Nix daemon socket, for builds; the ssh agent, for an agent whose settings grant it |
 
 Mask by construction: a tmpfs over `~/.ai`, `~/.claude`, the project's `.ai/local` and the runtime directories, then bind back the grants. A path not bound in does not exist inside. **Checked here:** with `bwrap --ro-bind / / --tmpfs <stores> --bind <own> --ro-bind <subordinate>`, the agent wrote its own thread, read but could not write the subordinate's, could not see a third (`No such file or directory`), could not see `~/.claude`, and saw 4 processes.
 
@@ -143,5 +144,4 @@ Wrapping the whole harness at launch is harness-neutral: `ai` neither knows nor 
 
 ## Open questions
 
-1. Whether the ssh agent is bound into sandboxes. Without it agents cannot push, which landing and "ship it" rely on; with it an agent can push anywhere the user can.
-2. Whether a fresh per-agent `CLAUDE_CONFIG_DIR` still loads the `ai` plugin; unverified (`20261030T202150--claude-code-mail-delivery.md`).
+1. Whether a fresh per-agent `CLAUDE_CONFIG_DIR` still loads the `ai` plugin; unverified (`20261030T202150--claude-code-mail-delivery.md`).
