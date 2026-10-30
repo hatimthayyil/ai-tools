@@ -2,7 +2,7 @@
 
 Author: Claude Code (Claude Opus 5.5)
 
-How `ai` can know which agent is acting, and enforce what it may do, when every agent runs as the same OS user. It serves `20261030T142550--agent-team.md` ("the team note") §3, §4 and §10, and replaces that note's recommendation that the session binding alone identifies a sender. Nothing here is built.
+How `ai` can know which agent is acting, and enforce what it may do, when every agent runs as the same OS user. It serves `20261030T142550--agent-team.md` ("the team note") §3, §4 and §10, and replaces that note's recommendation that the session binding alone identifies a sender. Nothing here is built. **Agreed** marks the user's decisions; the rest is recommended.
 
 Sources are cited by path and line. Local repos: ai-tools at the working tree, Codex at `/hatimthayyil/code/codex` (a6c5f3a9fa), devenv at `/hatimthayyil/code/devenv` (34a93eec), pi, deepseek-harness, nixpkgs and llm-agents.nix under `/hatimthayyil/code`. Cloned for this note: nono (f9f58b7), sandbox-runtime (98a4016), claudebox (2a937ed), jai (ed1f58e), container-use (2e43e62), fence (737751a). Claude Code claims cite its docs in `~/.claude-code-docs/docs`, version 2.1.314. **Checked here** marks what was run on this machine (NixOS, kernel 6.18, user hatim); everything else was read.
 
@@ -32,6 +32,16 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 
 **What agents cannot change.** `kernel.yama.ptrace_scope` is 1 and `sudo` asks for a password. **Checked here.** So the kernel, root-owned files and the Nix store are out of an agent's reach; everything the user owns is within it.
 
+## Agreed
+
+1. Mail is stored in per-sender outboxes, and the desk writes approved mail into the recipient's inbox (recommendation 2, team note §10).
+2. One Claude credentials file is bound read-write into every sandbox (recommendation 4).
+3. A session not started through `ai resume` counts as the user's own ("The gap that remains").
+4. The setting is `reports-to = [...]` (recommendation 5).
+5. One git repository per thread (recommendation 3).
+6. Every agent has full network for now.
+7. `main` runs sandboxed like every other agent.
+
 ## Recommendation
 
 **1. `ai resume` starts every agent inside its own sandbox, around the whole harness.** `ai resume` is already the one place an agent starts: it commits the store and execs `claude` (src/agent/cli.rs:578-586). It execs bubblewrap instead, with the agent's grants:
@@ -51,7 +61,7 @@ A sandboxed agent that runs `ai resume` for another agent gets a nested sandbox 
 
 **3. One git repository per thread.** A thread's repository is then exactly what its grants cover: its own read-write, a subordinate's read-only.
 
-**4. Each agent gets its own harness state.** Claude Code reads and writes `~/.claude/projects/<dir>/` for its own session, and agents in one repo share that folder. A `CLAUDE_CONFIG_DIR` per agent separates them; `ai` already honours that variable (src/agent/claude.rs:26-31). pi and DSH take a per-agent home the same way (`$DSH_HOME`, deepseek-harness apps/cli/reference/README.md:137).
+**4. Each agent gets its own harness state.** Claude Code reads and writes `~/.claude/projects/<dir>/` for its own session, and agents in one repo share that folder. A `CLAUDE_CONFIG_DIR` per agent separates them; `ai` already honours that variable (src/agent/claude.rs:26-31). pi and DSH take a per-agent home the same way (`$DSH_HOME`, deepseek-harness apps/cli/reference/README.md:137). One Claude credentials file is bound read-write into every sandbox, so agents share the user's login (Agreed).
 
 **5. Rank stays the setting; `ai` compiles it into grants at launch.** An agent's read grants are the threads of every agent below it. Several superiors make the hierarchy a graph, not a tree; `ai` refuses a cycle. The setting is a list in the agent's own table:
 
@@ -60,19 +70,19 @@ A sandboxed agent that runs `ai resume` for another agent gets a nested sandbox 
 reports-to = ["lead", "engineer"]
 ```
 
-`reports-to` names the relation, reads as plain English, and takes several names. `superiors = [...]` is the alternative. Explicit per-thread grants would be a second setting that nothing needs yet.
+`reports-to` names the relation, reads as plain English, and takes several names (Agreed). Explicit per-thread grants would be a second setting that nothing needs yet.
 
 **6. bubblewrap, invoked by `ai`, from a path fixed at build time by Nix.** Codex looks `bwrap` up only outside the working directory, so a repo cannot plant one (codex-rs/linux-sandbox/README.md). Nix can do better: the store path is compiled in.
 
 ### What this changes in agreed design
 
-- **Mail store.** Agreed store B has the sender append to `inbox/<writer>.jsonl` inside the recipient's thread (team note §10). A sandbox can grant that only by giving every sender write access into every recipient's thread. The sender's outbox, delivered by the desk, keeps every file single-writer as B intended and makes the path the proof of sender.
+- **Mail store.** A sender appending into the recipient's thread would need write access into every recipient's thread. Each sender writes only its own outbox, and the desk delivers approved mail into the recipient's inbox (Agreed, team note §10): every file keeps a single writer, and the path proves the sender.
 - **Order.** The sandboxed launch comes before mail: mail's sender identity and the gate rest on it.
 - **The CLI's own checks** become friendly errors. The kernel enforces; `ai` explains.
 
 ### The gap that remains
 
-A session not started through `ai resume`, such as `claude` typed in a terminal, runs unsandboxed and can write anything the user can, including the desk's decisions. Two ways to close it for the gate: sign each approval with the user's hardware key, which an agent cannot use without the user's touch; or treat any unsandboxed session as the user's own terminal. Open question 3.
+A session not started through `ai resume`, such as `claude` typed in a terminal, runs unsandboxed and can write anything the user can, including the desk's decisions. Such a session counts as the user's own terminal (Agreed): a sandboxed agent has no herdr socket, session bus or systemd user manager through which to start a process outside its sandbox, so only the user starts one. Signing each approval with the user's hardware key, which an agent cannot use without the user's touch, would close the gap further.
 
 ## Capabilities
 
@@ -133,10 +143,5 @@ Wrapping the whole harness at launch is harness-neutral: `ai` neither knows nor 
 
 ## Open questions
 
-1. The mail store: the sender's outbox, with the desk writing approved mail into the recipient's inbox, in place of agreed store B.
-2. Per-agent harness state: one Claude login per agent's config folder, or one credentials file bound read-write into every sandbox (agents can read the user's API token, as today).
-3. Sessions started outside `ai resume`: treat them as the user's own, or sign approvals with the hardware key, and whether that key requires a touch.
-4. The setting's name: `reports-to` or `superiors`.
-5. One git repository per thread in place of one per project store.
-6. Network: full network for every agent now, or a domain policy later.
-7. User-level agents: `main` gets read grants over everything below it; confirm it runs sandboxed like every other agent.
+1. Whether the ssh agent is bound into sandboxes. Without it agents cannot push, which landing and "ship it" rely on; with it an agent can push anywhere the user can.
+2. Whether a fresh per-agent `CLAUDE_CONFIG_DIR` still loads the `ai` plugin; unverified (`20261030T202150--claude-code-mail-delivery.md`).
