@@ -18,7 +18,10 @@
 
 ## Development
 
-- This repo is in active development. Expect high churn: commands, file formats and code change often, and that is fine.
+- Hatim is the first and main user, and Hatim's vision sets the direction: it decides what gets built and in what order.
+- Before v1, change is cheap. Commands, file formats and behaviour change often, and that is fine: when the vision needs something different, change it. No compatibility layers, migrations or deprecation periods, and no hesitating because something already works.
+- Good design still counts: usability, sensible defaults, clear behaviour, and choices that serve anyone else who uses `ai` or works in a repo that does.
+- Breakage is accepted, not ignored: mark a breaking commit with `!` and a `BREAKING CHANGE:` footer, and put upgrade steps in a `docs(upgrade):` commit, so the changelog shows both. Don't let breakage stop the change. After v1, breakage becomes a real cost.
 - Never cut corners. Build each change completely and correctly: handle every case and failure, and test it.
 
 ## Writing
