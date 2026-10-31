@@ -290,6 +290,21 @@ fn a_bad_key_or_value_names_its_file_and_key() {
         ),
         ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),
         ("[agents.a]\nworktree = \"\"\n", "worktree", "is empty"),
+        (
+            "[agents.a]\nreports-to = \"b\"\n",
+            "reports-to",
+            "expected a sequence",
+        ),
+        (
+            "[agents.a]\nreports-to = [\"lead@quran\"]\n",
+            "reports-to",
+            "'lead@quran' is not a thread name",
+        ),
+        (
+            "[agents.a]\nreports-to = [\"b\", \"c\", \"b\"]\n",
+            "reports-to",
+            "names b twice",
+        ),
         ("[agent.view]\nlines = 3\n", "lines", "unknown field"),
         (
             "[agent.view]\ntotal = 0\n",
@@ -408,6 +423,7 @@ fn an_agent_adds_up_instructions_and_overrides_its_worktree() {
                 t.inner().join("mine.md"),
             ],
             worktree: Some(t.inner().join("../my-stabiliser")),
+            reports_to: None,
         })
     );
     assert_eq!(
@@ -415,6 +431,7 @@ fn an_agent_adds_up_instructions_and_overrides_its_worktree() {
         Some(&Agent {
             instructions: vec![],
             worktree: Some("/w".into()),
+            reports_to: None,
         })
     );
     assert_eq!(s.agent("developer"), None);
@@ -434,6 +451,7 @@ fn a_users_agent_takes_its_instructions_from_beside_the_users_file() {
         Some(&Agent {
             instructions: vec![t.tmp.path().join("agents/reviewer.md")],
             worktree: Some(t.inner().join("../review")),
+            reports_to: None,
         })
     );
 }
@@ -451,6 +469,7 @@ fn outside_a_project_a_relative_worktree_stays_as_written() {
         Some(&Agent {
             instructions: vec![t.tmp.path().join("helper.md")],
             worktree: Some("w".into()),
+            reports_to: None,
         })
     );
 }
@@ -577,4 +596,123 @@ fn a_linked_worktree_finds_an_agents_worktree_where_the_main_checkout_does() {
     };
     assert_eq!(from(&sub), Some(sub.join("../dev")));
     assert_eq!(from(&wt), from(&sub));
+}
+
+#[test]
+fn reports_to_is_overridden_key_by_key() {
+    let t = Tree::new();
+    fs::write(
+        t.user(),
+        "[agents.lead]\n\n[agents.engineer]\n\n[agents.developer]\nreports-to = [\"lead\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        t.inner().join("ai.toml"),
+        "[agents.developer]\nreports-to = [\"lead\", \"engineer\"]\nworktree = \"../dev\"\n",
+    )
+    .unwrap();
+    let s = t.load().unwrap();
+    let dev = s.agent("developer").unwrap();
+    assert_eq!(dev.superiors(), ["lead", "engineer"]);
+    assert_eq!(dev.worktree, Some(t.inner().join("../dev")));
+    assert_eq!(s.agent("lead").unwrap().superiors(), [] as [&str; 0]);
+
+    fs::write(private(&t.inner()), "[agents.developer]\nreports-to = []\n").unwrap();
+    let s = t.load().unwrap();
+    assert_eq!(s.agent("developer").unwrap().superiors(), [] as [&str; 0]);
+    assert!(s.below("lead").is_empty());
+}
+
+#[test]
+fn a_bad_hierarchy_is_refused_when_the_settings_load() {
+    for (user, project, err) in [
+        (
+            "[agents.lead]\nreports-to = [\"lead\"]\n",
+            "",
+            "Agent lead reports to itself. Take lead out of its reports-to.",
+        ),
+        (
+            "[agents.developer]\nreports-to = [\"lead\"]\n",
+            "",
+            "Agent developer reports to lead, which no [agents.lead] table defines. Add the \
+             table to an ai.toml, or take lead out of developer's reports-to.",
+        ),
+        (
+            "[agents.a]\nreports-to = [\"b\"]\n\n[agents.b]\nreports-to = [\"c\"]\n\n\
+             [agents.c]\nreports-to = [\"a\"]\n",
+            "",
+            "Agents report to each other in a cycle: a -> b -> c -> a. Take one name out of a \
+             reports-to.",
+        ),
+        (
+            "[agents.main]\n\n[agents.lead]\nreports-to = [\"main\"]\n\n[agents.developer]\n\
+             reports-to = [\"lead\"]\n",
+            "[agents.lead]\nreports-to = [\"main\", \"developer\"]\n",
+            "Agents report to each other in a cycle: developer -> lead -> developer. Take one \
+             name out of a reports-to.",
+        ),
+    ] {
+        let t = Tree::new();
+        fs::write(t.user(), user).unwrap();
+        fs::write(t.inner().join("ai.toml"), project).unwrap();
+        assert_eq!(t.load().unwrap_err().to_string(), err, "{user}{project}");
+    }
+}
+
+/// `main` over `quran` and `linguist`; `quran` over `lead`; `lead` over `developer` and
+/// `reviewer`; `engineer`, under `main`, also over `developer`.
+const TEAM: &str = "[agents.main]\n\n\
+    [agents.quran]\nreports-to = [\"main\"]\n\n\
+    [agents.linguist]\nreports-to = [\"main\"]\n\n\
+    [agents.engineer]\nreports-to = [\"main\"]\n\n\
+    [agents.lead]\nreports-to = [\"quran\"]\n\n\
+    [agents.developer]\nreports-to = [\"lead\", \"engineer\"]\n\n\
+    [agents.reviewer]\nreports-to = [\"lead\"]\n";
+
+#[test]
+fn an_agent_reads_every_agent_below_it_through_any_number_of_levels() {
+    let t = Tree::new();
+    fs::write(t.user(), TEAM).unwrap();
+    let s = t.load().unwrap();
+    let below = |n: &str| s.below(n).into_iter().collect::<Vec<_>>();
+    assert_eq!(
+        below("main"),
+        [
+            "developer",
+            "engineer",
+            "lead",
+            "linguist",
+            "quran",
+            "reviewer"
+        ]
+    );
+    assert_eq!(below("quran"), ["developer", "lead", "reviewer"]);
+    assert_eq!(below("lead"), ["developer", "reviewer"]);
+    assert!(
+        below("developer").is_empty(),
+        "never a sibling or a superior"
+    );
+    assert!(below("linguist").is_empty());
+    assert!(below("nobody").is_empty());
+}
+
+#[test]
+fn an_agent_with_several_superiors_is_below_each_of_them() {
+    let t = Tree::new();
+    fs::write(t.user(), TEAM).unwrap();
+    let s = t.load().unwrap();
+    assert_eq!(
+        s.agent("developer").unwrap().superiors(),
+        ["lead", "engineer"]
+    );
+    assert_eq!(
+        s.below("engineer").into_iter().collect::<Vec<_>>(),
+        ["developer"]
+    );
+    assert!(s.below("lead").contains("developer"));
+    assert!(
+        !s.below("engineer").contains("reviewer"),
+        "lead's, not engineer's"
+    );
+    assert!(!s.below("quran").contains("engineer"), "a sibling of quran");
 }

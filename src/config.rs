@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
 };
@@ -101,6 +101,9 @@ pub struct Agent {
     /// The directory the agent runs in.
     #[serde(deserialize_with = "path")]
     pub worktree: Option<PathBuf>,
+    /// The agents it reports to, each named by its own table; `None` when no file sets the key.
+    #[serde(rename = "reports-to", deserialize_with = "superiors")]
+    pub reports_to: Option<Vec<String>>,
 }
 
 fn path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
@@ -124,12 +127,31 @@ fn paths<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<PathBuf>, D::Error> {
     Ok(path(d)?.into_iter().collect())
 }
 
+/// Agent names, each a [thread name](agent::check_name), none twice.
+fn superiors<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    let names = Vec::<String>::deserialize(d)?;
+    let mut seen = BTreeSet::new();
+    for n in &names {
+        agent::check_name(n).map_err(D::Error::custom)?;
+        if !seen.insert(n) {
+            return Err(D::Error::custom(format!("names {n} twice")));
+        }
+    }
+    Ok(Some(names))
+}
+
 impl Agent {
     fn over(self, base: Agent) -> Agent {
         Agent {
             instructions: [base.instructions, self.instructions].concat(),
             worktree: self.worktree.or(base.worktree),
+            reports_to: self.reports_to.or(base.reports_to),
         }
+    }
+
+    /// The agents it reports to; none when no file sets `reports-to`.
+    pub fn superiors(&self) -> &[String] {
+        self.reports_to.as_deref().unwrap_or_default()
     }
 
     fn from(self, dir: &Path) -> Agent {
@@ -160,7 +182,8 @@ pub(crate) fn read(p: &Path) -> Result<Option<File>> {
 }
 
 /// What `ai.toml` sets: the project's private settings over its `ai.toml` over the user's, key by
-/// key, except an agent's instructions, which add up; unset keys keep their defaults.
+/// key, except an agent's instructions, which add up; unset keys keep their defaults. The agents'
+/// `reports-to` form a hierarchy with no cycle, each naming agents that have a table.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub chat: agent::Config,
@@ -207,12 +230,88 @@ impl Settings {
             Some(home) => s.under(home),
             None => s,
         })
+        .and_then(|s| {
+            s.check_hierarchy()?;
+            Ok(s)
+        })
     }
 
     /// `[agents.<name>]`, its paths absolute, except a relative `worktree` outside a project;
     /// `None` when no file has the table.
     pub fn agent(&self, name: &str) -> Option<&Agent> {
         self.agents.get(name)
+    }
+
+    /// The agents below agent `name`: those that report to it, and every agent below them, through
+    /// any number of levels. These are the threads `name` may read besides its own; its superiors
+    /// and siblings are never among them.
+    pub fn below(&self, name: &str) -> BTreeSet<&str> {
+        let mut found = BTreeSet::new();
+        let mut next = vec![name];
+        while let Some(boss) = next.pop() {
+            for (n, a) in &self.agents {
+                if a.superiors().iter().any(|s| s == boss) && found.insert(n.as_str()) {
+                    next.push(n);
+                }
+            }
+        }
+        found
+    }
+
+    /// Refuses an agent that reports to itself, to an agent no table defines, or, through others,
+    /// to an agent below it.
+    fn check_hierarchy(&self) -> Result<()> {
+        for (n, a) in &self.agents {
+            for s in a.superiors() {
+                if s == n {
+                    bail!("Agent {n} reports to itself. Take {n} out of its reports-to.");
+                }
+                if !self.agents.contains_key(s) {
+                    bail!(
+                        "Agent {n} reports to {s}, which no [agents.{s}] table defines. Add the \
+                         table to an {FILE}, or take {s} out of {n}'s reports-to."
+                    );
+                }
+            }
+        }
+        let mut done = BTreeSet::new();
+        for n in self.agents.keys() {
+            if let Some(cycle) = self.cycle_from(n, &mut Vec::new(), &mut done) {
+                bail!(
+                    "Agents report to each other in a cycle: {}. Take one name out of a \
+                     reports-to.",
+                    cycle.join(" -> ")
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The first cycle of superiors reachable from `n`, its first agent repeated at its end, by a
+    /// depth-first walk; `path` holds the agents walked to reach `n`, `done` those no cycle passes.
+    fn cycle_from<'a>(
+        &'a self,
+        n: &'a str,
+        path: &mut Vec<&'a str>,
+        done: &mut BTreeSet<&'a str>,
+    ) -> Option<Vec<&'a str>> {
+        if done.contains(n) {
+            return None;
+        }
+        if let Some(at) = path.iter().position(|p| *p == n) {
+            let mut cycle = path[at..].to_vec();
+            cycle.push(n);
+            return Some(cycle);
+        }
+        path.push(n);
+        for s in self.agents.get(n).map_or(&[][..], Agent::superiors) {
+            if let Some(cycle) = self.cycle_from(s, path, done) {
+                return Some(cycle);
+            }
+        }
+        path.pop();
+        done.insert(n);
+        None
     }
 
     /// The settings in `p`, its relative instructions from `dir`, `None` without the file; only

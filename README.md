@@ -150,9 +150,12 @@ lines = 96         # how many lines `ai memory view` prints
 [agents.stabiliser]                       # one table per agent that needs one
 instructions = "ai/agents/stabiliser.md"  # its own instructions, a Markdown file
 worktree = "../ai-tools-stabiliser"       # the directory it runs in
+reports-to = ["lead", "engineer"]         # its superiors, each an agent with a table of its own
 ```
 
 An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project; in the private settings, it is relative to the project's root, where their link `ai.local.toml` sits. Instructions add up: the agent gets the user's, then the project's, then the private settings', each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it; in a linked git worktree, the root in the main checkout, so `../dev` names the same directory from every checkout.
+
+An agent's `reports-to` names the agents it reports to; it may have several, so the agents form a hierarchy that need not be a tree. A file that sets `reports-to` replaces the list from the files before it, and `reports-to = []` clears it. `ai` refuses settings where an agent reports to itself, to a name no `[agents.<name>]` table defines, or, through others, to an agent below it. The agents below an agent, through any number of levels, are the threads it may read besides its own; never a sibling's or a superior's. Nothing enforces that yet: every session counts as the user's.
 
 `ai agent resume` starts a new session in the agent's `worktree`, else in the current directory, and adds its `instructions` to the harness's system prompt, for a new session and a resumed one (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a git worktree of the project's main checkout, at a commit holding its `ai.toml`, so its sessions find the threads in the main checkout's `.ai/local/agents`; a plain copy, or another clone, has its own. A session in the worktree reads the private settings from the main checkout.
 
