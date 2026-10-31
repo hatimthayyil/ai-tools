@@ -115,7 +115,24 @@ clauth met this as "N live sessions + clauth all rotating the same chains throug
 - the token "can only make model requests": no Remote Control and no claude.ai connectors, neither used here;
 - an agent stays on the account its token names until relaunched, so clauth's switching and fallback reach it at its next launch.
 
-Unverified: an interactive session on such a token with the `ai` plugin, server-managed settings and `/usage`.
+**A session on such a token**, probed with Claude Code 2.1.316 for both clauth profiles, `personal` (Pro) and `not-that-silent-valley` (Team), each minted by `clauth login <profile> --setup-token`. The token came from the profile's `session-token.json` into `CLAUDE_CODE_OAUTH_TOKEN` alone, in a folder seeded as in the table below without `.credentials.json`: `claude auth status`, `claude -p` on Haiku and Opus with `--debug-file`, one interactive start each under tmux. **Checked here.**
+
+| | `personal` (Pro) | `not-that-silent-valley` (Team) |
+| :-- | :-- | :-- |
+| Login | `loggedIn: true`, `authMethod: oauth_token`; no login or onboarding prompt | same; the Team organisation accepts the token |
+| Models | Haiku 5.5 and Opus 5.5 answer through `--model` | same |
+| `ai` plugin | loaded at tier `append` from managed `appendPlugins`; `session.start`, `classic.SessionStart`, `classic.Stop`, `session.end` run; `ai` MCP server connected | same |
+| User hooks | `ai memory prompt-hook` runs (from the linked `settings.json`) | same |
+| Managed settings | file policy applies; `policy-limits.json` fetched; server-managed settings return 404, as the user's own `~/.claude/remote-settings.json` is empty too | same; `policy-limits.json` identical to the user's |
+| `.credentials.json` written | never | never |
+
+The token carries two scopes, `user:inference` and `user:sessions:claude_code`, with no refresh token and no tier stamp (clauth: "untiered"), which changes what a session offers:
+- **Default model is Sonnet 5.5,** and the header reads "Claude API". The user's sessions default to Opus 5.5. `ai resume` passes the agent's model from its table, as `--model opus` works.
+- **Effort shows "Medium (default)"** although the linked `settings.json` sets `effortLevel: "xhigh"`; likely a plan-gated level falling back to its untiered default. Not traced further.
+- **`/usage`** shows the session's cost, durations and usage attribution, without the plan's limit bars; the Team session still showed the weekly-limit notice on start.
+- **No profile scope:** the start-up bootstrap is skipped (`403 for OAuth token without profile scope`) and Claude in Chrome is off.
+
+**The user's own sessions changed too.** With a `session-token.json` present, clauth points the live `~/.claude/.credentials.json` at that file, so the user's sessions on the active profile run on the same untiered token (`clauth which`: `not-that-silent-valley`; link target `~/.clauth/profiles/not-that-silent-valley/session-token.json`). `clauth static-token --clear <profile>` returns the profile to its rotating login and removes the token with it, so tokens for agents only, with the user's sessions on their full login, need the token kept apart from the profile, such as in secretspec.
 
 The alternative keeps the link: `ai resume` stays the sandbox's parent and, like clauth's watchdog, restores the link and hands the new pair to clauth after each refresh. It keeps live account switching, at the cost of a supervising process per agent and a race between each refresh and its repair.
 
@@ -197,7 +214,7 @@ Wrapping the whole harness at launch is harness-neutral: `ai` neither knows nor 
 
 ## Open questions
 
-1. Long-lived token or supervised link, replacing Agreed decision 2 ("How Claude writes linked files").
-2. Whether an interactive session on a `claude setup-token` token runs the `ai` plugin, loads server-managed settings and shows `/usage`.
+1. Long-lived token or supervised link, replacing Agreed decision 2 ("How Claude writes linked files"). A token works for both accounts; it leaves the session untiered.
+2. Where the agents' tokens live: in clauth's profiles, which puts the user's own sessions on the untiered token as well, or apart from them, such as in secretspec, which leaves the user's sessions on their full login.
 
 A fresh per-agent `CLAUDE_CONFIG_DIR` loads the `ai` plugin (Per-agent Claude config folder above), which settles the delivery note's open check (`20261030T202150--claude-code-mail-delivery.md`).
