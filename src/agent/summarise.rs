@@ -80,7 +80,7 @@ impl Store {
         if !self.config()?.background() {
             return Ok(false);
         }
-        log::spawn(&thread.log_path()?, |c| {
+        log::spawn(&thread.log_path(), |c| {
             c.args(["agent", "build", "-a", thread.name(), "--background"])
                 .current_dir(&self.project().dir)
         })?;
@@ -138,7 +138,7 @@ pub fn build(
     keys: &[Key],
     progress: &Progress,
 ) -> Result<Built> {
-    let _log = log::init(&thread.log_path()?)?;
+    let _log = log::init(&thread.log_path())?;
     let _build = info_span!("build", pid = process::id(), thread = thread.name()).entered();
     let lock = match thread.try_lock()? {
         Some(lock) => lock,
@@ -165,7 +165,7 @@ pub fn summarise(
     on_fail: OnFail,
     progress: &Progress,
 ) -> Result<Option<Built>> {
-    let _log = log::init(&thread.log_path()?)?;
+    let _log = log::init(&thread.log_path())?;
     let _span = info_span!(
         "summarise",
         pid = process::id(),
@@ -217,7 +217,7 @@ pub fn rebuild(
     deadline: Instant,
     progress: &Progress,
 ) -> Result<Option<(usize, Built)>> {
-    let _log = log::init(&thread.log_path()?)?;
+    let _log = log::init(&thread.log_path())?;
     let _span = info_span!(
         "rebuild",
         pid = process::id(),
@@ -276,7 +276,7 @@ pub fn rewrite(
     deadline: Instant,
     progress: &Progress,
 ) -> Result<Option<Rewrote>> {
-    let _log = log::init(&thread.log_path()?)?;
+    let _log = log::init(&thread.log_path())?;
     let _span = info_span!(
         "rewrite",
         pid = process::id(),
@@ -354,7 +354,7 @@ pub fn preview(
     rebuild: bool,
     line: Option<Key>,
 ) -> Result<Preview> {
-    let _log = log::init(&thread.log_path()?)?;
+    let _log = log::init(&thread.log_path())?;
     let _span = info_span!(
         "preview",
         pid = process::id(),

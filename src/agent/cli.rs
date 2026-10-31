@@ -3,7 +3,7 @@ use std::{
     env, fs,
     io::{self, IsTerminal, Write},
     ops::Range,
-    os::{fd::AsRawFd, unix::process::CommandExt},
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{self, ExitCode},
     sync::Arc,
@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
-use dialoguer::{Confirm, Select};
+use dialoguer::Select;
 use jiff::Timestamp;
 
 use crate::{
@@ -24,7 +24,6 @@ use crate::{
         store::{Snapshot, Store, Thread, ThreadInfo},
         summarise::{Built, OnFail, build, plan, preview, rebuild, rewrite, summarise},
         sync::Synced,
-        upgrade,
         view::{Branch, Counts},
     },
     config::FILE,
@@ -32,7 +31,6 @@ use crate::{
     memory::{Backend, Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page,
     progress::{About, Mode, Past, Progress},
-    project::committing,
     summariser::WAIT,
 };
 
@@ -185,7 +183,6 @@ impl Resume {
     /// Runs in the current directory.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        offer_upgrade(&cwd)?;
         self.run(&cwd)
     }
 
@@ -293,37 +290,28 @@ fn claude_config() -> Option<PathBuf> {
     claude::config_dir(|k| env::var(k).ok())
 }
 
-/// On a terminal, offers to convert the agent store at or above `cwd` if it awaits that.
-fn offer_upgrade(cwd: &Path) -> Result<()> {
-    if !asks() {
-        return Ok(());
+/// Runs `op`, then commits the agent store of the project at or above `cwd` as `msg`, whatever
+/// `op` returned, so what it wrote before failing is kept. `op`'s error comes first. A store
+/// this ai cannot read fails before `op` runs.
+fn committing<T>(cwd: &Path, msg: &str, op: impl FnOnce() -> Result<T>) -> Result<T> {
+    let store = Store::find(cwd)?;
+    let r = op();
+    let c = store.map_or(Ok(()), |s| s.commit(msg));
+    match (r, c) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Ok(_), Err(e)) => Err(e),
+        (Err(e), Ok(())) => Err(e),
+        (Err(e), Err(c)) => {
+            eprintln!("{c}");
+            Err(e)
+        }
     }
-    upgrade::offer(cwd, |q| {
-        Ok(Confirm::new().with_prompt(q).default(false).interact()?)
-    })
-}
-
-/// Whether a question can be put on the terminal: stdin and stderr are one, and reading it will
-/// not stop this process as a background job of it.
-fn asks() -> bool {
-    let stdin = io::stdin();
-    if !(stdin.is_terminal() && io::stderr().is_terminal()) {
-        return false;
-    }
-    let group = unsafe { libc::tcgetpgrp(stdin.as_raw_fd()) };
-    group < 0 || group == unsafe { libc::getpgrp() }
 }
 
 impl Cli {
     /// Runs in the current directory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        if !matches!(
-            self.command,
-            Some(Command::SyncSession { .. } | Command::CompactSession { .. })
-        ) {
-            offer_upgrade(&cwd)?;
-        }
         let terminal = io::stdout().is_terminal();
         match self.run(&cwd, &mut io::stdout().lock(), terminal) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
@@ -578,7 +566,7 @@ fn start_summariser(cwd: &Path, thread: &str) -> Result<()> {
 /// Commits the store as resuming agent `name`, then runs `claude args` in `dir`, in place of
 /// this process.
 fn exec_claude(store: &Store, name: &str, dir: &Path, args: &[&str]) -> Result<ExitCode> {
-    store.project().commit(&format!("ai agent resume {name}"))?;
+    store.commit(&format!("ai agent resume {name}"))?;
     let e = process::Command::new("claude")
         .args(args)
         .current_dir(dir)
@@ -1105,7 +1093,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
 
 /// What a build of thread `t` titled `title` shows, `model` writing its lines, `jobs` at once.
 fn about(t: &Thread, title: String, model: String, jobs: usize) -> Result<About> {
-    let log = t.log_path()?;
+    let log = t.log_path();
     Ok(About {
         title,
         unit: "line",

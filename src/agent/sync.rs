@@ -200,13 +200,7 @@ impl Store {
         }
         drop(w);
         if owner.is_none() {
-            self.record(
-                harness,
-                session,
-                State::Attached {
-                    thread: name.into(),
-                },
-            )?;
+            target.record(harness, session, State::Attached)?;
         }
         Ok(Attached {
             thread: name.into(),
@@ -234,7 +228,8 @@ impl Store {
             return Ok(None);
         };
         let caught = self.catch_up(&name, harness, session, None, read);
-        self.record(harness, session, State::Detached)?;
+        self.thread(&name)?
+            .record(harness, session, State::Detached)?;
         caught.with_context(|| format!("Detached from {name} without its newest entries"))?;
         Ok(Some(name))
     }

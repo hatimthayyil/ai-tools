@@ -7,7 +7,7 @@ use std::{
 };
 
 use ai_tools::{
-    agent::{Item, Key, Kind, LineKind, Store, Synced, Tree, claude, read, sync, upgrade},
+    agent::{Item, Key, Kind, LineKind, Store, Synced, Tree, claude, read, sync},
     memory::Who,
     project::Project,
     segments,
@@ -114,11 +114,15 @@ impl Repo {
         p
     }
 
-    /// The files of thread `name`, by path within it; `None` before it exists.
+    /// The files of thread `name`, by path within it, its repository and locks left out; `None`
+    /// before it exists.
     fn state(&self, name: &str) -> Option<BTreeMap<PathBuf, Vec<u8>>> {
         fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
             for e in fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
+                if p.ends_with(".git") || p.extension().is_some_and(|x| x == "lock") {
+                    continue;
+                }
                 match p.is_dir() {
                     true => walk(root, &p, out),
                     false => {
@@ -219,9 +223,9 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     assert!(b.is_attached());
     assert_eq!(
         fs::read_to_string(r.store_dir().join("format")).unwrap(),
-        "4\n"
+        "5\n"
     );
-    let events = text(&r.store_dir().join("sessions.jsonl"));
+    let events = text(&r.store_dir().join("threads/dev/attachments.jsonl"));
     assert_eq!(events.lines().count(), 1, "one attachment: {events}");
     let rows = text(&r.store_dir().join("threads/dev/items.jsonl"));
     assert_eq!(rows.lines().count() as u64, more.end);
@@ -752,14 +756,86 @@ fn lines_are_built_once() {
 fn the_compactor_lock_is_per_thread() {
     let r = Repo::new();
     let store = r.store();
-    let (a, b) = (store.thread("a").unwrap(), store.thread("b").unwrap());
+    let (a, b) = (store.create("a").unwrap(), store.create("b").unwrap());
     let held = a.try_lock().unwrap();
     assert!(held.is_some());
     assert!(r.store().thread("a").unwrap().try_lock().unwrap().is_none());
     assert!(b.try_lock().unwrap().is_some());
     drop(held);
     assert!(a.try_lock().unwrap().is_some());
-    assert!(r.store_dir().join("a.lock").is_file());
+    assert!(r.store_dir().join("threads/a/compact.lock").is_file());
+}
+
+#[test]
+fn each_thread_is_a_repository_holding_all_of_the_thread() {
+    let r = Repo::new();
+    let store = r.store();
+    let p = r.transcript("s-1", &lines("plain.jsonl"));
+    store.attach("dev", "claude", "s-1", Some(&p)).unwrap();
+    let t = store.create("other").unwrap();
+    assert!(t.try_lock().unwrap().is_some());
+    store.commit("ai agent attach dev").unwrap();
+
+    let dev = r.store_dir().join("threads/dev");
+    let other = r.store_dir().join("threads/other");
+    assert_eq!(
+        fs::read_to_string(dev.join(".gitignore")).unwrap(),
+        "*.lock\n*.log\n"
+    );
+    assert_eq!(git(&dev, &["log", "--format=%s"]), "ai agent attach dev\n");
+    let files = git(&dev, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    for f in [
+        ".gitignore",
+        "attachments.jsonl/000000.jsonl",
+        "items.jsonl/000000.jsonl",
+        "sessions.jsonl/000000.jsonl",
+    ] {
+        assert!(files.lines().any(|l| l == f), "{f} in {files}");
+    }
+    assert!(!files.contains(".lock"), "{files}");
+    assert_eq!(git(&dev, &["status", "--porcelain"]), "");
+    assert_eq!(
+        git(&other, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        ".gitignore\n"
+    );
+
+    let mut root: Vec<String> = fs::read_dir(r.store_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    root.sort();
+    assert_eq!(
+        root,
+        ["format", "sessions", "threads"],
+        "the store's root holds its format and the sessions' locks, no file of a thread"
+    );
+
+    store.commit("again").unwrap();
+    assert_eq!(git(&dev, &["log", "--format=%s"]), "ai agent attach dev\n");
+    assert_eq!(
+        store.create("dev").err().unwrap().to_string(),
+        "Agent dev already exists in this project."
+    );
+}
+
+#[test]
+fn a_session_attached_to_two_threads_is_an_error() {
+    let r = Repo::new();
+    let store = r.store();
+    let p = r.transcript("s-1", &lines("plain.jsonl"));
+    store.attach("dev", "claude", "s-1", Some(&p)).unwrap();
+    store.create("other").unwrap();
+    let events = r.store_dir().join("threads/dev/attachments.jsonl");
+    segments::write(
+        &r.store_dir().join("threads/other/attachments.jsonl"),
+        &segments::read_all(&events).unwrap(),
+    )
+    .unwrap();
+    let e = sync(&r.path(), "claude", "s-1", None).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "Session claude s-1 is attached to dev and other. Detach it from all but one."
+    );
 }
 
 #[test]
@@ -784,7 +860,7 @@ fn worktrees_share_the_threads() {
     assert!(r.store_dir().join("threads/dev").is_dir());
     assert!(!wt.join(".ai").exists());
     assert!(store.thread("dev").unwrap().try_lock().unwrap().is_some());
-    assert!(r.store_dir().join("dev.lock").is_file());
+    assert!(r.store_dir().join("threads/dev/compact.lock").is_file());
     let main = r.store();
     assert_eq!(
         main.thread("dev")
@@ -807,8 +883,8 @@ fn a_newer_store_is_refused() {
     let p = r.transcript("s-1", &lines("plain.jsonl"));
     r.store().attach("dev", "claude", "s-1", Some(&p)).unwrap();
     let before = r.state("dev");
-    fs::write(r.store_dir().join("format"), "5\n").unwrap();
-    let want = "This agent store is format 5; this ai reads up to 4. Upgrade ai.";
+    fs::write(r.store_dir().join("format"), "6\n").unwrap();
+    let want = "This agent store is format 6; this ai reads up to 5. Upgrade ai.";
     let found = Store::find(&r.path()).map(|_| ());
     assert_eq!(found.unwrap_err().to_string(), want);
     let s = sync(&r.path(), "claude", "s-1", None).map(|_| ());
@@ -990,167 +1066,5 @@ fn two_processes_syncing_one_thread_lose_nothing() {
     assert!(
         records.lines().count() <= 2 + 2 * steps,
         "a sync with nothing new writes nothing"
-    );
-}
-
-/// A thread with a session, a subagent and a line, in format 4: the thread's files and the
-/// store's `sessions.jsonl`.
-fn full_thread(r: &Repo) -> (Option<BTreeMap<PathBuf, Vec<u8>>>, String) {
-    let dir = r.dir.path().join("s-1/subagents");
-    fs::create_dir_all(&dir).unwrap();
-    for f in [
-        "agent-a1b2c3d4e5f6a7b8c.jsonl",
-        "agent-a1b2c3d4e5f6a7b8c.meta.json",
-    ] {
-        fs::copy(fixture("subagent/subagents").join(f), dir.join(f)).unwrap();
-    }
-    let p = r.transcript("s-1", &lines("subagent.jsonl"));
-    let store = r.store();
-    store.attach("dev", "claude", "s-1", Some(&p)).unwrap();
-    let t = store.thread("dev").unwrap();
-    t.put_line(
-        Key { level: 1, last: 0 },
-        LineKind::Turn,
-        &Who::default(),
-        "a line",
-    )
-    .unwrap();
-    (r.state("dev"), text(&r.store_dir().join("sessions.jsonl")))
-}
-
-/// Makes the store format 3, as ai 0.14 wrote it: each segmented file joined into one file.
-fn downgrade(store: &Path) {
-    fn join(p: &Path) {
-        let b = segments::read_all(p).unwrap();
-        fs::remove_dir_all(p).unwrap();
-        fs::write(p, b).unwrap();
-    }
-    fn walk(dir: &Path) {
-        for e in fs::read_dir(dir).unwrap() {
-            let p = e.unwrap().path();
-            match (p.is_dir(), segments::is_segmented(&p)) {
-                (true, true) => join(&p),
-                (true, false) => walk(&p),
-                _ => {}
-            }
-        }
-    }
-    walk(&store.join("threads"));
-    join(&store.join("sessions.jsonl"));
-    fs::write(store.join("format"), "3\n").unwrap();
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for e in fs::read_dir(from).unwrap() {
-        let (p, to) = (e.as_ref().unwrap().path(), to.join(e.unwrap().file_name()));
-        match p.is_dir() {
-            true => copy_dir(&p, &to),
-            false => drop(fs::copy(&p, &to).unwrap()),
-        }
-    }
-}
-
-const CONVERT: &str = "This project's agents are stored in format 3. Run an ai agent command on a terminal to convert them to format 4.";
-
-#[test]
-fn a_format_3_store_converts_once_asked() {
-    let r = Repo::new();
-    let (thread, events) = full_thread(&r);
-    downgrade(&r.store_dir());
-    let old = r.state("dev");
-    assert_ne!(old, thread);
-    assert_eq!(
-        Store::find(&r.path()).map(|_| ()).unwrap_err().to_string(),
-        CONVERT
-    );
-    let s = sync(&r.path(), "claude", "s-1", None).map(|_| ());
-    assert_eq!(s.unwrap_err().to_string(), CONVERT);
-
-    let no = upgrade::offer(&r.path(), |_| Ok(false)).unwrap_err();
-    assert_eq!(
-        no.to_string(),
-        "Conversion cancelled; this project's agents are unchanged."
-    );
-    assert_eq!(r.state("dev"), old);
-
-    let mut asked = String::new();
-    upgrade::offer(&r.path(), |q| {
-        asked = q.into();
-        Ok(true)
-    })
-    .unwrap();
-    assert!(asked.ends_with("to format 4, splitting their growing files into 1 MiB segments?"));
-    assert_eq!(r.state("dev"), thread, "every byte, segmented as before");
-    assert_eq!(text(&r.store_dir().join("sessions.jsonl")), events);
-    assert_eq!(
-        fs::read_to_string(r.store_dir().join("format")).unwrap(),
-        "4\n"
-    );
-    let ai = r.path().join(".ai/local");
-    assert_eq!(
-        git(&ai, &["log", "--format=%s"]),
-        "ai agent: convert to format 4\n"
-    );
-    assert_eq!(git(&ai, &["status", "--porcelain"]), "");
-    upgrade::offer(&r.path(), |_| panic!("asked again")).unwrap();
-    assert!(matches!(
-        sync(&r.path(), "claude", "s-1", None).unwrap(),
-        Synced::Attached { added, .. } if added.is_empty()
-    ));
-}
-
-#[test]
-fn a_conversion_cut_short_is_finished() {
-    let r = Repo::new();
-    let (thread, _) = full_thread(&r);
-    let store = r.store_dir();
-    let converted = r.dir.path().join("converted");
-    copy_dir(&store, &converted);
-    downgrade(&store);
-    let git = Project::find(&r.path())
-        .unwrap()
-        .unwrap()
-        .repo()
-        .unwrap()
-        .join(".git");
-    let (new, old) = (git.join("ai-agents-v4"), git.join("ai-agents-v3"));
-
-    fs::create_dir_all(new.join("threads")).unwrap();
-    upgrade::offer(&r.path(), |_| Ok(true)).unwrap();
-    assert_eq!(r.state("dev"), thread, "a build cut short starts again");
-    assert!(!new.exists());
-
-    fs::remove_dir_all(&store).unwrap();
-    copy_dir(&converted, &new);
-    copy_dir(&converted, &store);
-    downgrade(&store);
-    fs::rename(&store, &old).unwrap();
-    assert_eq!(
-        Store::find(&r.path()).map(|_| ()).unwrap_err().to_string(),
-        CONVERT
-    );
-    upgrade::offer(&r.path(), |_| Ok(true)).unwrap();
-    assert_eq!(r.state("dev"), thread, "a swap cut short is finished");
-    assert!(!new.exists() && !old.exists());
-}
-
-#[test]
-fn a_store_that_is_not_format_3_is_not_converted() {
-    let r = Repo::new();
-    full_thread(&r);
-    downgrade(&r.store_dir());
-    fs::write(r.store_dir().join("threads/dev/stray"), "?").unwrap();
-    let e = upgrade::offer(&r.path(), |_| Ok(true))
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.starts_with("Cannot convert the agent store: ")
-            && e.ends_with("stray is not part of a format-3 store."),
-        "{e}"
-    );
-    assert_eq!(
-        fs::read_to_string(r.store_dir().join("format")).unwrap(),
-        "3\n"
     );
 }

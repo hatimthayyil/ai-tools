@@ -72,21 +72,20 @@ pub(super) struct Track {
     pub tip: Option<u64>,
 }
 
-/// An attachment change: one line of the project's `sessions.jsonl`, the last per session
-/// holding.
+/// A change of a session's attachment to a thread: one line of the thread's
+/// `attachments.jsonl`, the last per session holding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Event {
     pub harness: String,
     pub session: String,
     pub at: Timestamp,
-    #[serde(flatten)]
     pub state: State,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum State {
-    Attached { thread: String },
+    Attached,
     Detached,
 }
 
@@ -222,9 +221,7 @@ mod tests {
             harness: "claude".into(),
             session: "s-1".into(),
             at: head().ts,
-            state: State::Attached {
-                thread: "dev".into(),
-            },
+            state: State::Attached,
         });
         let line = Line {
             ts: head().ts,
@@ -320,9 +317,10 @@ mod tests {
         .unwrap();
         assert!(serde_json::from_value::<Row>(fail(row, "parent")).is_err());
         let event = json!({"harness": "claude", "session": "s", "at": "2026-10-14T10:00:00Z", "state": "attached"});
+        assert!(serde_json::from_value::<Event>(event.clone()).is_ok());
         assert!(
-            serde_json::from_value::<Event>(event).is_err(),
-            "attached needs a thread"
+            serde_json::from_value::<Event>(fail(event, "state")).is_err(),
+            "an event needs its state"
         );
         let detached = json!({"harness": "claude", "session": "s", "state": "detached"});
         assert!(

@@ -649,7 +649,7 @@ fn a_held_lock_makes_a_second_summariser_exit_at_once() {
     assert!(other.try_lock().unwrap().is_none());
     drop(lock);
     assert_eq!(summarised(&t, &fake).calls, 1);
-    let log = fs::read_to_string(t.log_path().unwrap()).unwrap();
+    let log = fs::read_to_string(t.log_path()).unwrap();
     assert!(
         log.contains("busy") && log.contains("built") && log.contains(" end"),
         "{log}"
@@ -722,7 +722,7 @@ fn build_waits_for_a_held_lock_however_long() {
     assert!(at.elapsed() >= Duration::from_secs(2), "{:?}", at.elapsed());
     assert_eq!((b.lines, b.calls, fake.calls()), (1, 1, 1));
     assert_eq!(lines(&t).into_keys().collect::<Vec<_>>(), [key(1, e0)]);
-    let log = fs::read_to_string(t.log_path().unwrap()).unwrap();
+    let log = fs::read_to_string(t.log_path()).unwrap();
     assert!(log.contains("waiting"), "{log}");
     release.join().unwrap();
 }

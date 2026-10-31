@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use jiff::Timestamp;
 use serde::Serialize;
 
@@ -18,23 +18,30 @@ use crate::{
             Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Row, State, Tag, Track,
             check_id,
         },
-        upgrade,
     },
-    file::{self, AtPath},
+    file::{self, AtPath, pretty},
     jsonl,
     memory::{CALLS, Who},
     project::Project,
-    segments,
+    repo, segments,
 };
 
 /// The agent store format this ai reads and writes.
-pub const FORMAT: u32 = 4;
-pub(super) const THREADS: &str = "threads";
-pub(super) const ITEMS: &str = "items.jsonl";
-pub(super) const LINES: &str = "lines.jsonl";
-pub(super) const SESSIONS: &str = "sessions.jsonl";
-pub(super) const AGENTS: &str = "agents.jsonl";
+pub const FORMAT: u32 = 5;
+const THREADS: &str = "threads";
+const ITEMS: &str = "items.jsonl";
+const LINES: &str = "lines.jsonl";
+const SESSIONS: &str = "sessions.jsonl";
+const ATTACHMENTS: &str = "attachments.jsonl";
+const AGENTS: &str = "agents.jsonl";
 const SOURCES: &str = "sources";
+/// The lock every writer of a thread's files takes.
+const WRITE_LOCK: &str = "write.lock";
+/// The compactor's lock on a thread, and its log.
+const COMPACT_LOCK: &str = "compact.lock";
+const COMPACT_LOG: &str = "compact.log";
+/// What a thread's repository leaves out: locks and logs.
+const IGNORES: &str = "*.lock\n*.log\n";
 
 /// `name` if it names a thread: letters, digits, `-` and `_`, starting with a letter or digit.
 pub fn check_name(name: &str) -> Result<&str> {
@@ -124,10 +131,9 @@ pub struct Mark {
     sessions: u64,
 }
 
-/// Where a project keeps its agents, in its [private store](Project::store).
-pub const DIR: &str = "agents";
-
-/// The agents of one project: `.ai/local/agents` in its home, shared by its linked worktrees.
+/// The agents of one project, shared by its linked worktrees: a directory of [threads](Thread),
+/// each a git repository of its own, so access to one thread reaches no other. Beside them lie
+/// the store's format and the sessions' locks, which no repository holds.
 pub struct Store {
     project: Project,
     root: PathBuf,
@@ -146,12 +152,13 @@ impl Store {
         Store::of(Project::require(dir)?, dir)
     }
 
+    /// Where the agents of `project` live: `agents` in its [private store](Project::store).
+    pub fn root(project: &Project) -> PathBuf {
+        project.store().join("agents")
+    }
+
     fn of(project: Project, cwd: &Path) -> Result<Store> {
-        let store = project.store();
-        if upgrade::pending(&store)? {
-            bail!(upgrade::CONVERT);
-        }
-        let root = store.join(DIR);
+        let root = Store::root(&project);
         file::check_format(&root, FORMAT, "agent")?;
         Ok(Store {
             project,
@@ -187,36 +194,28 @@ impl Store {
         file::lock(&dir.join(format!("{session}.lock")))
     }
 
-    /// The attachment changes of every session, in order.
-    fn events(&self) -> Result<Vec<Event>> {
-        let p = self.root.join(SESSIONS);
-        jsonl::decode_all(&segments::read(&p)?)
-            .with_context(|| format!("The chat sessions file is corrupt: {}", file::pretty(&p)))
-    }
-
-    /// The thread `session` is attached to, from the last change of its attachment.
+    /// The thread `session` is attached to: the one whose last change of the session's
+    /// attachment attached it. An error if several did, which no command of ai records.
     pub(super) fn owner(&self, harness: &str, session: &str) -> Result<Option<String>> {
-        let last = self
-            .events()?
-            .into_iter()
-            .rfind(|e| e.harness == harness && e.session == session);
-        match last.map(|e| e.state) {
-            Some(State::Attached { thread }) => Ok(Some(check_name(&thread)?.into())),
-            _ => Ok(None),
+        let mut owners = Vec::new();
+        for t in self.threads()? {
+            let last = t
+                .snapshot()?
+                .events()?
+                .into_iter()
+                .rfind(|e| e.harness == harness && e.session == session);
+            if last.is_some_and(|e| e.state == State::Attached) {
+                owners.push(t.name);
+            }
         }
-    }
-
-    /// Records an attachment change; the caller holds the session's lock.
-    pub(super) fn record(&self, harness: &str, session: &str, state: State) -> Result<()> {
-        Store::ensure(&self.root)?;
-        let _lock = file::lock(&self.root.join("sessions.lock"))?;
-        let event = Event {
-            harness: harness.into(),
-            session: session.into(),
-            at: Timestamp::now(),
-            state,
-        };
-        segments::append(&self.root.join(SESSIONS), &[event])
+        match owners.as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some(one.clone())),
+            many => bail!(
+                "Session {harness} {session} is attached to {}. Detach it from all but one.",
+                many.join(" and ")
+            ),
+        }
     }
 
     /// The thread of agent `name`; it exists once [`Store::create`] makes it.
@@ -225,7 +224,6 @@ impl Store {
         Ok(Thread {
             name: name.into(),
             dir: self.root.join(THREADS).join(name),
-            root: self.root.clone(),
         })
     }
 
@@ -238,19 +236,51 @@ impl Store {
         Ok(t)
     }
 
-    /// Creates agent `name` with an empty thread; an error if it exists.
+    /// Creates agent `name` with an empty thread, a git repository of its own; an error if it
+    /// exists. The thread is made beside its place and renamed in, so it never shows without
+    /// its repository.
     pub fn create(&self, name: &str) -> Result<Thread> {
         let t = self.thread(name)?;
-        let _w = t.writer()?;
+        let exists = || anyhow!("Agent {name} already exists in this project.");
+        if t.exists()? {
+            return Err(exists());
+        }
+        Store::ensure(&self.root)?;
         let threads = self.root.join(THREADS);
         fs::create_dir_all(&threads).at(&threads)?;
-        match fs::create_dir(&t.dir) {
-            Ok(()) => Ok(t),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                bail!("Agent {name} already exists in this project.")
+        let tmp = tempfile::Builder::new()
+            .prefix(".new-")
+            .tempdir_in(&threads)
+            .at(&threads)?;
+        let ignore = tmp.path().join(".gitignore");
+        fs::write(&ignore, IGNORES).at(&ignore)?;
+        repo::create(tmp.path())?;
+        match fs::rename(tmp.path(), &t.dir) {
+            Ok(()) => {
+                let _ = tmp.keep();
+                Ok(t)
             }
+            Err(_) if t.exists()? => Err(exists()),
             Err(e) => Err(e).at(&t.dir),
         }
+    }
+
+    /// Commits every thread's repository as one commit `msg` each; nothing for a thread that
+    /// did not change. A thread that fails is reported once every other is committed.
+    pub fn commit(&self, msg: &str) -> Result<()> {
+        let failed: Vec<String> = self
+            .threads()?
+            .iter()
+            .filter_map(|t| {
+                repo::commit(&t.dir, "ai", msg)
+                    .err()
+                    .map(|e| format!("Cannot commit {}: {e:#}", pretty(&t.dir)))
+            })
+            .collect();
+        if !failed.is_empty() {
+            bail!("{}", failed.join("\n"));
+        }
+        Ok(())
     }
 
     /// Every thread, by name.
@@ -319,11 +349,11 @@ impl Store {
     }
 }
 
-/// One thread: a directory `threads/<name>` of the store.
+/// One thread: a directory `threads/<name>` of the store, a git repository of every file of the
+/// thread but its locks and log.
 pub struct Thread {
     name: String,
     dir: PathBuf,
-    root: PathBuf,
 }
 
 impl Thread {
@@ -339,7 +369,7 @@ impl Thread {
     /// before it, so the records are read first and the items last: the state is whole without
     /// the writer's lock.
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let events = segments::read(&self.root.join(SESSIONS))?;
+        let events = segments::read(&self.dir.join(ATTACHMENTS))?;
         let tracks = segments::read(&self.dir.join(SESSIONS))?;
         let lines = segments::read(&self.dir.join(LINES))?;
         let agents = segments::read(&self.dir.join(AGENTS))?;
@@ -356,8 +386,7 @@ impl Thread {
 
     /// The writers' lock on this thread's files.
     pub(super) fn writer(&self) -> Result<file::Lock> {
-        Store::ensure(&self.root)?;
-        file::lock(&self.root.join(format!("{}.write.lock", self.name)))
+        file::lock(&self.dir.join(WRITE_LOCK))
     }
 
     fn append<T: Serialize>(&self, file: &str, rows: &[T]) -> Result<()> {
@@ -369,34 +398,43 @@ impl Thread {
         self.append(SESSIONS, std::slice::from_ref(t))
     }
 
+    /// Records a change of a session's attachment to this thread; the caller holds the
+    /// session's lock.
+    pub(super) fn record(&self, harness: &str, session: &str, state: State) -> Result<()> {
+        let _w = self.writer()?;
+        let event = Event {
+            harness: harness.into(),
+            session: session.into(),
+            at: Timestamp::now(),
+            state,
+        };
+        self.append(ATTACHMENTS, &[event])
+    }
+
     /// The compactor's lock on this thread; `None` while another process holds it.
     pub fn try_lock(&self) -> Result<Option<file::Lock>> {
-        Store::ensure(&self.root)?;
         file::try_lock(&self.lock_path())
     }
 
     /// The compactor's lock on this thread, waiting for it however long another process holds
     /// it.
     pub fn lock(&self) -> Result<file::Lock> {
-        Store::ensure(&self.root)?;
         file::lock(&self.lock_path())
     }
 
     /// The compactor's lock on this thread, waiting for it until `deadline`; `None` if another
     /// process still holds it then.
     pub fn lock_before(&self, deadline: Instant) -> Result<Option<file::Lock>> {
-        Store::ensure(&self.root)?;
         file::lock_before(&self.lock_path(), deadline)
     }
 
     fn lock_path(&self) -> PathBuf {
-        self.root.join(format!("{}.lock", self.name))
+        self.dir.join(COMPACT_LOCK)
     }
 
-    /// The compactor's log, beside its lock; its directory is made if absent.
-    pub fn log_path(&self) -> Result<PathBuf> {
-        Store::ensure(&self.root)?;
-        Ok(self.root.join(format!("{}.log", self.name)))
+    /// The compactor's log, beside its lock.
+    pub fn log_path(&self) -> PathBuf {
+        self.dir.join(COMPACT_LOG)
     }
 
     /// Where the compactor keeps its calls to the model: `threads/<name>/calls`.
@@ -638,17 +676,17 @@ impl Snapshot {
         Ok(self.tracks()?.remove(&(harness.into(), session.into())))
     }
 
+    /// The changes of the attachments of sessions to this thread, in order.
     fn events(&self) -> Result<Vec<Event>> {
-        jsonl::decode_all(&self.events).context("The chat sessions file is corrupt")
+        jsonl::decode_all(&self.events)
+            .with_context(|| format!("Thread {}: the attachments file is corrupt", self.name))
     }
 
     /// The binding of `t`, from its session's attachment changes `events`: when it was last
     /// attached here, and detached if a change followed. `None` until an attachment to this
     /// thread is recorded.
     fn bind(&self, t: Track, events: &[&Event]) -> Option<Binding> {
-        let i = events.iter().rposition(
-            |e| matches!(&e.state, State::Attached { thread } if *thread == self.name),
-        )?;
+        let i = events.iter().rposition(|e| e.state == State::Attached)?;
         Some(Binding {
             attached: events[i].at,
             detached: events.get(i + 1).map(|e| e.at),

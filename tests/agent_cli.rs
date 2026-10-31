@@ -1586,7 +1586,7 @@ fn build_writes_rewrites_and_previews_the_lines() {
         t.snapshot().unwrap().all_lines().unwrap().len()
     };
     assert_eq!(all(&s), 1, "a preview stores nothing");
-    let log = fs::read_to_string(s.store().dir().join("dev.log")).unwrap();
+    let log = fs::read_to_string(s.store().thread("dev").unwrap().log_path()).unwrap();
     assert!(
         log.contains("preview{pid=") && log.contains("model=\"opus\""),
         "{log}"
@@ -1874,7 +1874,7 @@ fn attaching_starts_a_background_summariser_that_builds() {
     );
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let ends = turn_ends(&s, "dev");
-    let log = s.store().thread("dev").unwrap().log_path().unwrap();
+    let log = s.store().thread("dev").unwrap().log_path();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let text = fs::read_to_string(&log).unwrap_or_default();
@@ -1903,7 +1903,14 @@ fn build_off_a_terminal_prints_its_plan_each_line_and_its_end() {
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     let o = s.ai_in("s-1", &["build"]);
     assert_eq!((code(&o), stderr(&o).as_str()), (0, ""), "{}", stdout(&o));
-    let log = regex::escape(&s.store().dir().join("dev.log").display().to_string());
+    let log = regex::escape(
+        &s.store()
+            .thread("dev")
+            .unwrap()
+            .log_path()
+            .display()
+            .to_string(),
+    );
     let want = format!(
         "^Building agent dev with sonnet, 8 calls at once\\.
   level           lines  written  to write
@@ -2075,46 +2082,68 @@ fn an_ai_toml_without_an_id_has_no_threads() {
 }
 
 #[test]
-fn the_store_is_a_git_repository_committed_on_events() {
+fn each_thread_is_a_git_repository_committed_on_events() {
     let s = Sandbox::new();
     let store = s.repo().join(".ai/local");
+    let threads = store.join("agents/threads");
     ok(
         s.ai(&["list"]),
         "No agents in this project. Create one: ai agent new <name>\n",
     );
-    assert!(!store.join(".git").exists(), "a read makes no repository");
+    assert!(!threads.exists(), "a read makes no repository");
     ok(
         s.ai_in("s-1", &["new", "dev"]),
         "Created agent dev. Start it: ai agent resume dev\n",
     );
+    let dev = threads.join("dev");
     assert_eq!(
-        fs::read_to_string(store.join(".gitignore")).unwrap(),
+        fs::read_to_string(dev.join(".gitignore")).unwrap(),
         "*.lock\n*.log\n"
     );
-    let log = || git(&store, &["log", "--format=%an: %s"]);
-    assert_eq!(log(), "ai: ai agent new dev\n");
+    assert!(
+        !store.join(".git").exists(),
+        "the private store is no repository"
+    );
+    let log = |t: &Path| git(t, &["log", "--format=%an: %s"]);
+    assert_eq!(log(&dev), "ai: ai agent new dev\n");
 
     s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
     assert_eq!(
-        log(),
+        log(&dev),
         "ai: ai agent attach dev\nai: ai agent new dev\n",
         "a write that changes nothing makes no commit"
     );
-    let files = git(&store, &["ls-tree", "-r", "--name-only", "HEAD"]);
-    assert!(files.contains("agents/threads/dev/items.jsonl"), "{files}");
-    assert!(store.join("agents/dev.write.lock").is_file());
+    let files = git(&dev, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(files.contains("\nitems.jsonl/000000.jsonl\n"), "{files}");
+    assert!(dev.join("write.lock").is_file());
     assert!(!files.contains(".lock"), "{files}");
-    assert_eq!(git(&store, &["status", "--porcelain"]), "");
+    assert_eq!(git(&dev, &["status", "--porcelain"]), "");
 
-    fs::write(store.join(".git/HEAD"), "not a ref\n").unwrap();
-    let o = s.ai(&["new", "other"]);
+    ok(
+        s.ai(&["new", "other"]),
+        "Created agent other. Start it: ai agent resume other\n",
+    );
+    assert_eq!(log(&threads.join("other")), "ai: ai agent new other\n");
+    assert_eq!(
+        log(&dev),
+        "ai: ai agent attach dev\nai: ai agent new dev\n",
+        "a thread that did not change gets no commit"
+    );
+
+    fs::write(dev.join(".git/HEAD"), "not a ref\n").unwrap();
+    let o = s.ai(&["new", "third"]);
     assert_eq!(code(&o), 1);
     assert!(
-        stderr(&o).starts_with(&format!("Cannot commit {}: ", store.display())),
+        stderr(&o).starts_with(&format!("Cannot commit {}: ", dev.display())),
         "{}",
         stderr(&o)
+    );
+    assert_eq!(
+        log(&threads.join("third")),
+        "ai: ai agent new third\n",
+        "a thread that fails to commit holds back no other"
     );
 }
 
@@ -2123,7 +2152,7 @@ fn a_turns_sync_waits_for_the_next_event_to_be_committed() {
     let s = Sandbox::new();
     s.fake_compactor("0");
     assert_eq!(code(&s.top(None, &["memory", "init"])), 0);
-    let store = s.repo().join(".ai/local");
+    let store = s.repo().join(".ai/local/agents/threads/dev");
     let log = || git(&store, &["log", "--format=%s"]);
     let clean = || git(&store, &["status", "--porcelain"]).is_empty();
     let turns = |n| s.transcript("s-1", &talk(n, |k| long("ok", k)));
@@ -2187,53 +2216,24 @@ fn a_linked_worktree_commits_to_the_main_checkouts_store() {
         "Created agent dev. Start it: ai agent resume dev\n",
     );
     assert!(!wt.join(".ai").exists());
-    let store = s.repo().join(".ai/local");
+    let store = s.repo().join(".ai/local/agents/threads/dev");
     assert_eq!(git(&store, &["log", "--format=%s"]), "ai agent new dev\n");
     assert_eq!(git(&s.repo(), &["status", "--porcelain"]), "");
 }
 
 #[test]
-fn a_format_3_store_converts_on_a_terminal_once_asked() {
+fn a_format_4_store_is_refused() {
     let s = Sandbox::new();
     ok(
         s.ai(&["new", "dev"]),
         "Created agent dev. Start it: ai agent resume dev\n",
     );
     let agents = s.repo().join(".ai/local/agents");
-    fs::write(agents.join("format"), "3\n").unwrap();
-    fs::write(agents.join("threads/dev/items.jsonl"), "").unwrap();
-    fails(
-        s.ai(&["list"]),
-        "This project's agents are stored in format 3. Run an ai agent command on a terminal to convert them to format 4.\n",
-    );
-
-    let (code, shown) = s.on_terminal(&["list"], b"n");
-    assert_eq!(code, 1, "{shown}");
-    assert!(
-        shown.contains("to format 4, splitting their growing files into 1 MiB segments?"),
-        "{shown}"
-    );
-    assert!(
-        shown.contains("Conversion cancelled; this project's agents are unchanged."),
-        "{shown}"
-    );
-    assert_eq!(fs::read_to_string(agents.join("format")).unwrap(), "3\n");
-
-    let (code, shown) = s.on_terminal(&["list"], b"y");
-    assert_eq!(code, 0, "{shown}");
-    assert!(
-        shown.contains("Converted this project's agents to format 4."),
-        "{shown}"
-    );
-    assert!(shown.contains("dev  0 turns"), "{shown}");
-    assert_eq!(fs::read_to_string(agents.join("format")).unwrap(), "4\n");
-    assert!(
-        agents
-            .join("threads/dev/items.jsonl/000000.jsonl")
-            .is_file()
-    );
-    let log = git(&s.repo().join(".ai/local"), &["log", "--format=%s"]);
-    assert_eq!(log, "ai agent: convert to format 4\nai agent new dev\n");
+    fs::write(agents.join("format"), "4\n").unwrap();
+    let refused = "This agent store is format 4, which this ai does not read.\n";
+    fails(s.ai(&["list"]), refused);
+    fails(s.ai(&["new", "other"]), refused);
+    assert!(!agents.join("threads/other").exists());
 }
 
 #[test]
@@ -2258,14 +2258,13 @@ fn a_commit_after_a_small_append_stores_only_the_open_segments() {
 
     s.transcript("s-1", &talk(7, ask));
     ok(s.ai_in("s-1", &["end-session"]), "");
-    let store = s.repo().join(".ai/local");
-    let changed = git(&store, &["diff", "--name-only", "HEAD~1", "HEAD"]);
+    let changed = git(&thread, &["diff", "--name-only", "HEAD~1", "HEAD"]);
     assert!(
-        changed.contains("/sources/claude/s-1/s-1.jsonl/"),
+        changed.contains("sources/claude/s-1/s-1.jsonl/"),
         "{changed}"
     );
     for path in changed.lines() {
-        let p = store.join(path);
+        let p = thread.join(path);
         let newest = fs::read_dir(p.parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name())
