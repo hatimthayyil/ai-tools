@@ -73,7 +73,7 @@ reports-to = ["lead", "engineer"]
 
 `reports-to` names the relation, reads as plain English, and takes several names (Agreed). Explicit per-thread grants would be a second setting that nothing needs yet.
 
-Built (src/config.rs): `ai` reads `reports-to` from every `ai.toml`, a later file's list replacing an earlier one's, and refuses an agent reporting to itself, to a name with no `[agents.<name>]` table, or in a cycle, naming the cycle. `Settings::below` gives the agents below an agent through any number of levels: the threads the launcher grants read-only. Nothing enforces the grants until the launcher exists.
+Built (src/config.rs): `ai` reads `reports-to` from every `ai.toml`, a later file's list replacing an earlier one's, and `Settings::hierarchy` refuses an agent reporting to itself, to a name with no `[agents.<name>]` table, or in a cycle, naming the cycle; only the commands that read the hierarchy fail on it, never `ai memory` or another agent's commands. `Hierarchy::below` gives the agents below an agent through any number of levels: the threads the launcher grants read-only. Nothing enforces the grants until the launcher exists.
 
 **6. bubblewrap, invoked by `ai`, from a path fixed at build time by Nix.** Codex looks `bwrap` up only outside the working directory, so a repo cannot plant one (codex-rs/linux-sandbox/README.md). Nix can do better: the store path is compiled in.
 
