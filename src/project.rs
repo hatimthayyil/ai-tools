@@ -70,7 +70,7 @@ impl Project {
 
     /// The project of the `ai.toml` at `p`; `None` without the file or an id in it.
     fn read(p: &Path) -> Result<Option<Project>> {
-        let t = config::read(p)?.and_then(|f| f.project).unwrap_or_default();
+        let t = config::project_table(p)?.unwrap_or_default();
         let Some(id) = t.id else {
             return Ok(None);
         };

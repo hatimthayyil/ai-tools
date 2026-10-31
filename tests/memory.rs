@@ -61,8 +61,8 @@ fn runtime(backend: Arc<dyn Backend>) -> Runtime {
         terminal: false,
         bars: false,
         opts: opts(VIEW, 8),
-        config: Config::default(),
-        summariser: Default::default(),
+        config: Box::new(|| Ok(Config::default())),
+        summariser: Box::new(|| Ok(Default::default())),
         summarise_on_note: false,
         before_release: Box::new(|| {}),
         stdin: Box::new(|| Ok(String::new())),
@@ -133,7 +133,7 @@ fn ended(out: &str) -> (u64, u64, u64, Option<u64>) {
 /// [`run`] with the sizes `config` sets.
 fn run_sized(dir: &Path, config: Config, args: &[&str]) -> Out {
     let rt = Runtime {
-        config,
+        config: Box::new(move || Ok(config.clone())),
         ..runtime(Arc::new(Model(Arc::new(Fake::summaries()))))
     };
     run_rt(dir, &rt, args)

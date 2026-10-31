@@ -49,20 +49,20 @@ impl Config {
 
 impl Store {
     /// What `ai.toml` sets where this store was found.
-    pub fn settings(&self) -> Result<Settings> {
+    pub fn settings(&self) -> Settings {
         Settings::find(self.cwd())
     }
 
     /// What `ai.toml` sets for chat where this store was found.
     pub fn config(&self) -> Result<Config> {
-        Ok(self.settings()?.chat)
+        self.settings().chat()
     }
 
     /// The `[summariser]` backend, with `model` over its model, keeping its calls in `thread`'s
     /// [`Thread::calls_dir`].
     pub fn backend(&self, thread: &Thread, model: Option<&str>) -> Result<Arc<dyn Backend>> {
-        self.settings()?
-            .summariser
+        self.settings()
+            .summariser()?
             .backend(model, &thread.calls_dir())
     }
 
@@ -70,7 +70,7 @@ impl Store {
     pub fn model(&self, model: Option<&str>) -> Result<String> {
         Ok(match model {
             Some(m) => m.into(),
-            None => self.settings()?.summariser.model(),
+            None => self.settings().summariser()?.model(),
         })
     }
 

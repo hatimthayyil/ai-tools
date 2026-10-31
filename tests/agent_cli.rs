@@ -1386,6 +1386,48 @@ fn ai_resume_is_ai_agent_resume() {
 }
 
 #[test]
+fn a_broken_hierarchy_or_another_agents_table_stops_no_agent_command() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &ran_in(&fixture("plain.jsonl"), &s.repo()));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let view = stdout(&s.ai_in("s-1", &["view"]));
+    let toml = s.repo().join("ai.toml");
+    let project = fs::read_to_string(&toml).unwrap();
+    fs::write(
+        &toml,
+        format!(
+            "{project}\n[summariser]\nmodle = \"haiku\"\n\n[agents.dev]\nreports-to = [\"lead\"]\n\n\
+             [agents.lead]\nreports-to = [\"dev\"]\n\n[agents.qa]\nreports-to = [\"nobody\"]\n\
+             worktree = \"\"\n"
+        ),
+    )
+    .unwrap();
+    ok(s.ai_in("s-1", &["view"]), &view);
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    let listed = stdout(&s.ai(&["list"]));
+    assert!(listed.contains("dev"), "{listed}");
+    ok(s.ai(&["resume", "dev"]), "");
+    assert_eq!(s.argv()[..2], ["--resume", "s-1"]);
+    ok(
+        s.ai(&["new", "qa"]),
+        "Created agent qa. Start it: ai agent resume qa\n",
+    );
+    let o = s.ai(&["resume", "qa"]);
+    let err = stderr(&o);
+    assert!(
+        code(&o) == 1
+            && err.starts_with(&format!("{}: ", toml.display()))
+            && err.contains("worktree")
+            && err.contains("is empty"),
+        "qa's own table stops qa: {err}"
+    );
+}
+
+#[test]
 fn an_agent_runs_in_its_worktree_with_its_instructions() {
     let s = Sandbox::new();
     let toml = s.repo().join("ai.toml");

@@ -474,7 +474,7 @@ fn row(t: &ThreadInfo) -> String {
 
 /// How many entries the view shows at each level where `store` was found: `[agent.view]`.
 fn counts(store: &Store) -> Result<Counts> {
-    store.settings()?.agent.view.counts()
+    store.settings().agent_table()?.view.counts()
 }
 
 /// The branch a command reads in `s`: session `c`'s (to its newest item, else its graft), else
@@ -587,8 +587,8 @@ fn new(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
 /// Agent `name`'s `[agents.<name>]` instructions, read now and joined by blank lines in the
 /// settings' order; `None` when they name none.
 fn instructions(store: &Store, name: &str) -> Result<Option<String>> {
-    let settings = store.settings()?;
-    let paths = settings.agent(name).map_or(&[][..], |a| &a.instructions);
+    let agent = store.settings().agent(name)?;
+    let paths = agent.as_ref().map_or(&[][..], |a| &a.instructions);
     if paths.is_empty() {
         return Ok(None);
     }
@@ -607,8 +607,8 @@ fn instructions(store: &Store, name: &str) -> Result<Option<String>> {
 /// else `cwd`. A worktree must exist and be a git worktree of this checkout, so the session's
 /// hooks find this store.
 fn worktree(store: &Store, cwd: &Path, name: &str) -> Result<PathBuf> {
-    let settings = store.settings()?;
-    let Some(dir) = settings.agent(name).and_then(|a| a.worktree.as_deref()) else {
+    let agent = store.settings().agent(name)?;
+    let Some(dir) = agent.as_ref().and_then(|a| a.worktree.as_deref()) else {
         return Ok(cwd.to_path_buf());
     };
     if !dir.is_dir() {
@@ -1020,7 +1020,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         (false, None) => format!("Building agent {name}"),
     };
     if dry {
-        let jobs = store.settings()?.summariser.jobs();
+        let jobs = store.settings().summariser()?.jobs();
         let about = about(&t, title, store.model(model)?, jobs)?;
         let progress = Progress::new(&mut *out, Mode::Plain, about);
         if !progress.plan(&plan(&t, again, line.map(|l| l.1))?)? {

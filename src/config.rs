@@ -1,11 +1,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs, io,
+    fmt, fs, io,
+    marker::PhantomData,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Result, anyhow, bail};
-use serde::{Deserialize, Deserializer, de::Error as _};
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeOwned, DeserializeSeed, Error as _, IgnoredAny, MapAccess, Visitor},
+};
 
 use crate::{
     agent,
@@ -75,35 +79,61 @@ fn same(a: &Path, b: &Path) -> bool {
         )
 }
 
-/// One `ai.toml` as written.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct File {
-    pub project: Option<project::Table>,
-    pub chat: agent::Config,
-    pub agent: agent::Table,
-    pub memory: memory::Config,
-    pub summariser: summariser::Config,
-    pub agents: BTreeMap<String, Agent>,
+/// The tables an `ai.toml` may hold, each read on its own by the commands that use it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Tables {
+    project: Option<IgnoredAny>,
+    #[serde(rename = "chat")]
+    _chat: Option<IgnoredAny>,
+    #[serde(rename = "agent")]
+    _agent: Option<IgnoredAny>,
+    #[serde(rename = "memory")]
+    _memory: Option<IgnoredAny>,
+    #[serde(rename = "summariser")]
+    _summariser: Option<IgnoredAny>,
+    #[serde(rename = "agents")]
+    _agents: Option<IgnoredAny>,
 }
 
 /// `[agents.<name>]`: what an agent runs with. A relative `instructions` is from the folder of the
 /// file that sets it, or for the private settings from the project's [`home`](project::home), where
 /// their [link](LOCAL) sits; a relative `worktree` is from the home, so every checkout of the
-/// project names the same directory.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// project names the same directory. Its superiors are the [`Hierarchy`]'s.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Agent {
     /// The Markdown files of the agent's instructions, one from each file that names one: the
     /// user's, then the project's, then the local one.
-    #[serde(deserialize_with = "paths")]
     pub instructions: Vec<PathBuf>,
     /// The directory the agent runs in.
-    #[serde(deserialize_with = "path")]
     pub worktree: Option<PathBuf>,
-    /// The agents it reports to, each named by its own table; `None` when no file sets the key.
+}
+
+/// `[agents.<name>]` read for the agent itself: `reports-to` is only named, so a bad hierarchy
+/// stops nothing that runs the agent. Its keys are [`Rank`]'s.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Keys {
+    #[serde(deserialize_with = "paths")]
+    instructions: Vec<PathBuf>,
+    #[serde(deserialize_with = "path")]
+    worktree: Option<PathBuf>,
+    #[serde(rename = "reports-to")]
+    _reports_to: IgnoredAny,
+}
+
+/// `[agents.<name>]` read for the [`Hierarchy`]: the other keys are only named, so a bad one
+/// stops nothing that reads the hierarchy. Its keys are [`Keys`]'.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Rank {
+    /// `None` when the file does not set the key.
     #[serde(rename = "reports-to", deserialize_with = "superiors")]
-    pub reports_to: Option<Vec<String>>,
+    reports_to: Option<Vec<String>>,
+    #[serde(rename = "instructions")]
+    _instructions: IgnoredAny,
+    #[serde(rename = "worktree")]
+    _worktree: IgnoredAny,
 }
 
 fn path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
@@ -145,19 +175,6 @@ impl Agent {
         Agent {
             instructions: [base.instructions, self.instructions].concat(),
             worktree: self.worktree.or(base.worktree),
-            reports_to: self.reports_to.or(base.reports_to),
-        }
-    }
-
-    /// The agents it reports to; none when no file sets `reports-to`.
-    pub fn superiors(&self) -> &[String] {
-        self.reports_to.as_deref().unwrap_or_default()
-    }
-
-    fn from(self, dir: &Path) -> Agent {
-        Agent {
-            instructions: self.instructions.iter().map(|p| dir.join(p)).collect(),
-            ..self
         }
     }
 
@@ -169,40 +186,224 @@ impl Agent {
     }
 }
 
-/// The `ai.toml` at `p`, `None` without the file; a bad key or value names both.
-pub(crate) fn read(p: &Path) -> Result<Option<File>> {
-    let text = match fs::read_to_string(p) {
-        Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).at(p),
-    };
-    toml::from_str(&text)
-        .map(Some)
-        .map_err(|e| anyhow!("{}: {e}", pretty(p)))
+/// What `seed` reads from key `key` of a table, the table's other keys skipped unread; `None`
+/// without the key.
+struct Only<'a, S> {
+    key: &'a str,
+    seed: S,
+}
+
+impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Only<'_, S> {
+    type Value = Option<S::Value>;
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_map(self)
+    }
+}
+
+impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for Only<'_, S> {
+    type Value = Option<S::Value>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a table")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut seed = Some(self.seed);
+        let mut found = None;
+        while let Some(k) = map.next_key::<String>()? {
+            match seed.take_if(|_| k == self.key) {
+                Some(s) => found = Some(map.next_value_seed(s)?),
+                None => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(found)
+    }
+}
+
+/// One `ai.toml` that exists: where it is, the folder its relative instructions are from, and
+/// its text, which is TOML holding only the tables its place allows.
+struct Source {
+    path: PathBuf,
+    dir: PathBuf,
+    text: String,
+}
+
+impl Source {
+    /// The `ai.toml` at `path`, `None` without the file. Refuses text that is not TOML, a table
+    /// no part of the settings has, and `[project]` outside a project's own file: each leaves
+    /// every part of the file in doubt.
+    fn read(path: &Path, dir: PathBuf, layer: Layer) -> Result<Option<Source>> {
+        let text = match fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).at(path),
+        };
+        let s = Source {
+            path: path.to_path_buf(),
+            dir,
+            text,
+        };
+        let tables: Tables = s.de(PhantomData)?;
+        if tables.project.is_some() {
+            match layer {
+                Layer::User => bail!(
+                    "{}: [project] belongs in a project's {FILE}, not in your own.",
+                    pretty(path)
+                ),
+                Layer::Local => bail!(
+                    "{}: [project] belongs in the project's {FILE}, not in its private one.",
+                    pretty(path)
+                ),
+                Layer::Project => {}
+            }
+        }
+        Ok(Some(s))
+    }
+
+    /// What `seed` reads from the file; a bad key or value names the file.
+    fn de<'a, S: DeserializeSeed<'a>>(&'a self, seed: S) -> Result<S::Value> {
+        toml::Deserializer::parse(&self.text)
+            .and_then(|d| seed.deserialize(d))
+            .map_err(|e| anyhow!("{}: {e}", pretty(&self.path)))
+    }
+
+    /// Table `key`, `None` when the file has none.
+    fn part<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        self.de(Only {
+            key,
+            seed: PhantomData,
+        })
+    }
+}
+
+/// `[project]` of the project's `ai.toml` at `p`, `None` without the file or the table. Only the
+/// file as a whole and that table are checked: a bad key elsewhere in it stops nothing that needs
+/// the project.
+pub(crate) fn project_table(p: &Path) -> Result<Option<project::Table>> {
+    let dir = p.parent().unwrap_or(Path::new("")).to_path_buf();
+    match Source::read(p, dir, Layer::Project)? {
+        Some(s) => s.part("project"),
+        None => Ok(None),
+    }
 }
 
 /// What `ai.toml` sets: the project's private settings over its `ai.toml` over the user's, key by
-/// key, except an agent's instructions, which add up; unset keys keep their defaults. The agents'
-/// `reports-to` form a hierarchy with no cycle, each naming agents that have a table.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// key, except an agent's instructions, which add up; unset keys keep their defaults.
+///
+/// Each part is read when a command asks for it, from the files as they are then, so a bad key
+/// or value stops only the commands that read its part. A file that is not TOML, or holds a table
+/// no part has, stops every part read from it: what it was meant to set is unknown.
+#[derive(Clone, Debug)]
 pub struct Settings {
-    pub chat: agent::Config,
-    pub agent: agent::Table,
-    pub memory: memory::Config,
-    pub summariser: summariser::Config,
-    agents: BTreeMap<String, Agent>,
+    user: Option<PathBuf>,
+    cwd: PathBuf,
 }
 
 impl Settings {
     /// The user's `ai.toml`, under the nearest one at or above `cwd`, under the
     /// [private settings](private_file) of that project's [`home`](project::home).
-    pub fn find(cwd: &Path) -> Result<Settings> {
+    pub fn find(cwd: &Path) -> Settings {
         Settings::load(user_file().as_deref(), cwd)
     }
 
     /// [`Settings::find`] with the user's file at `user`.
-    pub fn load(user: Option<&Path>, cwd: &Path) -> Result<Settings> {
-        let project = nearest(user, cwd);
+    pub fn load(user: Option<&Path>, cwd: &Path) -> Settings {
+        Settings {
+            user: user.map(Path::to_path_buf),
+            cwd: cwd.to_path_buf(),
+        }
+    }
+
+    /// `[chat]`.
+    pub fn chat(&self) -> Result<agent::Config> {
+        self.part("chat", agent::Config::over)
+    }
+
+    /// `[agent]`.
+    pub fn agent_table(&self) -> Result<agent::Table> {
+        self.part("agent", agent::Table::over)
+    }
+
+    /// `[memory]`.
+    pub fn memory(&self) -> Result<memory::Config> {
+        self.part("memory", memory::Config::over)
+    }
+
+    /// `[summariser]`.
+    pub fn summariser(&self) -> Result<summariser::Config> {
+        self.part("summariser", summariser::Config::over)
+    }
+
+    /// `[agents.<name>]`, its paths absolute, except a relative `worktree` outside a project;
+    /// `None` when no file has the table. Of the agents' tables, only this agent's are checked.
+    pub fn agent(&self, name: &str) -> Result<Option<Agent>> {
+        let (sources, home) = self.sources()?;
+        let mut found: Option<Agent> = None;
+        for s in &sources {
+            let keys = s.de(Only {
+                key: "agents",
+                seed: Only {
+                    key: name,
+                    seed: PhantomData::<Keys>,
+                },
+            })?;
+            if let Some(k) = keys.flatten() {
+                let a = Agent {
+                    instructions: k.instructions.iter().map(|p| s.dir.join(p)).collect(),
+                    worktree: k.worktree,
+                };
+                found = Some(a.over(found.unwrap_or_default()));
+            }
+        }
+        Ok(found.map(|a| match &home {
+            Some(h) => a.under(h),
+            None => a,
+        }))
+    }
+
+    /// The agents' `reports-to`, each file's over those beneath it: a hierarchy with no cycle,
+    /// each superior an agent with a table.
+    pub fn hierarchy(&self) -> Result<Hierarchy> {
+        let (sources, _) = self.sources()?;
+        let mut ranks = BTreeMap::<String, Option<Vec<String>>>::new();
+        for s in &sources {
+            let agents: Option<BTreeMap<String, Rank>> = s.part("agents")?;
+            for (name, r) in agents.unwrap_or_default() {
+                let at = ranks.entry(name).or_default();
+                if r.reports_to.is_some() {
+                    *at = r.reports_to;
+                }
+            }
+        }
+        let h = Hierarchy {
+            superiors: ranks
+                .into_iter()
+                .map(|(n, r)| (n, r.unwrap_or_default()))
+                .collect(),
+        };
+        h.check()?;
+        Ok(h)
+    }
+
+    /// Table `key` of every file, each over those beneath it by `over`.
+    fn part<T: DeserializeOwned + Default>(&self, key: &str, over: fn(T, T) -> T) -> Result<T> {
+        let (sources, _) = self.sources()?;
+        sources.iter().try_fold(T::default(), |base, s| {
+            Ok(match s.part(key)? {
+                Some(t) => over(t, base),
+                None => base,
+            })
+        })
+    }
+
+    /// The files that exist, lowest first: the user's, the nearest project's, its private one;
+    /// and the project's [`home`](project::home), if in one.
+    fn sources(&self) -> Result<(Vec<Source>, Option<PathBuf>)> {
+        let user = self.user.as_deref();
+        let project = nearest(user, &self.cwd);
         let home = match project.as_deref().and_then(Path::parent) {
             Some(dir) => Some(project::home(dir)?),
             None => None,
@@ -210,36 +411,36 @@ impl Settings {
         if let Some(h) = &home {
             check_link(h)?;
         }
-        let local = home.as_deref().map(|h| (private_file(h), h));
         let beside = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
-        [
+        let sources = [
             user.map(|p| (p.to_path_buf(), beside(p), Layer::User)),
-            project
-                .as_deref()
-                .map(|p| (p.to_path_buf(), beside(p), Layer::Project)),
-            local.map(|(p, h)| (p, h.to_path_buf(), Layer::Local)),
+            project.map(|p| {
+                let dir = beside(&p);
+                (p, dir, Layer::Project)
+            }),
+            home.as_deref()
+                .map(|h| (private_file(h), h.to_path_buf(), Layer::Local)),
         ]
         .into_iter()
         .flatten()
-        .try_fold(Settings::default(), |base, (p, dir, layer)| {
-            Ok(Settings::read(&p, &dir, layer)?
-                .unwrap_or_default()
-                .over(base))
-        })
-        .map(|s| match &home {
-            Some(home) => s.under(home),
-            None => s,
-        })
-        .and_then(|s| {
-            s.check_hierarchy()?;
-            Ok(s)
-        })
+        .filter_map(|(p, dir, layer)| Source::read(&p, dir, layer).transpose())
+        .collect::<Result<Vec<_>>>()?;
+        Ok((sources, home))
     }
+}
 
-    /// `[agents.<name>]`, its paths absolute, except a relative `worktree` outside a project;
-    /// `None` when no file has the table.
-    pub fn agent(&self, name: &str) -> Option<&Agent> {
-        self.agents.get(name)
+/// The agents' superiors, as `reports-to` sets them: a graph with no cycle, each superior an
+/// agent with a table.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hierarchy {
+    /// Every agent with a table, and the agents it reports to.
+    superiors: BTreeMap<String, Vec<String>>,
+}
+
+impl Hierarchy {
+    /// The agents `name` reports to; none when no file sets its `reports-to`.
+    pub fn superiors(&self, name: &str) -> &[String] {
+        self.superiors.get(name).map_or(&[], Vec::as_slice)
     }
 
     /// The agents below agent `name`: those that report to it, and every agent below them, through
@@ -249,8 +450,8 @@ impl Settings {
         let mut found = BTreeSet::new();
         let mut next = vec![name];
         while let Some(boss) = next.pop() {
-            for (n, a) in &self.agents {
-                if a.superiors().iter().any(|s| s == boss) && found.insert(n.as_str()) {
+            for (n, s) in &self.superiors {
+                if s.iter().any(|s| s == boss) && found.insert(n.as_str()) {
                     next.push(n);
                 }
             }
@@ -260,13 +461,13 @@ impl Settings {
 
     /// Refuses an agent that reports to itself, to an agent no table defines, or, through others,
     /// to an agent below it.
-    fn check_hierarchy(&self) -> Result<()> {
-        for (n, a) in &self.agents {
-            for s in a.superiors() {
+    fn check(&self) -> Result<()> {
+        for (n, superiors) in &self.superiors {
+            for s in superiors {
                 if s == n {
                     bail!("Agent {n} reports to itself. Take {n} out of its reports-to.");
                 }
-                if !self.agents.contains_key(s) {
+                if !self.superiors.contains_key(s) {
                     bail!(
                         "Agent {n} reports to {s}, which no [agents.{s}] table defines. Add the \
                          table to an {FILE}, or take {s} out of {n}'s reports-to."
@@ -275,7 +476,7 @@ impl Settings {
             }
         }
         let mut done = BTreeSet::new();
-        for n in self.agents.keys() {
+        for n in self.superiors.keys() {
             if let Some(cycle) = self.cycle_from(n, &mut Vec::new(), &mut done) {
                 bail!(
                     "Agents report to each other in a cycle: {}. Take one name out of a \
@@ -304,7 +505,7 @@ impl Settings {
             return Some(cycle);
         }
         path.push(n);
-        for s in self.agents.get(n).map_or(&[][..], Agent::superiors) {
+        for s in self.superiors(n) {
             if let Some(cycle) = self.cycle_from(s, path, done) {
                 return Some(cycle);
             }
@@ -312,64 +513,6 @@ impl Settings {
         path.pop();
         done.insert(n);
         None
-    }
-
-    /// The settings in `p`, its relative instructions from `dir`, `None` without the file; only
-    /// a project's `ai.toml` holds `[project]`.
-    fn read(p: &Path, dir: &Path, layer: Layer) -> Result<Option<Settings>> {
-        let Some(f) = read(p)? else {
-            return Ok(None);
-        };
-        if f.project.is_some() {
-            match layer {
-                Layer::User => bail!(
-                    "{}: [project] belongs in a project's {FILE}, not in your own.",
-                    pretty(p)
-                ),
-                Layer::Local => bail!(
-                    "{}: [project] belongs in the project's {FILE}, not in its private one.",
-                    pretty(p)
-                ),
-                Layer::Project => {}
-            }
-        }
-        Ok(Some(Settings {
-            chat: f.chat,
-            agent: f.agent,
-            memory: f.memory,
-            summariser: f.summariser,
-            agents: f
-                .agents
-                .into_iter()
-                .map(|(name, a)| (name, a.from(dir)))
-                .collect(),
-        }))
-    }
-
-    fn over(self, base: Settings) -> Settings {
-        let mut agents = base.agents;
-        for (name, a) in self.agents {
-            let b = agents.remove(&name).unwrap_or_default();
-            agents.insert(name, a.over(b));
-        }
-        Settings {
-            chat: self.chat.over(base.chat),
-            agent: self.agent.over(base.agent),
-            memory: self.memory.over(base.memory),
-            summariser: self.summariser.over(base.summariser),
-            agents,
-        }
-    }
-
-    fn under(self, root: &Path) -> Settings {
-        Settings {
-            agents: self
-                .agents
-                .into_iter()
-                .map(|(name, a)| (name, a.under(root)))
-                .collect(),
-            ..self
-        }
     }
 }
 

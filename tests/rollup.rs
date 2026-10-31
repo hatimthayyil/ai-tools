@@ -1078,9 +1078,12 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     let sub = r.path().join("src");
     fs::create_dir(&sub).unwrap();
     let store = Store::find(&sub).unwrap().unwrap();
-    let s = store.settings().unwrap();
+    let s = store.settings();
     assert_eq!(
-        (s.summariser.model().as_str(), s.chat.background()),
+        (
+            s.summariser().unwrap().model().as_str(),
+            s.chat().unwrap().background()
+        ),
         ("haiku", false)
     );
     let mut s = Script::new();

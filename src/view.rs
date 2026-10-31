@@ -52,8 +52,9 @@ impl Cli {
         terminal: bool,
     ) -> Result<ExitCode> {
         let thread = agent::thread_view(cwd, self.thread, self.session)?;
+        let settings = Settings::find(cwd);
         let rt = memory::Runtime {
-            config: Settings::find(cwd)?.memory,
+            config: Box::new(move || settings.memory()),
             ..memory::Runtime::default()
         };
         let mut text = b"# Memory\n\n".to_vec();

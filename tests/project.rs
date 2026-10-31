@@ -215,8 +215,8 @@ fn the_users_own_file_is_never_a_project_file() {
     fs::write(&user, "[summariser]\nmodel = \"opus\"\n").unwrap();
     let below = s.user().join("chat");
     fs::create_dir_all(&below).unwrap();
-    let settings = Settings::load(Some(&user), &below).unwrap();
-    assert_eq!(settings.summariser.model(), "opus");
+    let settings = Settings::load(Some(&user), &below);
+    assert_eq!(settings.summariser().unwrap().model(), "opus");
     assert_eq!(
         fails(&s.ai(&below, &["agent", "list"])),
         "Not in a project: no ai.toml here or above. Run `ai init` in the project's top \
@@ -228,6 +228,7 @@ fn the_users_own_file_is_never_a_project_file() {
     );
     fs::write(&user, "[project]\nname = \"me\"\n").unwrap();
     let err = Settings::load(Some(&user), &s.work())
+        .summariser()
         .unwrap_err()
         .to_string();
     assert_eq!(

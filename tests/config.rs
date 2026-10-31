@@ -43,7 +43,7 @@ impl Tree {
         self.inner().join("cwd")
     }
 
-    fn load(&self) -> anyhow::Result<Settings> {
+    fn load(&self) -> Settings {
         Settings::load(Some(&self.user()), &self.cwd())
     }
 }
@@ -58,24 +58,32 @@ fn private(dir: &Path) -> PathBuf {
 #[test]
 fn without_a_file_every_key_has_its_default() {
     let t = Tree::new();
-    let s = t.load().unwrap();
-    assert_eq!(s, Settings::default());
+    let s = t.load();
+    assert_eq!(s.summariser().unwrap(), Default::default());
+    assert_eq!(s.memory().unwrap(), Default::default());
+    assert_eq!(s.chat().unwrap(), Default::default());
+    assert_eq!(s.agent_table().unwrap(), Default::default());
+    assert_eq!(s.hierarchy().unwrap(), Default::default());
+    assert_eq!(s.agent("developer").unwrap(), None);
     assert_eq!(
         (
-            s.summariser.kind(),
-            s.summariser.model(),
-            s.chat.background()
+            s.summariser().unwrap().kind(),
+            s.summariser().unwrap().model(),
+            s.chat().unwrap().background()
         ),
         (Kind::Claude, "sonnet".to_string(), true)
     );
     assert_eq!(
         (
-            s.memory.get(Knob::ViewLines),
-            s.memory.get(Knob::EntryChars)
+            s.memory().unwrap().get(Knob::ViewLines),
+            s.memory().unwrap().get(Knob::EntryChars)
         ),
         (96, 280)
     );
-    assert_eq!(s.agent.view.counts().unwrap(), Counts::default());
+    assert_eq!(
+        s.agent_table().unwrap().view.counts().unwrap(),
+        Counts::default()
+    );
 }
 
 #[test]
@@ -86,9 +94,12 @@ fn the_api_backend_takes_a_provider_and_its_model() {
         "[summariser]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\n",
     )
     .unwrap();
-    let s = t.load().unwrap();
+    let s = t.load();
     assert_eq!(
-        (s.summariser.kind(), s.summariser.model()),
+        (
+            s.summariser().unwrap().kind(),
+            s.summariser().unwrap().model()
+        ),
         (Kind::Api, "deepseek/deepseek-flash".to_string())
     );
 }
@@ -107,13 +118,13 @@ fn an_effort_is_a_genai_effort_or_a_thinking_budget() {
     ] {
         let t = Tree::new();
         fs::write(t.user(), format!("[summariser]\neffort = {given}\n")).unwrap();
-        let effort = t.load().unwrap().summariser.effort.unwrap();
+        let effort = t.load().summariser().unwrap().effort.unwrap();
         assert_eq!(effort.reasoning().to_string(), kept, "{given}");
     }
     for given in ["\"\"", "-5", "\"0\"", "5000000000"] {
         let t = Tree::new();
         fs::write(t.user(), format!("[summariser]\neffort = {given}\n")).unwrap();
-        let err = t.load().unwrap_err().to_string();
+        let err = t.load().summariser().unwrap_err().to_string();
         assert!(
             err.contains("is no effort") || err.contains("is no budget"),
             "{given}: {err}"
@@ -135,7 +146,7 @@ fn the_claude_backend_takes_only_the_efforts_claude_does() {
     ] {
         let t = Tree::new();
         fs::write(t.user(), format!("[summariser]\neffort = \"{given}\"\n")).unwrap();
-        let effort = t.load().unwrap().summariser.effort.unwrap();
+        let effort = t.load().summariser().unwrap().effort.unwrap();
         match effort.claude() {
             Ok(e) => assert!(ok && e == given, "{given}"),
             Err(err) => assert!(
@@ -149,7 +160,7 @@ fn the_claude_backend_takes_only_the_efforts_claude_does() {
 #[test]
 fn jobs_default_to_eight_and_each_key_merges_on_its_own() {
     let t = Tree::new();
-    assert_eq!(t.load().unwrap().summariser.jobs(), 8);
+    assert_eq!(t.load().summariser().unwrap().jobs(), 8);
     fs::write(
         t.user(),
         "[summariser]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\neffort = \"low\"\njobs = 64\n",
@@ -160,7 +171,7 @@ fn jobs_default_to_eight_and_each_key_merges_on_its_own() {
         "[summariser]\neffort = \"max\"\n",
     )
     .unwrap();
-    let s = t.load().unwrap().summariser;
+    let s = t.load().summariser().unwrap();
     assert_eq!(
         (
             s.kind(),
@@ -180,7 +191,7 @@ fn jobs_default_to_eight_and_each_key_merges_on_its_own() {
 #[test]
 fn a_witness_is_set_by_the_summarisers_keys_merged_key_by_key() {
     let t = Tree::new();
-    assert!(t.load().unwrap().summariser.witness().unwrap().is_none());
+    assert!(t.load().summariser().unwrap().witness().unwrap().is_none());
     fs::write(
         t.user(),
         "[summariser]\nmodel = \"sonnet\"\n\n[summariser.witness]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\neffort = \"low\"\n",
@@ -191,7 +202,7 @@ fn a_witness_is_set_by_the_summarisers_keys_merged_key_by_key() {
         "[summariser.witness]\neffort = \"max\"\n",
     )
     .unwrap();
-    let s = t.load().unwrap().summariser;
+    let s = t.load().summariser().unwrap();
     let w = s.witness().unwrap().unwrap();
     assert_eq!(
         (
@@ -211,7 +222,7 @@ fn a_witness_is_set_by_the_summarisers_keys_merged_key_by_key() {
         ),
     ] {
         fs::write(t.inner().join("ai.toml"), text).unwrap();
-        let s = t.load().unwrap().summariser;
+        let s = t.load().summariser().unwrap();
         let err = s.witness().unwrap_err().to_string();
         assert!(err.contains(says), "{err}");
     }
@@ -231,21 +242,24 @@ fn the_nearest_project_file_overrides_the_users_key_by_key() {
         "[summariser]\nmodel = \"haiku\"\n\n[memory]\nentry-chars = 100\n\n[agent.view]\ntotal = 16\n",
     )
     .unwrap();
-    let s = t.load().unwrap();
+    let s = t.load();
     assert_eq!(
-        (s.summariser.model(), s.chat.background()),
+        (
+            s.summariser().unwrap().model(),
+            s.chat().unwrap().background()
+        ),
         ("haiku".into(), false)
     );
     assert_eq!(
         (
-            s.memory.get(Knob::ViewLines),
-            s.memory.get(Knob::EntryChars)
+            s.memory().unwrap().get(Knob::ViewLines),
+            s.memory().unwrap().get(Knob::EntryChars)
         ),
         (50, 100),
         "only the nearest project file counts"
     );
     assert_eq!(
-        s.agent.view.counts().unwrap(),
+        s.agent_table().unwrap().view.counts().unwrap(),
         Counts {
             total: 16,
             recent: 5,
@@ -254,77 +268,165 @@ fn the_nearest_project_file_overrides_the_users_key_by_key() {
     );
 }
 
+/// The parts of the settings, by name.
+const PARTS: [&str; 6] = [
+    "summariser",
+    "memory",
+    "chat",
+    "agent",
+    "agents.a",
+    "hierarchy",
+];
+
+/// Part `name` of `s`, read: nothing, or its error.
+fn read(s: &Settings, name: &str) -> anyhow::Result<()> {
+    match name {
+        "summariser" => s.summariser().map(drop),
+        "memory" => s.memory().map(drop),
+        "chat" => s.chat().map(drop),
+        "agent" => s.agent_table().map(drop),
+        "agents.a" => s.agent("a").map(drop),
+        "hierarchy" => s.hierarchy().map(drop),
+        _ => unreachable!(),
+    }
+}
+
 #[test]
-fn a_bad_key_or_value_names_its_file_and_key() {
-    for (text, key, why) in [
+fn a_bad_key_or_value_names_its_file_and_key_and_stops_its_part_alone() {
+    let summariser: &[&str] = &["summariser"];
+    for (text, key, why, fails) in [
         (
             "[summariser]\nmodle = \"haiku\"\n",
             "modle",
             "unknown field",
+            summariser,
         ),
-        ("[memroy]\nentry-chars = 3\n", "memroy", "unknown field"),
-        ("[memory]\nview-lines = 3\n", "view-lines", "unknown field"),
+        (
+            "[memroy]\nentry-chars = 3\n",
+            "memroy",
+            "unknown field",
+            &PARTS[..],
+        ),
+        (
+            "[memory\nview = 3\n",
+            "[memory",
+            "unclosed table",
+            &PARTS[..],
+        ),
+        (
+            "[memory]\nview-lines = 3\n",
+            "view-lines",
+            "unknown field",
+            &["memory"],
+        ),
         (
             "[chat]\nbackground = \"maybe\"\n",
             "background",
             "expected a boolean",
+            &["chat"],
         ),
-        ("[summariser]\nmodel = \" \"\n", "model", "is empty"),
+        (
+            "[summariser]\nmodel = \" \"\n",
+            "model",
+            "is empty",
+            summariser,
+        ),
         (
             "[summariser]\nbackend = \"pi\"\n",
             "backend",
             "unknown variant `pi`, expected `claude` or `api`",
+            summariser,
         ),
-        ("[chat]\nmodel = \"haiku\"\n", "model", "unknown field"),
+        (
+            "[chat]\nmodel = \"haiku\"\n",
+            "model",
+            "unknown field",
+            &["chat"],
+        ),
         (
             "[summariser]\neffort = \"hard\"\n",
             "effort",
             "`hard` is no effort",
+            summariser,
         ),
-        ("[summariser]\neffort = 0\n", "effort", "0 is no budget"),
-        ("[summariser]\njobs = 0\n", "jobs", "positive whole number"),
+        (
+            "[summariser]\neffort = 0\n",
+            "effort",
+            "0 is no budget",
+            summariser,
+        ),
+        (
+            "[summariser]\njobs = 0\n",
+            "jobs",
+            "positive whole number",
+            summariser,
+        ),
         (
             "[summariser.witness]\nmodle = \"haiku\"\n",
             "modle",
             "unknown field",
+            summariser,
         ),
-        ("[agents.a]\nharness = \"pi\"\n", "harness", "unknown field"),
-        ("[agents.a]\nworktree = \"\"\n", "worktree", "is empty"),
+        (
+            "[agents.a]\nharness = \"pi\"\n",
+            "harness",
+            "unknown field",
+            &["agents.a", "hierarchy"],
+        ),
+        (
+            "[agents.a]\nworktree = \"\"\n",
+            "worktree",
+            "is empty",
+            &["agents.a"],
+        ),
         (
             "[agents.a]\nreports-to = \"b\"\n",
             "reports-to",
             "expected a sequence",
+            &["hierarchy"],
         ),
         (
             "[agents.a]\nreports-to = [\"lead@quran\"]\n",
             "reports-to",
             "'lead@quran' is not a thread name",
+            &["hierarchy"],
         ),
         (
             "[agents.a]\nreports-to = [\"b\", \"c\", \"b\"]\n",
             "reports-to",
             "names b twice",
+            &["hierarchy"],
         ),
-        ("[agent.view]\nlines = 3\n", "lines", "unknown field"),
+        ("[agents.b]\nworktree = \"\"\n", "worktree", "is empty", &[]),
+        (
+            "[agent.view]\nlines = 3\n",
+            "lines",
+            "unknown field",
+            &["agent"],
+        ),
         (
             "[agent.view]\ntotal = 0\n",
             "total",
             "positive whole number",
+            &["agent"],
         ),
         (
             "[agent.view]\nlatest = 0\n",
             "latest",
             "positive whole number",
+            &["agent"],
         ),
         (
             "[memory.view]\nlines = 0\n",
             "lines",
             "positive whole number",
+            &["memory"],
         ),
         (
             "[memory]\nentry-chars = 513\n",
             "entry-chars",
             "is at most 512",
+            &["memory"],
         ),
     ] {
         for at in ["user", "project", "local"] {
@@ -338,15 +440,49 @@ fn a_bad_key_or_value_names_its_file_and_key() {
                 }
             };
             fs::write(&p, text).unwrap();
-            let err = t.load().unwrap_err().to_string();
-            assert!(
-                err.starts_with(&format!("{}: ", p.display()))
-                    && err.contains(key)
-                    && err.contains(why),
-                "{text}: {err}"
-            );
+            let s = t.load();
+            for part in PARTS {
+                match (fails.contains(&part), read(&s, part)) {
+                    (true, Err(err)) => {
+                        let err = err.to_string();
+                        assert!(
+                            err.starts_with(&format!("{}: ", p.display()))
+                                && err.contains(key)
+                                && err.contains(why),
+                            "{text} in {at}, {part}: {err}"
+                        );
+                    }
+                    (false, Ok(())) => {}
+                    (stops, r) => panic!("{text} in {at}: {part} stops {stops}, read {r:?}"),
+                }
+            }
         }
     }
+}
+
+#[test]
+fn a_project_is_found_whatever_its_files_other_tables_hold() {
+    let t = Tree::new();
+    let p = t.inner().join("ai.toml");
+    fs::write(
+        &p,
+        "[project]\nid = \"project_01m5h1sxw1eh2rcnjyd5hb8fy4\"\n\n[summariser]\nmodle = \"x\"\n\n\
+         [agents.a]\nreports-to = [\"a\"]\n",
+    )
+    .unwrap();
+    let found = Project::find(&t.cwd()).unwrap().unwrap();
+    assert_eq!(found.id, "project_01m5h1sxw1eh2rcnjyd5hb8fy4");
+
+    fs::write(
+        &p,
+        "[project]\nid = \"project_01m5h1sxw1eh2rcnjyd5hb8fy4\"\n\n[memroy]\n",
+    )
+    .unwrap();
+    let err = Project::find(&t.cwd()).unwrap_err().to_string();
+    assert!(
+        err.starts_with(&format!("{}: ", p.display())) && err.contains("memroy"),
+        "a table no part has leaves the project in doubt too: {err}"
+    );
 }
 
 #[test]
@@ -367,15 +503,18 @@ fn the_private_file_overrides_its_project_file_key_by_key() {
         "[summariser]\nmodel = \"opus\"\n\n[memory]\nentry-chars = 200\n",
     )
     .unwrap();
-    let s = t.load().unwrap();
+    let s = t.load();
     assert_eq!(
-        (s.summariser.model(), s.chat.background()),
+        (
+            s.summariser().unwrap().model(),
+            s.chat().unwrap().background()
+        ),
         ("opus".into(), false)
     );
     assert_eq!(
         (
-            s.memory.get(Knob::ViewLines),
-            s.memory.get(Knob::EntryChars)
+            s.memory().unwrap().get(Knob::ViewLines),
+            s.memory().unwrap().get(Knob::EntryChars)
         ),
         (10, 200)
     );
@@ -392,7 +531,7 @@ fn only_the_private_file_of_the_nearest_project_counts() {
     )
     .unwrap();
     fs::write(private(&t.cwd()), "[summariser]\nmodel = \"fable\"\n").unwrap();
-    assert_eq!(t.load().unwrap().summariser.model(), "haiku");
+    assert_eq!(t.load().summariser().unwrap().model(), "haiku");
 }
 
 #[test]
@@ -413,28 +552,26 @@ fn an_agent_adds_up_instructions_and_overrides_its_worktree() {
         "[agents.stabiliser]\ninstructions = \"mine.md\"\nworktree = \"../my-stabiliser\"\n",
     )
     .unwrap();
-    let s = t.load().unwrap();
+    let s = t.load();
     assert_eq!(
-        s.agent("stabiliser"),
-        Some(&Agent {
+        s.agent("stabiliser").unwrap(),
+        Some(Agent {
             instructions: vec![
                 "/home/me/stabiliser.md".into(),
                 t.inner().join("ai/agents/stabiliser.md"),
                 t.inner().join("mine.md"),
             ],
             worktree: Some(t.inner().join("../my-stabiliser")),
-            reports_to: None,
         })
     );
     assert_eq!(
-        s.agent("solo"),
-        Some(&Agent {
+        s.agent("solo").unwrap(),
+        Some(Agent {
             instructions: vec![],
             worktree: Some("/w".into()),
-            reports_to: None,
         })
     );
-    assert_eq!(s.agent("developer"), None);
+    assert_eq!(s.agent("developer").unwrap(), None);
 }
 
 #[test]
@@ -447,11 +584,10 @@ fn a_users_agent_takes_its_instructions_from_beside_the_users_file() {
     .unwrap();
     fs::write(t.inner().join("ai.toml"), "").unwrap();
     assert_eq!(
-        t.load().unwrap().agent("reviewer"),
-        Some(&Agent {
+        t.load().agent("reviewer").unwrap(),
+        Some(Agent {
             instructions: vec![t.tmp.path().join("agents/reviewer.md")],
             worktree: Some(t.inner().join("../review")),
-            reports_to: None,
         })
     );
 }
@@ -465,11 +601,10 @@ fn outside_a_project_a_relative_worktree_stays_as_written() {
     )
     .unwrap();
     assert_eq!(
-        t.load().unwrap().agent("helper"),
-        Some(&Agent {
+        t.load().agent("helper").unwrap(),
+        Some(Agent {
             instructions: vec![t.tmp.path().join("helper.md")],
             worktree: Some("w".into()),
-            reports_to: None,
         })
     );
 }
@@ -480,13 +615,16 @@ fn the_private_file_holds_no_project_table() {
     fs::write(t.inner().join("ai.toml"), "[project]\nname = \"widget\"\n").unwrap();
     let local = private(&t.inner());
     fs::write(&local, "[project]\nname = \"mine\"\n").unwrap();
-    assert_eq!(
-        t.load().unwrap_err().to_string(),
-        format!(
-            "{}: [project] belongs in the project's ai.toml, not in its private one.",
-            local.display()
-        )
-    );
+    for part in PARTS {
+        assert_eq!(
+            read(&t.load(), part).unwrap_err().to_string(),
+            format!(
+                "{}: [project] belongs in the project's ai.toml, not in its private one.",
+                local.display()
+            ),
+            "{part}"
+        );
+    }
 }
 
 #[test]
@@ -495,14 +633,17 @@ fn a_local_file_of_its_own_is_refused() {
     fs::write(t.inner().join("ai.toml"), "").unwrap();
     let link = t.inner().join("ai.local.toml");
     fs::write(&link, "[summariser]\nmodel = \"opus\"\n").unwrap();
-    assert_eq!(
-        t.load().unwrap_err().to_string(),
-        format!(
-            "{} is a file of its own. Move it to {}, then run `ai init` to link it.",
-            link.display(),
-            t.inner().join(".ai/local/ai.toml").display()
-        )
-    );
+    for part in PARTS {
+        assert_eq!(
+            read(&t.load(), part).unwrap_err().to_string(),
+            format!(
+                "{} is a file of its own. Move it to {}, then run `ai init` to link it.",
+                link.display(),
+                t.inner().join(".ai/local/ai.toml").display()
+            ),
+            "{part}"
+        );
+    }
 }
 
 /// `git args` in `dir`, which must succeed.
@@ -546,7 +687,7 @@ fn a_linked_worktree_reads_the_main_checkouts_private_file() {
     fs::write(private(&wt), "[summariser]\nmodel = \"fable\"\n").unwrap();
 
     assert_eq!(
-        Settings::load(None, &wt).unwrap().summariser.model(),
+        Settings::load(None, &wt).summariser().unwrap().model(),
         "opus"
     );
     let p = Project::find(&wt).unwrap().unwrap();
@@ -564,7 +705,7 @@ fn a_linked_worktree_reads_the_main_checkouts_private_file() {
     );
     assert!(fs::symlink_metadata(wt.join("ai.local.toml")).is_err());
     assert_eq!(
-        Settings::load(None, &wt).unwrap().summariser.model(),
+        Settings::load(None, &wt).summariser().unwrap().model(),
         "opus"
     );
 }
@@ -588,11 +729,10 @@ fn a_linked_worktree_finds_an_agents_worktree_where_the_main_checkout_does() {
 
     let from = |dir: &Path| {
         Settings::load(None, dir)
-            .unwrap()
             .agent("dev")
             .unwrap()
+            .unwrap()
             .worktree
-            .clone()
     };
     assert_eq!(from(&sub), Some(sub.join("../dev")));
     assert_eq!(from(&wt), from(&sub));
@@ -611,20 +751,23 @@ fn reports_to_is_overridden_key_by_key() {
         "[agents.developer]\nreports-to = [\"lead\", \"engineer\"]\nworktree = \"../dev\"\n",
     )
     .unwrap();
-    let s = t.load().unwrap();
-    let dev = s.agent("developer").unwrap();
-    assert_eq!(dev.superiors(), ["lead", "engineer"]);
-    assert_eq!(dev.worktree, Some(t.inner().join("../dev")));
-    assert_eq!(s.agent("lead").unwrap().superiors(), [] as [&str; 0]);
+    let s = t.load();
+    let h = s.hierarchy().unwrap();
+    assert_eq!(h.superiors("developer"), ["lead", "engineer"]);
+    assert_eq!(h.superiors("lead"), [] as [&str; 0]);
+    assert_eq!(
+        s.agent("developer").unwrap().unwrap().worktree,
+        Some(t.inner().join("../dev"))
+    );
 
     fs::write(private(&t.inner()), "[agents.developer]\nreports-to = []\n").unwrap();
-    let s = t.load().unwrap();
-    assert_eq!(s.agent("developer").unwrap().superiors(), [] as [&str; 0]);
-    assert!(s.below("lead").is_empty());
+    let h = t.load().hierarchy().unwrap();
+    assert_eq!(h.superiors("developer"), [] as [&str; 0]);
+    assert!(h.below("lead").is_empty());
 }
 
 #[test]
-fn a_bad_hierarchy_is_refused_when_the_settings_load() {
+fn a_bad_hierarchy_stops_the_hierarchy_alone() {
     for (user, project, err) in [
         (
             "[agents.lead]\nreports-to = [\"lead\"]\n",
@@ -655,7 +798,15 @@ fn a_bad_hierarchy_is_refused_when_the_settings_load() {
         let t = Tree::new();
         fs::write(t.user(), user).unwrap();
         fs::write(t.inner().join("ai.toml"), project).unwrap();
-        assert_eq!(t.load().unwrap_err().to_string(), err, "{user}{project}");
+        let s = t.load();
+        assert_eq!(
+            s.hierarchy().unwrap_err().to_string(),
+            err,
+            "{user}{project}"
+        );
+        for part in PARTS.into_iter().filter(|p| *p != "hierarchy") {
+            assert!(read(&s, part).is_ok(), "{part}: {user}{project}");
+        }
     }
 }
 
@@ -673,8 +824,8 @@ const TEAM: &str = "[agents.main]\n\n\
 fn an_agent_reads_every_agent_below_it_through_any_number_of_levels() {
     let t = Tree::new();
     fs::write(t.user(), TEAM).unwrap();
-    let s = t.load().unwrap();
-    let below = |n: &str| s.below(n).into_iter().collect::<Vec<_>>();
+    let h = t.load().hierarchy().unwrap();
+    let below = |n: &str| h.below(n).into_iter().collect::<Vec<_>>();
     assert_eq!(
         below("main"),
         [
@@ -700,19 +851,16 @@ fn an_agent_reads_every_agent_below_it_through_any_number_of_levels() {
 fn an_agent_with_several_superiors_is_below_each_of_them() {
     let t = Tree::new();
     fs::write(t.user(), TEAM).unwrap();
-    let s = t.load().unwrap();
+    let h = t.load().hierarchy().unwrap();
+    assert_eq!(h.superiors("developer"), ["lead", "engineer"]);
     assert_eq!(
-        s.agent("developer").unwrap().superiors(),
-        ["lead", "engineer"]
-    );
-    assert_eq!(
-        s.below("engineer").into_iter().collect::<Vec<_>>(),
+        h.below("engineer").into_iter().collect::<Vec<_>>(),
         ["developer"]
     );
-    assert!(s.below("lead").contains("developer"));
+    assert!(h.below("lead").contains("developer"));
     assert!(
-        !s.below("engineer").contains("reviewer"),
+        !h.below("engineer").contains("reviewer"),
         "lead's, not engineer's"
     );
-    assert!(!s.below("quran").contains("engineer"), "a sibling of quran");
+    assert!(!h.below("quran").contains("engineer"), "a sibling of quran");
 }

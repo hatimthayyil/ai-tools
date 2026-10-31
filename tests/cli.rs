@@ -497,6 +497,51 @@ fn nothing_is_written_outside_the_store() {
 }
 
 #[test]
+fn a_broken_setting_stops_only_the_commands_that_read_it() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    assert!(s.ai(&["note", "a first note"]).status.success());
+    let works = |args: &[&str]| {
+        let r = s.ai(args);
+        assert!(r.status.success(), "{args:?}: {}", text(&r.stderr));
+    };
+    let stops = |args: &[&str], says: &str| {
+        let r = s.ai(args);
+        let err = text(&r.stderr);
+        assert!(!r.status.success() && err.contains(says), "{args:?}: {err}");
+    };
+    let reads: [&[&str]; 4] = [
+        &["view"],
+        &["note", "one more note"],
+        &["grep", "note"],
+        &["config"],
+    ];
+
+    s.user_toml(
+        "[agents.a]\nreports-to = [\"b\"]\n\n[agents.b]\nreports-to = [\"a\"]\n\n\
+         [agents.c]\nreports-to = [\"nobody\"]\nworktree = \"\"\n",
+    );
+    reads.into_iter().for_each(works);
+
+    s.user_toml("[summariser]\nmodle = \"haiku\"\n");
+    reads.into_iter().for_each(works);
+    stops(&["build"], "modle");
+
+    s.user_toml("[memory]\nentry-chars = 513\n");
+    works(&["grep", "note"]);
+    works(&["stats"]);
+    for args in [&["view"][..], &["note", "x"], &["config"]] {
+        stops(args, "is at most 512");
+    }
+
+    s.user_toml("[memory\n");
+    works(&["grep", "note"]);
+    for args in [&["view"][..], &["note", "x"], &["build"]] {
+        stops(args, "unclosed table");
+    }
+}
+
+#[test]
 fn a_projects_ai_toml_overrides_the_users_key_by_key() {
     let s = Sandbox::new();
     assert!(s.ai(&["init"]).status.success());

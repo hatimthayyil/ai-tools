@@ -279,11 +279,12 @@ pub struct Runtime {
     pub terminal: bool,
     /// Whether stderr is a terminal, where `build` draws its bars.
     pub bars: bool,
+    /// The compactor's options; `[summariser] jobs` sets its jobs when it is set.
     pub opts: Options,
-    /// The sizes `ai.toml` sets.
-    pub config: Config,
-    /// What `ai.toml` sets for the summariser, which `backend` makes.
-    pub summariser: summariser::Config,
+    /// The sizes `ai.toml` sets, read by the commands that use them.
+    pub config: Box<dyn Fn() -> Result<Config>>,
+    /// What `ai.toml` sets for the summariser, which `backend` makes, read by `build` alone.
+    pub summariser: Box<dyn Fn() -> Result<summariser::Config>>,
     /// Whether `note` starts a background `build`.
     pub summarise_on_note: bool,
     /// Called by `build` when a round is done, while it still holds the compactor lock.
@@ -293,6 +294,16 @@ pub struct Runtime {
     pub views: Box<dyn Fn() -> Result<PathBuf>>,
 }
 
+impl Runtime {
+    /// The compactor's options, with the jobs `summariser` sets.
+    fn options(&self, summariser: &summariser::Config) -> Options {
+        Options {
+            jobs: summariser.jobs.unwrap_or(self.opts.jobs),
+            ..self.opts
+        }
+    }
+}
+
 impl Default for Runtime {
     fn default() -> Runtime {
         Runtime {
@@ -300,8 +311,8 @@ impl Default for Runtime {
             terminal: false,
             bars: false,
             opts: Options::default(),
-            config: Config::default(),
-            summariser: summariser::Config::default(),
+            config: Box::new(|| Ok(Config::default())),
+            summariser: Box::new(|| Ok(summariser::Config::default())),
             summarise_on_note: std::env::var_os("AI_MEMORY_SUMMARISE").is_none_or(|v| v != "0"),
             before_release: Box::new(|| {}),
             stdin: Box::new(|| io::read_to_string(io::stdin())),
@@ -348,17 +359,14 @@ impl Cli {
     /// Runs against the default memory, with the sizes `ai.toml` sets here, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
-        let settings = Settings::find(&cwd)?;
+        let settings = Settings::find(&cwd);
+        let (memory, summariser, backend) = (settings.clone(), settings.clone(), settings);
         let rt = Runtime {
-            backend: settings.summariser.clone().maker(),
+            backend: Box::new(move |calls| backend.summariser()?.backend(None, calls)),
             terminal: io::stdout().is_terminal(),
             bars: progress::terminal(),
-            config: settings.memory,
-            opts: Options {
-                jobs: settings.summariser.jobs(),
-                ..Options::default()
-            },
-            summariser: settings.summariser,
+            config: Box::new(move || memory.memory()),
+            summariser: Box::new(move || summariser.summariser()),
             ..Runtime::default()
         };
         match self.run_with(&default_dir()?, &mut io::stdout().lock(), &rt) {
@@ -374,7 +382,7 @@ impl Cli {
             meta: Meta::default(),
         });
         if let Command::Init = command {
-            return init(dir, out, &rt.config);
+            return init(dir, out, &(rt.config)()?);
         }
         let s = Store::open(dir)?;
         let cwd = std::env::current_dir().ok();
@@ -426,7 +434,7 @@ impl Command {
             Command::Grep(g) => grep(s, out, &g, rt.terminal, &(rt.views)()?),
             Command::Zoom { id, tree, meta } => zoom_cmd(&read_tree(s, tree)?, out, &id, rt, &meta),
             Command::Show { id } => show(&s.snapshot()?, out, &id),
-            Command::Config => config(out, &rt.config),
+            Command::Config => config(out, &(rt.config)()?),
             Command::Import { file } => import(s, out, &file),
             Command::Stats(st) => stats(&s.snapshot()?, s.dir(), out, &st),
         }
@@ -513,7 +521,11 @@ fn view(
     tree: Option<u64>,
     meta: &Meta,
 ) -> Result<ExitCode> {
-    let text = view_text(&read_tree(s, tree)?, rt.config.get(Knob::ViewLines), meta)?;
+    let text = view_text(
+        &read_tree(s, tree)?,
+        (rt.config)()?.get(Knob::ViewLines),
+        meta,
+    )?;
     let command = format!("{ME} view{}", meta.flags());
     page::print(out, &(rt.views)()?, &command, &text, whole)?;
     Ok(ExitCode::SUCCESS)
@@ -571,7 +583,7 @@ fn note(
     place: &Place,
     who: &Who,
 ) -> Result<ExitCode> {
-    let text = check(text, rt.config.get(Knob::EntryChars))?;
+    let text = check(text, (rt.config)()?.get(Knob::EntryChars))?;
     let m = Message {
         place: place.clone(),
         who: who.clone(),
@@ -596,7 +608,7 @@ fn pending(s: &Store) -> Result<bool> {
 
 /// What `build` shows its progress about: what it does, with what, and the past calls to
 /// estimate from.
-fn about(s: &Store, rt: &Runtime) -> Result<About> {
+fn about(s: &Store, summariser: &summariser::Config, opts: Options) -> Result<About> {
     let log = s.dir().join(log::SUMMARISE_LOG);
     let title = match s.working()?.state().building {
         Some(n) => format!("Rebuilding tree {n}"),
@@ -607,8 +619,8 @@ fn about(s: &Store, rt: &Runtime) -> Result<About> {
         unit: "summary",
         covers: |l| plural(1 << l, "message"),
         first_bar: 1,
-        model: rt.summariser.model(),
-        jobs: rt.opts.jobs,
+        model: summariser.model(),
+        jobs: opts.jobs,
         past: Past::read(&log, |id| Coord::parse(id).map(|(_, n)| n.trailing_zeros()))?,
         log,
     })
@@ -636,8 +648,10 @@ fn mem_levels(m: &Mem) -> Vec<Level> {
 
 /// `build --dry-run`: the plan of `build`, and nothing else.
 fn plan(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+    let summariser = (rt.summariser)()?;
     let levels = mem_levels(&Mem::load(&s.working()?, VIEW)?);
-    let progress = Progress::new(&mut *out, Mode::Plain, about(s, rt)?);
+    let about = about(s, &summariser, rt.options(&summariser))?;
+    let progress = Progress::new(&mut *out, Mode::Plain, about);
     if !progress.plan(&levels)? {
         drop(progress);
         writeln!(out, "Nothing to build.")?;
@@ -648,11 +662,13 @@ fn plan(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
 /// Builds every node that is due in the tree being built, else the current one. A run that gives
 /// up leaves what it has not built pending. Shows its plan, then its progress, then what it did.
 fn build(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+    let summariser = (rt.summariser)()?;
+    let opts = rt.options(&summariser);
     let _log = log::init(&s.dir().join(log::SUMMARISE_LOG))?;
     let _span = info_span!(
         "summarise",
         pid = process::id(),
-        model = %rt.summariser.model(),
+        model = %summariser.model(),
         dir = ?pretty(s.dir())
     )
     .entered();
@@ -663,10 +679,10 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         true => Mode::Bars,
         false => Mode::Plain,
     };
-    let progress = Progress::new(&mut *out, mode, about(s, rt)?);
+    let progress = Progress::new(&mut *out, mode, about(s, &summariser, opts)?);
     let mut spent = Spend::default();
     let mut ran = Rounds::default();
-    let r = rounds(s, &progress, rt, &mut spent, &mut ran);
+    let r = rounds(s, &progress, rt, opts, &mut spent, &mut ran);
     let Err(e) = r else {
         let planned = progress.planned();
         match planned {
@@ -713,18 +729,19 @@ struct Rounds {
     busy: bool,
 }
 
-/// Compactor rounds until nothing is due or another compactor holds the lock, shown on
-/// `progress` and counted into `ran`. What their requests took goes into `spent`, failed or not.
+/// Compactor rounds with `opts` until nothing is due or another compactor holds the lock, shown
+/// on `progress` and counted into `ran`. What their requests took goes into `spent`, failed or not.
 fn rounds(
     s: &Store,
     progress: &Progress,
     rt: &Runtime,
+    opts: Options,
     spent: &mut Spend,
     ran: &mut Rounds,
 ) -> Result<()> {
     while pending(s)? {
         let backend = (rt.backend)(&s.dir().join(CALLS))?;
-        let Some(c) = Compactor::new(s, backend, rt.opts)? else {
+        let Some(c) = Compactor::new(s, backend, opts)? else {
             info!("busy: another compactor holds the lock; exiting");
             ran.busy = true;
             return Ok(());

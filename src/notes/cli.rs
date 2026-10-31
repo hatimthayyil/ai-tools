@@ -101,8 +101,8 @@ struct Add {
 /// How commands reach the summariser's model and stdin; tests swap in their own.
 pub struct Runtime {
     pub backend: Box<MakeBackend>,
-    /// What `ai.toml` sets for the summariser, which `backend` makes.
-    pub summariser: summariser::Config,
+    /// What `ai.toml` sets for the summariser, which `backend` makes, read by `build` alone.
+    pub summariser: Box<dyn Fn() -> Result<summariser::Config>>,
     /// Whether changes start a background `build`.
     pub summarise_on_change: bool,
     pub stdin: Box<dyn Fn() -> io::Result<String>>,
@@ -112,7 +112,7 @@ impl Default for Runtime {
     fn default() -> Runtime {
         Runtime {
             backend: summariser::Config::default().maker(),
-            summariser: summariser::Config::default(),
+            summariser: Box::new(|| Ok(summariser::Config::default())),
             summarise_on_change: std::env::var_os("AI_NOTES_SUMMARISE").is_none_or(|v| v != "0"),
             stdin: Box::new(|| io::read_to_string(io::stdin())),
         }
@@ -124,10 +124,11 @@ impl Cli {
     /// stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
-        let summariser = Settings::find(&cwd)?.summariser;
+        let settings = Settings::find(&cwd);
+        let (summariser, backend) = (settings.clone(), settings);
         let rt = Runtime {
-            backend: summariser.clone().maker(),
-            summariser,
+            backend: Box::new(move |calls| backend.summariser()?.backend(None, calls)),
+            summariser: Box::new(move || summariser.summariser()),
             ..Runtime::default()
         };
         match self.run_with(&store_dir(DIR_VAR, "notes")?, &mut io::stdout().lock(), &rt) {
@@ -441,11 +442,12 @@ fn build_cmd(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         writeln!(out, "Nothing to build.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    let summariser = (rt.summariser)()?;
     let _log = log::init(&s.git_dir().join(log::SUMMARISE_LOG))?;
     let _span = info_span!(
         "summarise",
         pid = process::id(),
-        model = %rt.summariser.model(),
+        model = %summariser.model(),
         dir = ?pretty(s.dir())
     )
     .entered();
