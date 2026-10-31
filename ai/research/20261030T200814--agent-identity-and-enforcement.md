@@ -35,7 +35,7 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 ## Agreed
 
 1. Mail is stored in per-sender outboxes, and the desk writes approved mail into the recipient's inbox (recommendation 2, team note §10).
-2. One Claude credentials file is bound read-write into every sandbox (recommendation 4).
+2. One Claude credentials file is bound read-write into every sandbox (recommendation 4). It cannot keep one login as stated ("How Claude writes linked files" below); the replacement awaits the user.
 3. A session not started through `ai resume` counts as the user's own ("The gap that remains").
 4. The setting is `reports-to = [...]` (recommendation 5).
 5. One git repository per thread (recommendation 3).
@@ -50,7 +50,7 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 | Access | What |
 | :-- | :-- |
 | read-write | the checkouts it works in; its own thread; its own outbox; its own harness state; a private `/tmp`; `ai memory` (shared by design) |
-| read-only | the threads of every agent below it; its own inbox; the `ai.toml` files; the system and `/nix/store` |
+| read-only | the threads of every agent below it; its own inbox; the `ai.toml` files; the user's Claude `settings.json`, `CLAUDE.md`, skills, commands and agents; the system and `/nix/store` |
 | absent | every other thread and outbox; other agents' harness state; herdr's socket; Claude's peer sockets; the session D-Bus and systemd's user socket; the gpg agent; the ssh agent, unless granted; other processes (own PID namespace) |
 | allowed | network; the Nix daemon socket, for builds; the ssh agent, for an agent whose settings grant it |
 
@@ -62,7 +62,7 @@ A sandboxed agent that runs `ai resume` for another agent gets a nested sandbox 
 
 **3. One git repository per thread.** A thread's repository is then exactly what its grants cover: its own read-write, a subordinate's read-only.
 
-**4. Each agent gets its own harness state.** Claude Code reads and writes `~/.claude/projects/<dir>/` for its own session, and agents in one repo share that folder. A `CLAUDE_CONFIG_DIR` per agent separates them; `ai` already honours that variable (src/agent/claude.rs:26-31). pi and DSH take a per-agent home the same way (`$DSH_HOME`, deepseek-harness apps/cli/reference/README.md:137). One Claude credentials file is bound read-write into every sandbox, so agents share the user's login (Agreed).
+**4. Each agent gets its own harness state.** Claude Code reads and writes `~/.claude/projects/<dir>/` for its own session, and agents in one repo share that folder. A `CLAUDE_CONFIG_DIR` per agent separates them; `ai` already honours that variable (src/agent/claude.rs:26-31). pi and DSH take a per-agent home the same way (`$DSH_HOME`, deepseek-harness apps/cli/reference/README.md:137). Agents share the user's subscription through a long-lived token `ai resume` hands each one, with no credentials file inside any sandbox ("How Claude writes linked files" below; it replaces Agreed decision 2, pending the user).
 
 **5. Rank stays the setting; `ai` compiles it into grants at launch.** An agent's read grants are the threads of every agent below it. Several superiors make the hierarchy a graph, not a tree; `ai` refuses a cycle. The setting is a list in the agent's own table:
 
@@ -95,13 +95,35 @@ Probed with Claude Code 2.1.316 (one empty folder, one with the credentials link
 - **Everything from the user tier is missing:** `settings.json` (hooks, including `ai memory prompt-hook`; `cleanupPeriodDays`; `autoMemoryEnabled: false`; `syncClaudeAiSkills: false`; `disableClaudeAiConnectors`; permission mode), user skills, `CLAUDE.md`, `commands/`. Consequences: transcripts fall under the default 30-day cleanup; auto-memory writes `projects/<dir>/memory/`; claude.ai skills sync into `skills/synced/` and the claude.ai connector appears.
 - **The interactive start stops on onboarding** (theme picker), then on the workspace trust prompt. `claude -p` skips both. The user has no MCP servers in `~/.claude.json`, so nothing there needs carrying.
 
+**How Claude writes linked files.** Settings **checked here** (Claude Code 2.1.316, interactive sessions under tmux in scratch folders, a dummy `ANTHROPIC_API_KEY` so no login was used, `/effort` to save). Credentials read in the 2.1.316 bundle, not triggered: a refresh from a copied file would revoke the user's login.
+- **A settings save writes through the link.** Claude resolves the link, writes `settings.json.tmp.<pid>.<hex>` beside the target and renames it over the target. The link survived; the target changed and got a new inode.
+- **Bound read-only, the save fails visibly.** `Failed to set effort level: … EROFS: read-only file system, open '…/settings.json.tmp.<pid>.<hex>'`. The effort stayed as it was, and the session carried on.
+- **Bound as a file, read-write, the save writes in place.** The rename onto the mount point fails, and Claude writes the file itself: the save succeeded and the inode stayed the same.
+- **A token refresh replaces the link.** The credentials writer (`gre`, in the chunk that also exports `Un`) writes `.credentials.json.tmp.<8 hex>` beside the slot, not beside the link's target, and renames it onto the slot; `rename(2)` replaces the link itself. Only a rename failing with `EXDEV`, `EPERM`, `EEXIST` or `EBUSY` makes it write in place, opening the slot with `O_NOFOLLOW`: a link there fails with `ELOOP`, a bind-mounted file is written through. clauth works around the same behaviour (clauth src/oauth.rs:2945-2947, "renames a temp sibling over the live slot — `rename(2)` acts on the link"), and its log records five adoptions of a rotated login from a live session between 2026-10-26 and 2026-10-31 (`~/.clauth/clauth.log`).
+- **A second credentials reader in the bundle refuses links.** It opens the file with `O_NOFOLLOW` and reports a link as `refused-symlink`. It is not the reader in use, since login works through a link here; a release that switches to it would refuse a linked slot outright.
+
+**Decision 2 cannot hold as stated.** Neither form of one shared file keeps one chain of refresh tokens:
+- **The slot links to the shared file.** The agent's first refresh replaces its link with a file of its own. The shared file keeps a refresh token the refresh has revoked, so the user's sessions and every other agent fail at their next refresh. clauth repairs only `~/.claude` (clauth src/profile.rs:1858-1860) and its own `clauth start` trees.
+- **The shared file is bind-mounted at the slot.** Claude's refresh writes through, but clauth replaces the shared file by rename on every rotation, adoption and login (`atomic_write_600`, clauth src/profile.rs:2466-2491), and an account switch points `~/.claude/.credentials.json` at another profile's file. The bind keeps the old inode, and the agent refreshes a chain clauth has moved past.
+
+clauth met this as "N live sessions + clauth all rotating the same chains through one live slot", the cause of serial `refresh token revoked` failures, and fixed it with a token that never rotates (clauth src/claude.rs:27-35).
+
+**Recommended: a long-lived token, and no credentials file in any sandbox.** `claude setup-token` mints a one-year subscription token (authentication.md:248-262). `ai resume` sets it as `CLAUDE_CODE_OAUTH_TOKEN` in the agent's environment, read outside the sandbox: from the active clauth profile's `session-token.json`, which clauth keeps for a profile that has one, or from secretspec. The variable ranks above the saved login (authentication.md:207), and a token with no refresh token gives Claude nothing to refresh or write, so nothing inside a sandbox writes a login, and no agent holds the renewable refresh chain. Costs:
+- one token per account, renewed yearly;
+- the token "can only make model requests": no Remote Control and no claude.ai connectors, neither used here;
+- an agent stays on the account its token names until relaunched, so clauth's switching and fallback reach it at its next launch.
+
+Unverified: an interactive session on such a token with the `ai` plugin, server-managed settings and `/usage`.
+
+The alternative keeps the link: `ai resume` stays the sandbox's parent and, like clauth's watchdog, restores the link and hands the new pair to clauth after each refresh. It keeps live account switching, at the cost of a supervising process per agent and a race between each refresh and its repair.
+
 **With four links and a two-key `.claude.json`, a session matches the user's:** skills `but`, `deslop`, `find-skills`, `stop-slop` resolve; the user `CLAUDE.md` is in context; `ai memory prompt-hook` runs; onboarding is skipped. Recommended layout of `<agent home>/claude/`:
 
 | Entry | Kind | Why |
 | :-- | :-- | :-- |
-| `.credentials.json` | link to `~/.claude/.credentials.json` | One login (Agreed); the link follows clauth's own link, so an account switch reaches every agent. |
-| `settings.json` | link to `~/.claude/settings.json` | Hooks, `cleanupPeriodDays`, auto-memory and sync off: the user's settings are one file. |
-| `CLAUDE.md`, `skills`, `commands`, `agents` | links to the same names in `~/.claude` | User instructions, skills and commands. |
+| `.credentials.json` | absent | The login comes from `CLAUDE_CODE_OAUTH_TOKEN` (above). |
+| `settings.json` | link to `~/.claude/settings.json`, target bound read-only | Hooks, `cleanupPeriodDays`, auto-memory and sync off: the user's settings are one file. Writable, an agent's `/effort` would rewrite the user's settings, which the config repo tracks, and a hook it added would run in the user's unsandboxed sessions. Per-agent model and effort come from the agent's table at launch. |
+| `CLAUDE.md`, `skills`, `commands`, `agents` | links to the same names in `~/.claude`, targets bound read-only | User instructions, skills and commands, which reach the user's own sessions too. |
 | `.claude.json` | file written by `ai` when absent: `hasCompletedOnboarding: true`, and `projects.<repo>.hasTrustDialogAccepted: true` | Per-agent state, rewritten by Claude on every start (caches, `oauthAccount`, per-project trust); sharing it would race. |
 | everything else | nothing | Written by Claude at runtime. |
 
@@ -112,7 +134,7 @@ Plugins need no seeding: `ai` reaches every agent through managed settings, and 
 **Consequences for the sandbox and for `ai`:**
 - **Transcripts.** An agent's transcripts live in its own `projects/`. `ai` finds them through `CLAUDE_CONFIG_DIR` of the process reading them (src/agent/claude.rs:25-31), so any reader outside the agent's sandbox (the desk, a superior, the user's shell) finds them through the agent's folder or the transcript path its binding records, never through its own environment.
 - **Peer sockets are outside the folder.** `sessions/<pid>.json` lands in the agent's folder, but its `messagingSocketPath` is `/run/user/1000/cc-socks/<pid>.sock`, shared by every session of the user. A sandbox that binds `/run/user/1000` hands the agent every other session's socket, which the access table lists as absent; the sandbox gives `cc-socks` a private tmpfs or leaves it out.
-- **Links must resolve inside the sandbox.** `~/.claude` is itself a link into the config repo, and `.credentials.json` a link into `~/.clauth/profiles/`; the sandbox binds each target (read-only, except the credentials file), and the absolute hook path `~/.claude/hooks/herdr-agent-state.sh` in `settings.json`.
+- **Links must resolve inside the sandbox.** `~/.claude` is itself a link into the config repo; the sandbox binds each target read-only, and the absolute hook path `~/.claude/hooks/herdr-agent-state.sh` in `settings.json`.
 
 ## Capabilities
 
@@ -173,7 +195,7 @@ Wrapping the whole harness at launch is harness-neutral: `ai` neither knows nor 
 
 ## Open questions
 
-1. Whether Claude Code writes a refreshed OAuth token through the `.credentials.json` link or replaces the link with a file. A replaced link silently forks the login; a rename onto a file bind-mounted into the sandbox fails with `EBUSY`. Binding the directory that holds the target avoids the second. Unverified: no refresh happened during the probes.
-2. Whether settings Claude saves at runtime (`/effort`, `/config`, `/theme`) write through the `settings.json` link or replace it. Through the link, one agent's change reaches the user and every agent; bound read-only, the save fails.
+1. Long-lived token or supervised link, replacing Agreed decision 2 ("How Claude writes linked files").
+2. Whether an interactive session on a `claude setup-token` token runs the `ai` plugin, loads server-managed settings and shows `/usage`.
 
 A fresh per-agent `CLAUDE_CONFIG_DIR` loads the `ai` plugin (Per-agent Claude config folder above), which settles the delivery note's open check (`20261030T202150--claude-code-mail-delivery.md`).

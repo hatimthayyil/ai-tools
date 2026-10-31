@@ -103,7 +103,7 @@ The envelope `<ai-mail id=… from=… approved=…>` held quotes, `&`, `&lt;/ai
 `20261030T200814--agent-identity-and-enforcement.md` gives each agent its own `CLAUDE_CONFIG_DIR` and a read-only inbox.
 - **Same format, new path.** Transcripts and persisted outputs move under `$CLAUDE_CONFIG_DIR/projects/<dir>/` (src/agent/claude.rs:26-31). A reader outside the sandbox finds them through the transcript path the binding records.
 - **The recipient writes nothing back.** Delivered state comes from the thread, as point 3 needs; the plugin only reads the inbox (`$.fs.stat`, `$.fs.read`, `ai`).
-- **The sandbox must keep `/etc/claude-code` and the plugin's files visible.** `ai` loads only through managed `appendPlugins`, and only that seat gives it classic hooks. Not tried: whether a fresh `CLAUDE_CONFIG_DIR` finds the `ai` marketplace and plugin.
+- **The sandbox must keep `/etc/claude-code` and the plugin's files visible.** `ai` loads only through managed `appendPlugins`, and only that seat gives it classic hooks. A fresh `CLAUDE_CONFIG_DIR` loads the plugin with nothing seeded (identity note, "Per-agent Claude config folder").
 
 ## Not verified
 
