@@ -20,7 +20,7 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 - Every live Claude session's id is public to the user's processes: `~/.claude/sessions/<pid>.json` holds `sessionId` and `messagingSocketPath`. **Checked here** (keys only).
 
 **Reads go around `ai`.**
-- One git repository holds every thread of a project, `.ai/local` (src/project.rs:149), committed as a whole (src/repo.rs:55-58). Whatever can commit there can read every thread through its objects.
+- Threads are ordinary files of the user, `.ai/local/agents/threads/<name>/`, each a git repository of its own (src/agent/store.rs, `Store::create`). Any process of the user reads every thread; one command commits every thread's repository (`Store::commit`), and session locks sit at the store root, shared by every agent.
 - Claude Code writes every session of a repo into one folder, `~/.claude/projects/<dir>/`, and the thread store keeps verbatim transcript copies in `sources/` (src/agent/store.rs:37).
 
 **Writes go around the gate.**
@@ -60,7 +60,7 @@ A sandboxed agent that runs `ai resume` for another agent gets a nested sandbox 
 
 **2. Identity is location.** Inside its sandbox an agent can write only its own outbox, so a message's sender is the owner of the outbox it sits in. The desk runs outside every sandbox, as the user: it reads outboxes, and on approval writes the message, as approved or edited, into the recipient's inbox, which the recipient can read but not write. No environment variable, flag or token decides who sent a message or who approved it. The session binding stays, to find an agent's thread, never as authority.
 
-**3. One git repository per thread.** A thread's repository is then exactly what its grants cover: its own read-write, a subordinate's read-only.
+**3. One git repository per thread.** A thread's repository is exactly what its grants cover: its own read-write, a subordinate's read-only. Built: each thread is a repository of its own (src/agent/store.rs, `Store::create`).
 
 **4. Each agent gets its own harness state.** Claude Code reads and writes `~/.claude/projects/<dir>/` for its own session, and agents in one repo share that folder. A `CLAUDE_CONFIG_DIR` per agent separates them; `ai` already honours that variable (src/agent/claude.rs:26-31). pi and DSH take a per-agent home the same way (`$DSH_HOME`, deepseek-harness apps/cli/reference/README.md:137). Agents share the user's subscription through a long-lived token `ai resume` hands each one, with no credentials file inside any sandbox ("How Claude writes linked files" below; it replaces Agreed decision 2, pending the user).
 
@@ -72,6 +72,8 @@ reports-to = ["lead", "engineer"]
 ```
 
 `reports-to` names the relation, reads as plain English, and takes several names (Agreed). Explicit per-thread grants would be a second setting that nothing needs yet.
+
+Built (src/config.rs): `ai` reads `reports-to` from every `ai.toml`, a later file's list replacing an earlier one's, and refuses an agent reporting to itself, to a name with no `[agents.<name>]` table, or in a cycle, naming the cycle. `Settings::below` gives the agents below an agent through any number of levels: the threads the launcher grants read-only. Nothing enforces the grants until the launcher exists.
 
 **6. bubblewrap, invoked by `ai`, from a path fixed at build time by Nix.** Codex looks `bwrap` up only outside the working directory, so a repo cannot plant one (codex-rs/linux-sandbox/README.md). Nix can do better: the store path is compiled in.
 
