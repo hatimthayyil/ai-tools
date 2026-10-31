@@ -85,6 +85,35 @@ reports-to = ["lead", "engineer"]
 
 A session not started through `ai resume`, such as `claude` typed in a terminal, runs unsandboxed and can write anything the user can, including the desk's decisions. Such a session counts as the user's own terminal (Agreed): a sandboxed agent has no herdr socket, session bus or systemd user manager through which to start a process outside its sandbox, so only the user starts one. Signing each approval with the user's hardware key, which an agent cannot use without the user's touch, would close the gap further.
 
+### Per-agent Claude config folder
+
+Probed with Claude Code 2.1.316 (one empty folder, one with the credentials link alone, two seeded; `claude auth status`, `claude -p` on Haiku with `--debug-file`, one interactive start under tmux). **Checked here.**
+
+**What a fresh folder gives, with nothing seeded but the credentials link:**
+- **Login works.** `claude auth status` reports `loggedIn: true`; without the link, `loggedIn: false`.
+- **The `ai` plugin loads.** Managed settings (`/etc/claude-code/managed-settings.json`: `appendPlugins`, `enabledPlugins`, `extraKnownMarketplaces`) apply whatever the config folder. The debug log shows the plugin read in place from the declared marketplace path although `known_marketplaces.json` does not exist yet, its hooks module loaded at tier `append`, and `classic.SessionStart`, `classic.Stop`, `session.start` and `session.end` run. The `ai` MCP server is listed. `claude plugin list` shows no plugins in a fresh folder; the session loads it anyway.
+- **Everything from the user tier is missing:** `settings.json` (hooks, including `ai memory prompt-hook`; `cleanupPeriodDays`; `autoMemoryEnabled: false`; `syncClaudeAiSkills: false`; `disableClaudeAiConnectors`; permission mode), user skills, `CLAUDE.md`, `commands/`. Consequences: transcripts fall under the default 30-day cleanup; auto-memory writes `projects/<dir>/memory/`; claude.ai skills sync into `skills/synced/` and the claude.ai connector appears.
+- **The interactive start stops on onboarding** (theme picker), then on the workspace trust prompt. `claude -p` skips both. The user has no MCP servers in `~/.claude.json`, so nothing there needs carrying.
+
+**With four links and a two-key `.claude.json`, a session matches the user's:** skills `but`, `deslop`, `find-skills`, `stop-slop` resolve; the user `CLAUDE.md` is in context; `ai memory prompt-hook` runs; onboarding is skipped. Recommended layout of `<agent home>/claude/`:
+
+| Entry | Kind | Why |
+| :-- | :-- | :-- |
+| `.credentials.json` | link to `~/.claude/.credentials.json` | One login (Agreed); the link follows clauth's own link, so an account switch reaches every agent. |
+| `settings.json` | link to `~/.claude/settings.json` | Hooks, `cleanupPeriodDays`, auto-memory and sync off: the user's settings are one file. |
+| `CLAUDE.md`, `skills`, `commands`, `agents` | links to the same names in `~/.claude` | User instructions, skills and commands. |
+| `.claude.json` | file written by `ai` when absent: `hasCompletedOnboarding: true`, and `projects.<repo>.hasTrustDialogAccepted: true` | Per-agent state, rewritten by Claude on every start (caches, `oauthAccount`, per-project trust); sharing it would race. |
+| everything else | nothing | Written by Claude at runtime. |
+
+Plugins need no seeding: `ai` reaches every agent through managed settings, and user-scope marketplace plugins are all disabled.
+
+**Written into the folder at runtime**, so the sandbox binds the folder read-write: `.claude.json` and `backups/`, `projects/<dir>/<session>.jsonl`, `session-env/<session>/`, `sessions/<pid>.json` and `<pid>.<hash>.key`, `plugins/` (`installed_plugins.json`, `known_marketplaces.json`, `cache/`), `policy-limits.json*`, `remote-settings.json*`, `cache/`, `.last-cleanup`; in interactive use also `history.jsonl`, `file-history/`, `shell-snapshots/`, `todos/`, `paste-cache/`.
+
+**Consequences for the sandbox and for `ai`:**
+- **Transcripts.** An agent's transcripts live in its own `projects/`. `ai` finds them through `CLAUDE_CONFIG_DIR` of the process reading them (src/agent/claude.rs:25-31), so any reader outside the agent's sandbox (the desk, a superior, the user's shell) finds them through the agent's folder or the transcript path its binding records, never through its own environment.
+- **Peer sockets are outside the folder.** `sessions/<pid>.json` lands in the agent's folder, but its `messagingSocketPath` is `/run/user/1000/cc-socks/<pid>.sock`, shared by every session of the user. A sandbox that binds `/run/user/1000` hands the agent every other session's socket, which the access table lists as absent; the sandbox gives `cc-socks` a private tmpfs or leaves it out.
+- **Links must resolve inside the sandbox.** `~/.claude` is itself a link into the config repo, and `.credentials.json` a link into `~/.clauth/profiles/`; the sandbox binds each target (read-only, except the credentials file), and the absolute hook path `~/.claude/hooks/herdr-agent-state.sh` in `settings.json`.
+
 ## Capabilities
 
 **Bearer tokens don't help on one host.** Macaroons (Birgisson et al., NDSS 2014) and Biscuit (Eclipse Biscuit specification) are bearer credentials: holding one is having the right. Their strength is attenuation and offline verification across services. On one host the token is a file, as reachable as the threads it would protect, so it reduces to the same question: what can this process open? They earn a place when mail crosses hosts.
@@ -144,4 +173,7 @@ Wrapping the whole harness at launch is harness-neutral: `ai` neither knows nor 
 
 ## Open questions
 
-1. Whether a fresh per-agent `CLAUDE_CONFIG_DIR` still loads the `ai` plugin; unverified (`20261030T202150--claude-code-mail-delivery.md`).
+1. Whether Claude Code writes a refreshed OAuth token through the `.credentials.json` link or replaces the link with a file. A replaced link silently forks the login; a rename onto a file bind-mounted into the sandbox fails with `EBUSY`. Binding the directory that holds the target avoids the second. Unverified: no refresh happened during the probes.
+2. Whether settings Claude saves at runtime (`/effort`, `/config`, `/theme`) write through the `settings.json` link or replace it. Through the link, one agent's change reaches the user and every agent; bound read-only, the save fails.
+
+A fresh per-agent `CLAUDE_CONFIG_DIR` loads the `ai` plugin (Per-agent Claude config folder above), which settles the delivery note's open check (`20261030T202150--claude-code-mail-delivery.md`).
