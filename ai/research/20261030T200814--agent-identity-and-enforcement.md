@@ -2,7 +2,7 @@
 
 Author: Claude Code (Claude Opus 5.5)
 
-How `ai` can know which agent is acting, and enforce what it may do, when every agent runs as the same OS user. It serves `20261030T142550--agent-team.md` ("the team note") §3, §4 and §10, and replaces that note's recommendation that the session binding alone identifies a sender. Nothing here is built. **Agreed** marks the user's decisions; the rest is recommended.
+How `ai` can know which agent is acting, and enforce what it may do, when every agent runs as the same OS user. It serves `20261030T142550--agent-team.md` ("the team note") §3, §4 and §10, and replaces that note's recommendation that the session binding alone identifies a sender. Where everything is stored is in `20261021T224734--storage.md` ("the storage note"). Of this design only `reports-to` and its read grants are built. **Agreed** marks the user's decisions; the rest is recommended.
 
 Sources are cited by path and line. Local repos: ai-tools at the working tree, Codex at `/hatimthayyil/code/codex` (a6c5f3a9fa), devenv at `/hatimthayyil/code/devenv` (34a93eec), pi, deepseek-harness, nixpkgs and llm-agents.nix under `/hatimthayyil/code`. Cloned for this note: nono (f9f58b7), sandbox-runtime (98a4016), claudebox (2a937ed), jai (ed1f58e), container-use (2e43e62), fence (737751a). Claude Code claims cite its docs in `~/.claude-code-docs/docs`, version 2.1.314. **Checked here** marks what was run on this machine (NixOS, kernel 6.18, user hatim); everything else was read.
 
@@ -38,9 +38,9 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 2. One Claude credentials file is bound read-write into every sandbox (recommendation 4). It cannot keep one login as stated ("How Claude writes linked files" below); the replacement awaits the user.
 3. A session not started through `ai resume` counts as the user's own ("The gap that remains").
 4. The setting is `reports-to = [...]` (recommendation 5).
-5. One git repository per thread (recommendation 3).
+5. Threads live in `~/ai`, one git repository the user keeps, and agents never touch git: a sandbox gets its own thread's files read-write and its subordinates' read-only, never `~/ai/.git`; only `ai` outside every sandbox commits (recommendation 3). One repository per thread is undone.
 6. Every agent has full network for now.
-7. `main` runs sandboxed like every other agent.
+7. `root`, the user-level main, runs sandboxed like every other agent.
 8. No sandbox gets the ssh agent by default; a setting in the agent's `[agents.<name>]` table grants it (recommendation 1). The key's name is the implementation's.
 
 ## Recommendation
@@ -49,18 +49,18 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 
 | Access | What |
 | :-- | :-- |
-| read-write | the checkouts it works in; its own thread; its own outbox; its own harness state; a private `/tmp`; `ai memory` (shared by design) |
+| read-write | the checkouts it works in; its own thread's files in `~/ai`; its own outbox; its own harness state, in `~/.ai/harness/`; a private `/tmp`; `ai memory` (shared by design) |
 | read-only | the threads of every agent below it; its own inbox; the `ai.toml` files; the user's Claude `settings.json`, `CLAUDE.md`, skills, commands and agents; the system and `/nix/store` |
-| absent | every other thread and outbox; other agents' harness state; herdr's socket; Claude's peer sockets; the session D-Bus and systemd's user socket; the gpg agent; the ssh agent, unless granted; other processes (own PID namespace) |
+| absent | `~/ai/.git`; every other thread and outbox; other agents' harness state; herdr's socket; Claude's peer sockets; the session D-Bus and systemd's user socket; the gpg agent; the ssh agent, unless granted; other processes (own PID namespace) |
 | allowed | network; the Nix daemon socket, for builds; the ssh agent, for an agent whose settings grant it |
 
-Mask by construction: a tmpfs over `~/.ai`, `~/.claude`, the project's `.ai/local` and the runtime directories, then bind back the grants. A path not bound in does not exist inside. **Checked here:** with `bwrap --ro-bind / / --tmpfs <stores> --bind <own> --ro-bind <subordinate>`, the agent wrote its own thread, read but could not write the subordinate's, could not see a third (`No such file or directory`), could not see `~/.claude`, and saw 4 processes.
+Mask by construction: a tmpfs over `~/ai`, `~/.ai`, `~/.claude` and the runtime directories, then bind back the grants. A path not bound in does not exist inside. **Checked here:** with `bwrap --ro-bind / / --tmpfs <stores> --bind <own> --ro-bind <subordinate>`, the agent wrote its own thread, read but could not write the subordinate's, could not see a third (`No such file or directory`), could not see `~/.claude`, and saw 4 processes.
 
 A sandboxed agent that runs `ai resume` for another agent gets a nested sandbox that can only narrow what it already has.
 
 **2. Identity is location.** Inside its sandbox an agent can write only its own outbox, so a message's sender is the owner of the outbox it sits in. The desk runs outside every sandbox, as the user: it reads outboxes, and on approval writes the message, as approved or edited, into the recipient's inbox, which the recipient can read but not write. No environment variable, flag or token decides who sent a message or who approved it. The session binding stays, to find an agent's thread, never as authority.
 
-**3. One git repository per thread.** A thread's repository is exactly what its grants cover: its own read-write, a subordinate's read-only. Built: each thread is a repository of its own (src/agent/store.rs, `Store::create`).
+**3. History stays outside every sandbox.** Threads live in `~/ai`, one repository (Agreed 5). A sandbox binds thread files, never `~/ai/.git`, so an agent can neither read another thread through git objects nor rewrite history: what it can damage is what changed since the last commit. `ai` outside the sandbox commits: the user's own commands, the desk, and the `ai resume` process that launched the agent, which commits what its agent wrote (storage note, "Writing to `~/ai`"). Today's code still gives each thread a repository of its own (src/agent/store.rs, `Store::create`); that is undone with the move to `~/ai`.
 
 **4. Each agent gets its own harness state.** Claude Code reads and writes `~/.claude/projects/<dir>/` for its own session, and agents in one repo share that folder. A `CLAUDE_CONFIG_DIR` per agent separates them; `ai` already honours that variable (src/agent/claude.rs:26-31). pi and DSH take a per-agent home the same way (`$DSH_HOME`, deepseek-harness apps/cli/reference/README.md:137). Agents share the user's subscription through a long-lived token `ai resume` hands each one, with no credentials file inside any sandbox ("How Claude writes linked files" below; it replaces Agreed decision 2, pending the user).
 
@@ -68,12 +68,12 @@ A sandboxed agent that runs `ai resume` for another agent gets a nested sandbox 
 
 ```toml
 [agents.developer]
-reports-to = ["lead", "engineer"]
+reports-to = ["main", "engineer@~"]
 ```
 
-`reports-to` names the relation, reads as plain English, and takes several names (Agreed). Explicit per-thread grants would be a second setting that nothing needs yet.
+`reports-to` names the relation, reads as plain English, and takes several names (Agreed). Each name resolves in the scope of the file it is written in: `main` is this project's main, `engineer@~` the user-level `engineer`, and a tracked `ai.toml` holds only names of its own project (Agreed, team note §8). Explicit per-thread grants would be a second setting that nothing needs yet.
 
-Built (src/config.rs): `ai` reads `reports-to` from every `ai.toml`, a later file's list replacing an earlier one's, and `Settings::hierarchy` refuses an agent reporting to itself, to a name with no `[agents.<name>]` table, or in a cycle, naming the cycle; only the commands that read the hierarchy fail on it, never `ai memory` or another agent's commands. `Hierarchy::below` gives the agents below an agent through any number of levels: the threads the launcher grants read-only. Nothing enforces the grants until the launcher exists.
+Built (src/config.rs): `ai` reads `reports-to` from every `ai.toml`, a later file's list replacing an earlier one's, and `Settings::hierarchy` refuses an agent reporting to itself, to a name with no `[agents.<name>]` table, or in a cycle, naming the cycle; only the commands that read the hierarchy fail on it, never `ai memory` or another agent's commands. `Hierarchy::below` gives the agents below an agent through any number of levels: the threads the launcher grants read-only. Nothing enforces the grants until the launcher exists. Not built: resolution by file scope. Today's check looks names up among the tables of every file merged, which the scoped rule replaces.
 
 **6. bubblewrap, invoked by `ai`, from a path fixed at build time by Nix.** Codex looks `bwrap` up only outside the working directory, so a repo cannot plant one (codex-rs/linux-sandbox/README.md). Nix can do better: the store path is compiled in.
 
@@ -110,7 +110,7 @@ Probed with Claude Code 2.1.316 (one empty folder, one with the credentials link
 
 clauth met this as "N live sessions + clauth all rotating the same chains through one live slot", the cause of serial `refresh token revoked` failures, and fixed it with a token that never rotates (clauth src/claude.rs:27-35).
 
-**Recommended: a long-lived token, and no credentials file in any sandbox.** `claude setup-token` mints a one-year subscription token (authentication.md:248-262). `ai resume` sets it as `CLAUDE_CODE_OAUTH_TOKEN` in the agent's environment, read outside the sandbox: from the active clauth profile's `session-token.json`, which clauth keeps for a profile that has one, or from secretspec. The variable ranks above the saved login (authentication.md:207), and a token with no refresh token gives Claude nothing to refresh or write, so nothing inside a sandbox writes a login, and no agent holds the renewable refresh chain. Costs:
+**Recommended: a long-lived token, and no credentials file in any sandbox.** `claude setup-token` mints a one-year subscription token (authentication.md:248-262). `ai resume` sets it as `CLAUDE_CODE_OAUTH_TOKEN` in the agent's environment, read outside the sandbox from pass, where each account's token is kept at `ai/claude-token/<profile>`, apart from clauth's profiles (below). The variable ranks above the saved login (authentication.md:207), and a token with no refresh token gives Claude nothing to refresh or write, so nothing inside a sandbox writes a login, and no agent holds the renewable refresh chain. Costs:
 - one token per account, renewed yearly;
 - the token "can only make model requests": no Remote Control and no claude.ai connectors, neither used here;
 - an agent stays on the account its token names until relaunched, so clauth's switching and fallback reach it at its next launch.
@@ -132,7 +132,7 @@ The token carries two scopes, `user:inference` and `user:sessions:claude_code`, 
 - **`/usage`** shows the session's cost, durations and usage attribution, without the plan's limit bars; the Team session still showed the weekly-limit notice on start.
 - **No profile scope:** the start-up bootstrap is skipped (`403 for OAuth token without profile scope`) and Claude in Chrome is off.
 
-**The user's own sessions changed too.** With a `session-token.json` present, clauth points the live `~/.claude/.credentials.json` at that file, so the user's sessions on the active profile run on the same untiered token (`clauth which`: `not-that-silent-valley`; link target `~/.clauth/profiles/not-that-silent-valley/session-token.json`). `clauth static-token --clear <profile>` returns the profile to its rotating login and removes the token with it, so tokens for agents only, with the user's sessions on their full login, need the token kept apart from the profile, such as in secretspec.
+**The user's own sessions changed too.** With a `session-token.json` present, clauth points the live `~/.claude/.credentials.json` at that file, so the user's sessions on the active profile run on the same untiered token (`clauth which`: `not-that-silent-valley`; link target `~/.clauth/profiles/not-that-silent-valley/session-token.json`). `clauth static-token --clear <profile>` returns the profile to its rotating login and removes the token with it, so tokens for agents only, with the user's sessions on their full login, need the token kept apart from the profile. The user keeps both tokens in pass, `ai/claude-token/personal` and `ai/claude-token/not-that-silent-valley`, and clauth's profiles hold none. The installed clauth 0.17.0 has no `__oauth-token` command, so `ai resume` reads pass, never clauth.
 
 The alternative keeps the link: `ai resume` stays the sandbox's parent and, like clauth's watchdog, restores the link and hands the new pair to clauth after each refresh. It keeps live account switching, at the cost of a supervising process per agent and a race between each refresh and its repair.
 
@@ -151,7 +151,7 @@ Plugins need no seeding: `ai` reaches every agent through managed settings, and 
 **Written into the folder at runtime**, so the sandbox binds the folder read-write: `.claude.json` and `backups/`, `projects/<dir>/<session>.jsonl`, `session-env/<session>/`, `sessions/<pid>.json` and `<pid>.<hash>.key`, `plugins/` (`installed_plugins.json`, `known_marketplaces.json`, `cache/`), `policy-limits.json*`, `remote-settings.json*`, `cache/`, `.last-cleanup`; in interactive use also `history.jsonl`, `file-history/`, `shell-snapshots/`, `todos/`, `paste-cache/`.
 
 **Consequences for the sandbox and for `ai`:**
-- **Transcripts.** An agent's transcripts live in its own `projects/`. `ai` finds them through `CLAUDE_CONFIG_DIR` of the process reading them (src/agent/claude.rs:25-31), so any reader outside the agent's sandbox (the desk, a superior, the user's shell) finds them through the agent's folder or the transcript path its binding records, never through its own environment.
+- **Transcripts.** An agent's transcripts live in its own `projects/`, and its folder sits in `~/.ai/harness/`, so they are stored in `~/.ai` like every other transcript (storage note, rule 2). `ai` finds them through `CLAUDE_CONFIG_DIR` of the process reading them (src/agent/claude.rs:25-31), so any reader outside the agent's sandbox (the desk, a superior, the user's shell) finds them through the agent's folder or the transcript path its binding records, never through its own environment.
 - **Peer sockets are outside the folder.** `sessions/<pid>.json` lands in the agent's folder, but its `messagingSocketPath` is `/run/user/1000/cc-socks/<pid>.sock`, shared by every session of the user. A sandbox that binds `/run/user/1000` hands the agent every other session's socket, which the access table lists as absent; the sandbox gives `cc-socks` a private tmpfs or leaves it out.
 - **Links must resolve inside the sandbox.** `~/.claude` is itself a link into the config repo; the sandbox binds each target read-only, and the absolute hook path `~/.claude/hooks/herdr-agent-state.sh` in `settings.json`.
 
@@ -195,7 +195,7 @@ Plugins need no seeding: `ai` reaches every agent through managed settings, and 
 ## Signing and Signal
 
 - **Locally, signatures add nothing** once location proves the sender: a key an agent cannot read must live outside its sandbox, and then the sandbox already identifies it.
-- **Across hosts they are required.** Each host's `ai`, outside the sandboxes, signs outgoing mail with a host key (Ed25519, as Codex signs agent registrations: codex-rs/agent-identity/src/lib.rs:91-95). `.ai/local` is a git repository, so git over SSH is a transport that already authenticates hosts.
+- **Across hosts they are required.** Each host's `ai`, outside the sandboxes, signs outgoing mail with a host key (Ed25519, as Codex signs agent registrations: codex-rs/agent-identity/src/lib.rs:91-95). `~/ai` is a git repository, so git over SSH is a transport that already authenticates hosts.
 - **Signal Protocol** (libsignal) adds end-to-end encryption and forward secrecy when mail passes through a host that should not read it. libsignal is AGPL-3.0-or-later (nixpkgs `libsignal-ffi`), and ai-tools is CC0-1.0 (Cargo.toml:7): linking it would put `ai` under the AGPL.
 - **The Signal messenger** is a poor fit: accounts are phone numbers for people, Signal's servers sit in the path, and bots use the unofficial `signal-cli` (GPL-3.0).
 - **The user's approvals** can be signed with the user's hardware key. That keeps the gate intact even against a session started outside `ai resume`; it costs a touch per approval or per batch.
@@ -214,7 +214,7 @@ Wrapping the whole harness at launch is harness-neutral: `ai` neither knows nor 
 
 ## Open questions
 
-1. Long-lived token or supervised link, replacing Agreed decision 2 ("How Claude writes linked files"). A token works for both accounts; it leaves the session untiered.
-2. Where the agents' tokens live: in clauth's profiles, which puts the user's own sessions on the untiered token as well, or apart from them, such as in secretspec, which leaves the user's sessions on their full login.
+1. Long-lived token or supervised link, replacing Agreed decision 2 ("How Claude writes linked files"). A token works for both accounts; it leaves the session untiered, so `ai resume` passes each agent's model, and likely its effort, from the agent's table.
+2. Which account an agent runs on: the profile active in clauth at launch, or a per-agent setting, so that a work project's agents stay on the work account.
 
 A fresh per-agent `CLAUDE_CONFIG_DIR` loads the `ai` plugin (Per-agent Claude config folder above), which settles the delivery note's open check (`20261030T202150--claude-code-mail-delivery.md`).
