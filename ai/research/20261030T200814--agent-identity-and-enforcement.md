@@ -20,8 +20,8 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 - Every live Claude session's id is public to the user's processes: `~/.claude/sessions/<pid>.json` holds `sessionId` and `messagingSocketPath`. **Checked here** (keys only).
 
 **Reads go around `ai`.**
-- Threads are ordinary files of the user, `.ai/local/agents/threads/<name>/`, each a git repository of its own (src/agent/store.rs, `Store::create`). Any process of the user reads every thread; one command commits every thread's repository (`Store::commit`), and session locks sit at the store root, shared by every agent.
-- Claude Code writes every session of a repo into one folder, `~/.claude/projects/<dir>/`, and the thread store keeps verbatim transcript copies in `sources/` (src/agent/store.rs:37).
+- Threads are ordinary files of the user, `~/ai/projects/<project>/agents/threads/<name>/`, in one repository, `~/ai` (src/agent/store.rs, `Store::root`). Any process of the user reads every thread, and session locks sit in `~/.ai/agents/<project id>/`, shared by every agent of the project.
+- Claude Code writes every session of a repo into one folder, `~/.claude/projects/<dir>/`, which every process of the user reads.
 
 **Writes go around the gate.**
 - herdr's socket (`HERDR_SOCKET_PATH`, in `~/.config/herdr`) offers `pane read`, `agent read`, `agent prompt`, `send-text` and `send-keys` to any process in a pane: read another agent's screen, or type into it. Read from `herdr pane --help` and `herdr agent --help`; not exercised.
@@ -49,9 +49,9 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 
 | Access | What |
 | :-- | :-- |
-| read-write | the checkouts it works in; its own thread's files in `~/ai`; its own outbox; its own harness state, in `~/.ai/harness/`; a private `/tmp`; `ai memory` (shared by design) |
+| read-write | the checkouts it works in; its own thread's files in `~/ai`; its own outbox; its own harness home; a private `/tmp`; `ai memory` (shared by design) |
 | read-only | the threads of every agent below it; its own inbox; the `ai.toml` files; the user's Claude `settings.json`, `CLAUDE.md`, skills, commands and agents; the system and `/nix/store` |
-| absent | `~/ai/.git`; every other thread and outbox; other agents' harness state; herdr's socket; Claude's peer sockets; the session D-Bus and systemd's user socket; the gpg agent; the ssh agent, unless granted; other processes (own PID namespace) |
+| absent | `~/ai/.git`; `~/.ai/archive`; every other thread and outbox; other agents' harness state; herdr's socket; Claude's peer sockets; the session D-Bus and systemd's user socket; the gpg agent; the ssh agent, unless granted; other processes (own PID namespace) |
 | allowed | network; the Nix daemon socket, for builds; the ssh agent, for an agent whose settings grant it |
 
 Mask by construction: a tmpfs over `~/ai`, `~/.ai`, `~/.claude` and the runtime directories, then bind back the grants. A path not bound in does not exist inside. **Checked here:** with `bwrap --ro-bind / / --tmpfs <stores> --bind <own> --ro-bind <subordinate>`, the agent wrote its own thread, read but could not write the subordinate's, could not see a third (`No such file or directory`), could not see `~/.claude`, and saw 4 processes.
@@ -151,7 +151,7 @@ Plugins need no seeding: `ai` reaches every agent through managed settings, and 
 **Written into the folder at runtime**, so the sandbox binds the folder read-write: `.claude.json` and `backups/`, `projects/<dir>/<session>.jsonl`, `session-env/<session>/`, `sessions/<pid>.json` and `<pid>.<hash>.key`, `plugins/` (`installed_plugins.json`, `known_marketplaces.json`, `cache/`), `policy-limits.json*`, `remote-settings.json*`, `cache/`, `.last-cleanup`; in interactive use also `history.jsonl`, `file-history/`, `shell-snapshots/`, `todos/`, `paste-cache/`.
 
 **Consequences for the sandbox and for `ai`:**
-- **Transcripts.** An agent's transcripts live in its own `projects/`, and its folder sits in `~/.ai/harness/`, so they are stored in `~/.ai` like every other transcript (storage note, rule 2). `ai` finds them through `CLAUDE_CONFIG_DIR` of the process reading them (src/agent/claude.rs:25-31), so any reader outside the agent's sandbox (the desk, a superior, the user's shell) finds them through the agent's folder or the transcript path its binding records, never through its own environment.
+- **Transcripts.** An agent's transcripts live in its own `projects/`. `ai archive`, outside the sandbox, watches that folder and copies them into the archive, so they are stored in `~/.ai` like every other transcript (storage note, rules 2, 8 and 9). `ai` finds them through `CLAUDE_CONFIG_DIR` of the process reading them (src/agent/claude.rs:25-31), so any reader outside the agent's sandbox (the desk, a superior, the user's shell) finds them through the agent's folder or the transcript path its binding records, never through its own environment.
 - **Peer sockets are outside the folder.** `sessions/<pid>.json` lands in the agent's folder, but its `messagingSocketPath` is `/run/user/1000/cc-socks/<pid>.sock`, shared by every session of the user. A sandbox that binds `/run/user/1000` hands the agent every other session's socket, which the access table lists as absent; the sandbox gives `cc-socks` a private tmpfs or leaves it out.
 - **Links must resolve inside the sandbox.** `~/.claude` is itself a link into the config repo; the sandbox binds each target read-only, and the absolute hook path `~/.claude/hooks/herdr-agent-state.sh` in `settings.json`.
 

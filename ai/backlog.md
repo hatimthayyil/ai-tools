@@ -14,6 +14,7 @@
 - Parked: measure whether CodeGraph (this repo is indexed) reduces how much code agents read. Claude Code already uses ripgrep/grep efficiently, so the bar is targeted grep, not whole-file reads. Method:
   - Free baseline from this repo's transcripts, forks included: per session, Read/Grep/file-reading Bash calls, bytes of source returned, tokens, before vs after indexing. Confounded; a signal only.
   - A/B: ~5 past tasks with known briefs and commits, run headless from their parent commits with and without CodeGraph (the without arm also drops the CodeGraph lines from CLAUDE.md), 2 runs each. Same counts plus wall time and success (tests pass, diff matches). Harness in `ai/evals/codegraph/`, following `ai/evals/compactor/`. Runs cost subscription limits; schedule on a quiet day.
+- Several machines writing at once. Note ids are sequential, so two machines adding notes would mint the same number and git would conflict; the same holds for two machines on one thread. One machine today. Ids, and the view's numbering, would need to change. Storage: `ai/research/20261021T224734--storage.md`.
 - One JSONL storage module for chat and memory: `src/jsonl.rs` (append, locks, format file, recovery of a half-written last line) serves chat; when memory moves to JSONL it uses the same module, and the Git plumbing in `src/git.rs` (refs, compare-and-swap, fan-out paths) and the record codec in `src/record.rs` go. gix stays for provenance, git config and `ai notes`. Undecided: the user wants it explained first.
 
 ## Memory
