@@ -28,6 +28,7 @@ function run($: Engine, command: string, args: string) {
 }
 
 const ai = ($: Engine, args: string) => run($, 'ai', args)
+const fold = ($: Engine, args = '') => run($, 'fold', args)
 const recall = ($: Engine, args: string) => run($, 'recall', args)
 
 function engine(on: On, answer: (args: readonly string[]) => Answer) {
@@ -79,8 +80,8 @@ function start($: Engine, source: 'startup' | 'resume' | 'clear' = 'startup') {
   return $.classic.SessionStart({ source, session_id: SESSION, transcript_path: TRANSCRIPT })
 }
 
-async function compress($: Engine, world: World) {
-  const ran = ai($, '')
+async function folded($: Engine, world: World) {
+  const ran = fold($)
   await world.clock.advance(FLUSH_MS)
   const { text } = await ran
   await world.clock.advance(0)
@@ -95,14 +96,14 @@ function stop($: Engine) {
   return $.classic.Stop({ session_id: SESSION, transcript_path: TRANSCRIPT, stop_hook_active: false })
 }
 
-test('/ai builds the view once the transcript is flushed, then compacts into memory and view once', async ($, on) => {
+test('/fold, with only spaces after it, builds the view once the transcript is flushed, then folds once', async ($, on) => {
   const world = engine(on, views)
   await start($, 'resume')
-  const ran = ai($, '')
+  const ran = fold($, '  ')
   await world.clock.advance(FLUSH_MS - 1)
   expect(world.calls).toEqual([])
   await world.clock.advance(1)
-  expect((await ran).text).toBe('Compacting.')
+  expect((await ran).text).toBe('Folding.')
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
@@ -115,14 +116,14 @@ test('/ai builds the view once the transcript is flushed, then compacts into mem
 })
 
 test(
-  'cancelling /ai stops ai agent compact-session and compacts nothing',
+  'cancelling /fold stops ai agent compact-session and folds nothing',
   {
     plugins: [
       {
         name: 'cancel',
         tier: 'prepend',
         register(on) {
-          on('command.run', { command: 'ai' }, async ($, e, next) => {
+          on('command.run', { command: 'fold' }, async ($, e, next) => {
             void next(e).catch(() => undefined)
             await $.clock.sleep(5_000)
             return { text: 'Cancelled.' }
@@ -135,7 +136,7 @@ test(
     const world = engine(on, views)
     world.spawning.hangs = true
     await start($, 'resume')
-    const ran = ai($, '')
+    const ran = fold($)
     await world.clock.advance(FLUSH_MS)
     expect(world.spawns).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
     expect(world.killed).toEqual([])
@@ -158,11 +159,11 @@ test('/compact and auto-compaction stay Claude Code’s, without ai agent', asyn
   expect(world.calls).toEqual([])
 })
 
-test('/ai in an unattached session compacts into the memory alone', async ($, on) => {
+test('/fold in an unattached session folds into the memory alone', async ($, on) => {
   const MEMORY = '# Memory\n\nYou are awake.\n'
   const world = engine(on, args => (sub(args) === 'view' ? [0, MEMORY, ''] : [3, '', '']))
   await start($, 'resume')
-  expect(await compress($, world)).toBe('Compacting.')
+  expect(await folded($, world)).toBe('Folding.')
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
@@ -172,17 +173,17 @@ test('/ai in an unattached session compacts into the memory alone', async ($, on
   expect(world.logs).toEqual([])
 })
 
-test('/ai compacts nothing and says why when ai fails or the thread is empty', async ($, on) => {
+test('/fold folds nothing and says why when ai fails or the thread is empty', async ($, on) => {
   let answer: Answer = [1, '', 'Failed 12: empty reply\n']
   const world = engine(on, args => (sub(args) === 'view' ? [1, '', 'memory locked\n'] : answer))
   await start($, 'resume')
-  expect(await compress($, world)).toBe('Not compacted: Failed 12: empty reply')
+  expect(await folded($, world)).toBe('Not folded: Failed 12: empty reply')
   answer = [3, '', '']
-  expect(await compress($, world)).toBe('Not compacted: memory locked')
+  expect(await folded($, world)).toBe('Not folded: memory locked')
   answer = [0, '', '']
-  expect(await compress($, world)).toBe('Not compacted: the thread holds nothing yet.')
+  expect(await folded($, world)).toBe('Not folded: the thread holds nothing yet.')
   answer = [0, VIEW, '']
-  expect(await compress($, world)).toBe('Not compacted: memory locked')
+  expect(await folded($, world)).toBe('Not folded: memory locked')
   expect(world.compacts).toEqual([])
   expect(await compact($)).toEqual(NATIVE)
   expect(world.logs).toEqual([])
@@ -215,12 +216,12 @@ test('a failed seed starts without the view and says why', async ($, on) => {
   expect(world.logs).toEqual(["ai agent compact-session failed; starting without the thread's view. no claude on PATH"])
 })
 
-test('a subagent compacts natively, leaving the view /ai built for the main conversation', async ($, on) => {
+test('a subagent compacts natively, leaving the view /fold built for the main conversation', async ($, on) => {
   const world = engine(on, views)
   await start($, 'resume')
-  const ran = ai($, '')
+  const ran = fold($)
   await world.clock.advance(FLUSH_MS)
-  expect((await ran).text).toBe('Compacting.')
+  expect((await ran).text).toBe('Folding.')
   await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: [] })
   expect(world.compacts).toEqual(['/compact', 'auto'])
   expect(await compact($)).toEqual([{ role: 'user', text: WOKE, toolUses: [] }])
@@ -234,12 +235,24 @@ test('/ai attach and detach run ai agent with the session and show its answer', 
   expect((await ai($, 'attach dev')).text).toBe('Attached to dev.')
   expect((await ai($, ' detach ')).text).toBe('This session is not attached to an agent.')
   expect((await ai($, 'attach')).text).toMatch(/^Usage/)
-  expect((await ai($, 'compress')).text).toMatch(/^Usage/)
+  expect((await ai($, 'fold')).text).toMatch(/^Usage/)
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'agent', 'attach', 'dev', ...ALL_ARGS],
     ['ai', 'agent', 'detach', ...ALL_ARGS],
   ])
+})
+
+test('/ai alone prints its usage, /fold with words after it says it takes none, and neither folds', async ($, on) => {
+  const world = engine(on, views)
+  await start($, 'resume')
+  expect((await ai($, '')).text).toBe('Usage: /ai new <name> | /ai attach <name> | /ai detach')
+  expect((await ai($, '  ')).text).toMatch(/^Usage: \/ai new/)
+  expect((await fold($, 'now')).text).toBe('/fold takes no arguments.')
+  await world.clock.advance(FLUSH_MS)
+  expect(world.calls).toEqual([])
+  expect(world.compacts).toEqual([])
+  expect(await compact($)).toEqual(NATIVE)
 })
 
 test('/ai new creates the agent, then attaches the session to it; a failed new attaches nothing', async ($, on) => {
@@ -379,7 +392,7 @@ test('a recall fork reads, and every tool call that could write is refused', asy
   expect((await call($, 'Edit', edit)).deny).toMatch(/^A recall only reads/)
   expect((await call($, 'Write', { file_path: '/r/x', content: 'b' })).deny).toMatch(/^A recall only reads/)
   expect((await call($, 'Agent', { prompt: 'p', description: 'd' })).deny).toMatch(/^A recall only reads/)
-  expect((await call($, 'mcp__ai__compress', {})).deny).toMatch(/^A recall only reads/)
+  expect((await call($, 'mcp__github__create_issue', { title: 't' })).deny).toMatch(/^A recall only reads/)
   expect((await call($, 'Bash', { command: 'ai memory note x' }, 'other')).deny).toBeUndefined()
   expect((await $.tool.call({ tool: 'Bash', command: 'ai memory note y' })).deny).toBeUndefined()
   expect(got.passed).toEqual([...reads, 'Read', 'ai memory note x', 'ai memory note y'])
@@ -395,60 +408,9 @@ test('a recall fork whose start comes before the spawn answers is guarded', asyn
   expect(got.passed).toEqual([])
 })
 
-async function turnEnd($: Engine, world: World) {
-  await stop($)
-  await world.clock.advance(0)
-  await world.clock.advance(FLUSH_MS)
-  await world.clock.advance(0)
-}
-
-test('the agent tool compacts as /ai does at the end of the turn', async ($, on) => {
-  const world = engine(on, args => (sub(args) === 'sync-session' ? [0, '', ''] : views(args)))
-  const call = () => $.tool.call({ tool: 'mcp__ai__compress', input: {} })
-  await start($, 'resume')
-  expect(await call()).toMatchObject({ result: 'Compaction queued for the end of this turn.' })
-  expect(world.compacts).toEqual([])
-  await turnEnd($, world)
-  expect(world.compacts).toEqual(['/compact'])
-  expect(await compact($)).toEqual([{ role: 'user', text: WOKE, toolUses: [] }])
-  await turnEnd($, world)
-  expect(world.compacts).toEqual(['/compact'])
-  expect(world.calls).toEqual([
-    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
-    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
-    ['ai', 'view', '--whole', ...ALL_ARGS],
-    ['ai', 'agent', 'sync-session', ...ALL_ARGS],
-  ])
-  expect(world.logs).toEqual([])
-})
-
-test('the agent tool in an unattached session compacts into the memory alone', async ($, on) => {
-  const MEMORY = '# Memory\n\nYou are awake.\n'
-  const world = engine(on, args => (sub(args) === 'view' ? [0, MEMORY, ''] : [3, '', '']))
-  await start($, 'resume')
-  expect(await $.tool.call({ tool: 'mcp__ai__compress', input: {} })).toMatchObject({
-    result: 'Compaction queued for the end of this turn.',
-  })
-  await turnEnd($, world)
-  expect(world.compacts).toEqual(['/compact'])
-  expect(await compact($)).toEqual([{ role: 'user', text: MEMORY, toolUses: [] }])
-  expect(world.logs).toEqual([])
-})
-
-test('a compaction the agent asked for that fails says why and compacts nothing', async ($, on) => {
-  const world = engine(on, args => (sub(args) === 'compact-session' ? [1, '', 'Failed 12: empty reply\n'] : [0, '', '']))
-  await start($, 'resume')
-  await $.tool.call({ tool: 'mcp__ai__compress', input: {} })
-  await turnEnd($, world)
-  expect(world.compacts).toEqual([])
-  expect(world.logs).toEqual(['Not compacted: Failed 12: empty reply'])
-})
-
-test('/ai and the agent tool compact nothing and say why when the session’s start never reached the plugin', async ($, on) => {
+test('/fold folds nothing and says why when the plugin never saw the session start', async ($, on) => {
   const world = engine(on, views)
-  const text = (await ai($, '')).text
-  expect(text).toMatch(/^Not compacted: this session's start never reached the ai plugin/)
-  expect(await $.tool.call({ tool: 'mcp__ai__compress', input: {} })).toMatchObject({ result: text })
+  expect((await fold($)).text).toMatch(/^Not folded: the ai plugin never saw this session start/)
   await world.clock.advance(FLUSH_MS)
   expect(world.calls).toEqual([])
   expect(world.compacts).toEqual([])

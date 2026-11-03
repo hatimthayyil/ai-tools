@@ -148,7 +148,7 @@ enum Command {
     },
     #[command(
         hide = true,
-        about = "plumbing: sync, then print the view this session compacts to; fails if a line it needs cannot be written."
+        about = "plumbing: sync, then print the view this session folds to; fails if a line it needs cannot be written."
     )]
     CompactSession {
         #[command(flatten)]

@@ -4,9 +4,10 @@ import type { AiRecall } from '../types'
 const NOT_ATTACHED = 3
 const LONG_MS = 600_000
 const FLUSH_MS = 1_100
-const USAGE = 'Usage: /ai | /ai new <name> | /ai attach <name> | /ai detach'
+const USAGE = 'Usage: /ai new <name> | /ai attach <name> | /ai detach'
+const FOLD_USAGE = '/fold takes no arguments.'
 const WITHHELD =
-  "Not compacted: this session's start never reached the ai plugin, so its compaction would not either and /compact would summarise natively. Where an organization manages Claude Code, only a plugin its managed settings install receives these events."
+  'Not folded: the ai plugin never saw this session start, so it would not see the compaction either, and Claude Code would write its own summary. Where an organization manages Claude Code, only plugins its managed settings install see these events.'
 const RECALL_USAGE = 'Usage: /recall <message>'
 const RELAY =
   "/recall started a read-only fork on the user's message. When its brief arrives, show it to the user whole and wait for their review. Then write the whole brief again with their corrections, and note nothing from it they have not approved."
@@ -15,7 +16,6 @@ const REFUSED =
 
 const transcript = { plugin: 'ai', key: 'transcript' } as const
 const prepared = { plugin: 'ai', key: 'view' } as const
-const requested = { plugin: 'ai', key: 'compress' } as const
 const recalls = { plugin: 'ai', key: 'recall' } as const
 
 /** The tools a recall fork may call besides Bash. */
@@ -104,24 +104,24 @@ async function isWithheld($: EngineInterface): Promise<boolean> {
   return (await $.state.get(transcript)).value === undefined
 }
 
-async function compress($: EngineInterface, cancelled?: AbortSignal): Promise<string | undefined> {
+/**
+ * Folds the session: builds the thread's view when the session is attached, prints `ai view`
+ * (the memory's view, then the thread's), and runs `/compact`, which `session.compact` answers
+ * with that text. Returns why it folds nothing, else undefined.
+ */
+async function fold($: EngineInterface, cancelled?: AbortSignal): Promise<string | undefined> {
   if (await isWithheld($)) return WITHHELD
   await $.clock.sleep(FLUSH_MS)
   const args = await session($)
   const ready = await compactSession($, args, cancelled)
-  if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not compacted: ${reply(ready)}`
-  if (ready.exitCode === 0 && ready.stdout === '') return 'Not compacted: the thread holds nothing yet.'
+  if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not folded: ${reply(ready)}`
+  if (ready.exitCode === 0 && ready.stdout === '') return 'Not folded: the thread holds nothing yet.'
   const shown = await ai($, ['view', '--whole', ...args])
-  if (shown.exitCode !== 0) return `Not compacted: ${reply(shown)}`
-  if (cancelled?.aborted) return 'Not compacted: cancelled.'
+  if (shown.exitCode !== 0) return `Not folded: ${reply(shown)}`
+  if (cancelled?.aborted) return 'Not folded: cancelled.'
   await $.state.set(prepared, shown.stdout)
   $.clock.after(0, () => $.command.run({ command: 'compact' }))
   return undefined
-}
-
-async function compressNow($: EngineInterface): Promise<void> {
-  const failed = await compress($)
-  if (failed !== undefined) $.ui.log(failed)
 }
 
 /**
@@ -198,21 +198,21 @@ async function recall($: EngineInterface, direction: string): Promise<CommandRun
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
+      name: 'fold',
+      description:
+        "ai: replace this conversation with your memory's view, and the thread's view if this session is attached",
+    })
+    await $.command.register({
       name: 'ai',
-      description: "ai: compact into your memory, and the thread's view when attached; new <name>, attach <name>, detach",
-      argumentHint: '[new <name> | attach <name> | detach]',
+      description:
+        'ai: new <name> creates an agent and attaches this session to it; attach <name> attaches it to an existing agent; detach detaches it',
+      argumentHint: 'new <name> | attach <name> | detach',
     })
     await $.command.register({
       name: 'recall',
       description:
         'ai: a read-only fork briefs you on your message from your memory, the thread and the repository',
       argumentHint: '<message>',
-    })
-    await $.tool.register({
-      name: 'compress',
-      description:
-        "Compact this session into your memory, and its thread's view when it is attached to an agent, when the current turn ends.",
-      inputSchema: { type: 'object', properties: {} },
     })
     return next(e)
   })
@@ -235,11 +235,6 @@ export const register: Register = on => {
   })
 
   on('classic.Stop', async ($, e, next) => {
-    if ((await $.state.get(requested)).value) {
-      await $.state.set(requested, false)
-      $.clock.after(0, () => compressNow($))
-      return next(e)
-    }
     const args = sessionArgs(e.session_id, e.transcript_path)
     $.clock.after(FLUSH_MS, () => sync($, 'sync-session', args))
     return next(e)
@@ -251,9 +246,13 @@ export const register: Register = on => {
     return ended
   })
 
-  on('command.run', { command: 'ai' }, async ($, e, next) => {
+  on('command.run', { command: 'fold' }, async ($, e, next) => {
+    if (e.args.trim() !== '') return { text: FOLD_USAGE }
+    return { text: (await fold($, next.signal)) ?? 'Folding.' }
+  })
+
+  on('command.run', { command: 'ai' }, async ($, e) => {
     const [sub, ...rest] = e.args.trim().split(/\s+/)
-    if (sub === '' && rest.length === 0) return { text: (await compress($, next.signal)) ?? 'Compacting.' }
     if (sub === 'new' && rest.length === 1) {
       const made = await agent($, ['new', rest[0]!])
       if (made.exitCode !== 0) return { text: reply(made) }
@@ -283,12 +282,4 @@ export const register: Register = on => {
     if (READERS.has(e.tool) || (e.tool === 'Bash' && isRead(e.command))) return next(e)
     return { deny: REFUSED }
   }).catch(($, e, next) => (next.called ? next(e) : { deny: 'ai: the recall guard failed, so it refuses.' }))
-
-  on('tool.call', { tool: 'mcp__ai__compress' }, async $ => {
-    if (await isWithheld($)) return { result: WITHHELD }
-    const ran = await agent($, ['sync-session', ...(await session($))])
-    if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) return { result: reply(ran) }
-    await $.state.set(requested, true)
-    return { result: 'Compaction queued for the end of this turn.' }
-  })
 }
