@@ -50,7 +50,7 @@ impl Config {
 impl Store {
     /// What `ai.toml` sets where this store was found.
     pub fn settings(&self) -> Settings {
-        Settings::find(self.cwd())
+        Settings::find_in(self.homes(), self.cwd())
     }
 
     /// What `ai.toml` sets for chat where this store was found.

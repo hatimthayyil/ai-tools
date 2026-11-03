@@ -6,11 +6,12 @@ use std::{
 
 use ai_tools::{
     agent::Counts,
-    config::{Agent, Settings},
+    config::{Agent, Homes, Settings},
     memory::Knob,
     project::Project,
     summariser::Kind,
 };
+use mti::prelude::*;
 use tempfile::TempDir;
 
 /// A user's `ai.toml` path and a project tree `outer/inner/cwd`, no file written.
@@ -44,13 +45,36 @@ impl Tree {
     }
 
     fn load(&self) -> Settings {
-        Settings::load(Some(&self.user()), &self.cwd())
+        Settings::load(Some(&self.user()), Some(&self.homes()), &self.cwd())
+    }
+
+    /// The user's homes, in the tree: never the real ones.
+    fn homes(&self) -> Homes {
+        Homes::at(&self.tmp.path().join("home"))
+    }
+
+    /// The private settings of the project at `dir`, their directory made, its `ai.toml` given
+    /// an id if it holds none.
+    fn private(&self, dir: &Path) -> PathBuf {
+        private_in(&self.homes(), dir)
     }
 }
 
-/// The private settings of the project at `dir`, their directory made.
-fn private(dir: &Path) -> PathBuf {
-    let p = dir.join(".ai/local/ai.toml");
+/// The private settings in `homes` of the project at `dir`, their directory made, its `ai.toml`
+/// given an id if it holds none.
+fn private_in(homes: &Homes, dir: &Path) -> PathBuf {
+    let toml = dir.join("ai.toml");
+    let text = fs::read_to_string(&toml).unwrap_or_default();
+    if !text.contains("id = ") {
+        let id = format!("id = \"{}\"\n", "project".create_type_id::<V7>());
+        let text = match text.contains("[project]\n") {
+            true => text.replacen("[project]\n", &format!("[project]\n{id}"), 1),
+            false => format!("[project]\n{id}\n{text}"),
+        };
+        fs::write(&toml, text).unwrap();
+    }
+    ai_tools::repo::ensure(&homes.repo).unwrap();
+    let p = Project::find(dir).unwrap().unwrap().private(homes).unwrap();
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     p
 }
@@ -436,7 +460,7 @@ fn a_bad_key_or_value_names_its_file_and_key_and_stops_its_part_alone() {
                 "project" => t.inner().join("ai.toml"),
                 _ => {
                     fs::write(t.inner().join("ai.toml"), "").unwrap();
-                    private(&t.inner())
+                    t.private(&t.inner())
                 }
             };
             fs::write(&p, text).unwrap();
@@ -499,7 +523,7 @@ fn the_private_file_overrides_its_project_file_key_by_key() {
     )
     .unwrap();
     fs::write(
-        private(&t.inner()),
+        t.private(&t.inner()),
         "[summariser]\nmodel = \"opus\"\n\n[memory]\nentry-chars = 200\n",
     )
     .unwrap();
@@ -524,13 +548,34 @@ fn the_private_file_overrides_its_project_file_key_by_key() {
 fn only_the_private_file_of_the_nearest_project_counts() {
     let t = Tree::new();
     fs::write(t.outer().join("ai.toml"), "").unwrap();
-    fs::write(private(&t.outer()), "[summariser]\nmodel = \"opus\"\n").unwrap();
+    fs::write(t.private(&t.outer()), "[summariser]\nmodel = \"opus\"\n").unwrap();
     fs::write(
         t.inner().join("ai.toml"),
         "[summariser]\nmodel = \"haiku\"\n",
     )
     .unwrap();
-    fs::write(private(&t.cwd()), "[summariser]\nmodel = \"fable\"\n").unwrap();
+    let inner = t.private(&t.inner());
+    assert_eq!(t.load().summariser().unwrap().model(), "haiku");
+    fs::write(&inner, "[summariser]\nmodel = \"fable\"\n").unwrap();
+    assert_eq!(t.load().summariser().unwrap().model(), "fable");
+    assert_eq!(
+        inner,
+        t.homes().repo.join("projects/inner/ai.toml"),
+        "each project's private settings are in its folder of ~/ai"
+    );
+}
+
+#[test]
+fn a_project_without_an_id_has_no_private_settings() {
+    let t = Tree::new();
+    fs::write(
+        t.inner().join("ai.toml"),
+        "[summariser]\nmodel = \"haiku\"\n",
+    )
+    .unwrap();
+    let p = t.homes().repo.join("projects/inner/ai.toml");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(&p, "[summariser]\nmodel = \"opus\"\n").unwrap();
     assert_eq!(t.load().summariser().unwrap().model(), "haiku");
 }
 
@@ -548,7 +593,7 @@ fn an_agent_adds_up_instructions_and_overrides_its_worktree() {
     )
     .unwrap();
     fs::write(
-        private(&t.inner()),
+        t.private(&t.inner()),
         "[agents.stabiliser]\ninstructions = \"mine.md\"\nworktree = \"../my-stabiliser\"\n",
     )
     .unwrap();
@@ -613,7 +658,7 @@ fn outside_a_project_a_relative_worktree_stays_as_written() {
 fn the_private_file_holds_no_project_table() {
     let t = Tree::new();
     fs::write(t.inner().join("ai.toml"), "[project]\nname = \"widget\"\n").unwrap();
-    let local = private(&t.inner());
+    let local = t.private(&t.inner());
     fs::write(&local, "[project]\nname = \"mine\"\n").unwrap();
     for part in PARTS {
         assert_eq!(
@@ -631,6 +676,7 @@ fn the_private_file_holds_no_project_table() {
 fn a_local_file_of_its_own_is_refused() {
     let t = Tree::new();
     fs::write(t.inner().join("ai.toml"), "").unwrap();
+    let private = t.private(&t.inner());
     let link = t.inner().join("ai.local.toml");
     fs::write(&link, "[summariser]\nmodel = \"opus\"\n").unwrap();
     for part in PARTS {
@@ -639,7 +685,7 @@ fn a_local_file_of_its_own_is_refused() {
             format!(
                 "{} is a file of its own. Move it to {}, then run `ai init` to link it.",
                 link.display(),
-                t.inner().join(".ai/local/ai.toml").display()
+                private.display()
             ),
             "{part}"
         );
@@ -667,8 +713,9 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-fn a_linked_worktree_reads_the_main_checkouts_private_file() {
+fn a_linked_worktree_shares_the_main_checkouts_private_file() {
     let tmp = TempDir::new().unwrap();
+    let homes = Homes::at(&tmp.path().join("home"));
     let main = tmp.path().join("main");
     let sub = main.join("sub");
     fs::create_dir_all(&sub).unwrap();
@@ -677,19 +724,17 @@ fn a_linked_worktree_reads_the_main_checkouts_private_file() {
         "[project]\nid = \"project_01m5h1sxw1eh2rcnjyd5hb8fy4\"\n\n[summariser]\nmodel = \"haiku\"\n",
     )
     .unwrap();
-    fs::write(main.join(".gitignore"), "/.ai/local/\n").unwrap();
     git(&main, &["init", "-q"]);
     git(&main, &["add", "."]);
     git(&main, &["commit", "-qm", "init"]);
     git(&main, &["worktree", "add", "-q", "../wt"]);
-    fs::write(private(&sub), "[summariser]\nmodel = \"opus\"\n").unwrap();
     let wt = tmp.path().join("wt").join("sub");
-    fs::write(private(&wt), "[summariser]\nmodel = \"fable\"\n").unwrap();
+    let private = private_in(&homes, &sub);
+    assert_eq!(private_in(&homes, &wt), private, "one project, one file");
+    fs::write(&private, "[summariser]\nmodel = \"opus\"\n").unwrap();
 
-    assert_eq!(
-        Settings::load(None, &wt).summariser().unwrap().model(),
-        "opus"
-    );
+    let load = |dir: &Path| Settings::load(None, Some(&homes), dir);
+    assert_eq!(load(&wt).summariser().unwrap().model(), "opus");
     let p = Project::find(&wt).unwrap().unwrap();
     assert_eq!(
         (p.dir, p.home),
@@ -697,17 +742,14 @@ fn a_linked_worktree_reads_the_main_checkouts_private_file() {
     );
     assert_eq!(Project::find(&sub).unwrap().unwrap().home, sub);
 
-    Project::init(&wt).unwrap();
+    Project::init_in(&wt, &homes).unwrap();
     assert_eq!(
         fs::read_link(sub.join("ai.local.toml")).unwrap(),
-        Path::new(".ai/local/ai.toml"),
-        "init in a linked worktree links the main checkout's private settings"
+        private,
+        "init in a linked worktree links the private settings from the main checkout"
     );
     assert!(fs::symlink_metadata(wt.join("ai.local.toml")).is_err());
-    assert_eq!(
-        Settings::load(None, &wt).summariser().unwrap().model(),
-        "opus"
-    );
+    assert_eq!(load(&wt).summariser().unwrap().model(), "opus");
 }
 
 #[test]
@@ -728,7 +770,7 @@ fn a_linked_worktree_finds_an_agents_worktree_where_the_main_checkout_does() {
     let wt = main.parent().unwrap().join("wt").join("sub");
 
     let from = |dir: &Path| {
-        Settings::load(None, dir)
+        Settings::load(None, None, dir)
             .agent("dev")
             .unwrap()
             .unwrap()
@@ -760,7 +802,11 @@ fn reports_to_is_overridden_key_by_key() {
         Some(t.inner().join("../dev"))
     );
 
-    fs::write(private(&t.inner()), "[agents.developer]\nreports-to = []\n").unwrap();
+    fs::write(
+        t.private(&t.inner()),
+        "[agents.developer]\nreports-to = []\n",
+    )
+    .unwrap();
     let h = t.load().hierarchy().unwrap();
     assert_eq!(h.superiors("developer"), [] as [&str; 0]);
     assert!(h.below("lead").is_empty());

@@ -2,6 +2,7 @@ pub mod agent;
 pub mod config;
 pub mod file;
 pub mod git;
+pub mod harness;
 pub mod jsonl;
 pub mod memory;
 pub mod notes;

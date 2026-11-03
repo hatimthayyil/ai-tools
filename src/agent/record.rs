@@ -59,7 +59,8 @@ impl Tag {
 }
 
 /// A session's branch in one thread: one line of the thread's `sessions.jsonl`, the last per
-/// session holding.
+/// session holding. Its transcript is [pointed at](super::source::point) as the thread's
+/// sources are.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Track {
     pub harness: String,
@@ -70,6 +71,19 @@ pub(super) struct Track {
     pub graft: Option<u64>,
     #[serde(deserialize_with = "present")]
     pub tip: Option<u64>,
+}
+
+/// A file of a session that a thread read, which the thread records in place of a copy: one
+/// line of the thread's `sources.jsonl`, the last per file holding. The file's first `len`
+/// bytes have the git blob id `hash`. `path` is [pointed at](super::source::point) from the
+/// harness's home.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Pointer {
+    pub harness: String,
+    pub session: String,
+    pub path: PathBuf,
+    pub len: u64,
+    pub hash: String,
 }
 
 /// A change of a session's attachment to a thread: one line of the thread's

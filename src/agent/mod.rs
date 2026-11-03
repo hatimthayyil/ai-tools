@@ -1,5 +1,6 @@
 pub mod claude;
 mod cli;
+pub mod convert;
 pub mod id;
 pub mod model;
 mod record;
@@ -16,6 +17,7 @@ pub use id::Id;
 pub use model::{Item, Kind, Marker, Place, SourceId, Tree, Turn, turns};
 pub use record::{Agent, Binding, Head, Key, Line, LineKind};
 pub use rollup::{Branch, Part, Rollup, Source};
+pub use source::{locate, point};
 pub use store::{Added, FORMAT, Mark, Snapshot, Store, Thread, ThreadInfo, Transcript, check_name};
 pub use summarise::{
     Built, Config, OnFail, Preview, PreviewLine, Rewrote, build, plan, preview, rebuild, rewrite,

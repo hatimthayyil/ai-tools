@@ -16,6 +16,7 @@ use ai_tools::{
         Built, Id, Key, Line, LineKind, Mark, OnFail, Rollup, Source, Store, Thread, build, plan,
         preview, rebuild, rewrite, rollup, summarise,
     },
+    config::Homes,
     memory::{Backend, Block, Conversation, JOBS, NODE, SCALE, Usage},
     project::Project,
 };
@@ -113,7 +114,7 @@ impl Repo {
         let dir = TempDir::new().unwrap();
         let r = Repo { dir };
         fs::create_dir(r.path()).unwrap();
-        Project::init(&r.path()).unwrap();
+        Project::init_in(&r.path(), &r.homes()).unwrap();
         r
     }
 
@@ -122,7 +123,14 @@ impl Repo {
     }
 
     fn store(&self) -> Store {
-        Store::find(&self.path()).unwrap().unwrap()
+        Store::find_in(&self.homes(), &self.path())
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The user's homes, beside the project: never the real ones.
+    fn homes(&self) -> Homes {
+        Homes::at(&self.dir.path().join("home"))
     }
 
     /// The new agent `t`, with `s` attached as session `s1`.
@@ -671,9 +679,13 @@ fn build_waits_for_a_running_summariser_and_calls_for_nothing_it_built() {
         .lines();
     let slow = Fake::with(Duration::from_millis(300), |_| false);
     let summarising = {
-        let (path, slow) = (r.path(), slow.clone());
+        let (path, slow, homes) = (r.path(), slow.clone(), r.homes());
         thread::spawn(move || {
-            let t = Store::find(&path).unwrap().unwrap().thread("t").unwrap();
+            let t = Store::find_in(&homes, &path)
+                .unwrap()
+                .unwrap()
+                .thread("t")
+                .unwrap();
             summarise(&t, slow.backend(), OnFail::Continue, &Progress::quiet()).unwrap()
         })
     };
@@ -1077,7 +1089,7 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
     .unwrap();
     let sub = r.path().join("src");
     fs::create_dir(&sub).unwrap();
-    let store = Store::find(&sub).unwrap().unwrap();
+    let store = Store::find_in(&r.homes(), &sub).unwrap().unwrap();
     let s = store.settings();
     assert_eq!(
         (

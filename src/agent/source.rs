@@ -4,7 +4,74 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+
+use crate::agent::claude;
+
+/// Where `harness` keeps its files, from the environment `var`: Claude Code's configuration
+/// directory, pi's agent directory or DSH's home; `None` for a harness whose home ai does not
+/// know, or without a home directory.
+pub fn home(harness: &str, var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let var = |k: &str| var(k).filter(|v| !v.is_empty());
+    let (key, default) = match harness {
+        claude::HARNESS => return claude::config_dir(var),
+        "pi" => ("PI_CODING_AGENT_DIR", ".pi/agent"),
+        "dsh" => ("DSH_HOME", ".dsh"),
+        _ => return None,
+    };
+    var(key)
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(var("HOME")?).join(default)))
+}
+
+/// [`home`] from this process's environment.
+pub fn home_here(harness: &str) -> Option<PathBuf> {
+    home(harness, |k| std::env::var(k).ok())
+}
+
+/// How a thread records the harness file at `abs`: relative to the harness's `home` when it lies
+/// there, so the record holds wherever the home's files move; else `abs` itself.
+pub fn point(home: Option<&Path>, abs: &Path) -> PathBuf {
+    let Some(home) = home else {
+        return abs.to_path_buf();
+    };
+    let under = |h: &Path, p: &Path| {
+        p.strip_prefix(h)
+            .ok()
+            .filter(|r| !r.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    };
+    under(home, abs)
+        .or_else(|| {
+            let parent = fs::canonicalize(abs.parent()?).ok()?;
+            under(
+                &fs::canonicalize(home).ok()?,
+                &parent.join(abs.file_name()?),
+            )
+        })
+        .unwrap_or_else(|| abs.to_path_buf())
+}
+
+/// The harness file a thread's record `p` names: under `harness`'s `home` when relative.
+pub fn locate(harness: &str, home: Option<&Path>, p: &Path) -> Result<PathBuf> {
+    if p.is_absolute() {
+        return Ok(p.to_path_buf());
+    }
+    match home {
+        Some(h) => Ok(h.join(p)),
+        None => bail!(
+            "Cannot find where {harness} keeps its files, to read {}: set HOME.",
+            p.display()
+        ),
+    }
+}
+
+/// The git blob id of `bytes`, in hex.
+pub fn hash(bytes: &[u8]) -> Result<String> {
+    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
+        .map(|id| id.to_string())
+        .map_err(|e| anyhow!("Cannot hash a file: {e}"))
+}
 
 pub(super) fn capture(path: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
     let parent = path

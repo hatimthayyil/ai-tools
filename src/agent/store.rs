@@ -6,19 +6,22 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use jiff::Timestamp;
 use serde::Serialize;
 
 use crate::{
     agent::{
         claude::Subagent,
+        convert,
         model::{Item, Kind, SourceId, Tree},
         record::{
-            Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Row, State, Tag, Track,
-            check_id,
+            Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Pointer, Row, State, Tag,
+            Track, check_id,
         },
+        source,
     },
+    config::Homes,
     file::{self, AtPath, pretty},
     jsonl,
     memory::{CALLS, Who},
@@ -27,21 +30,22 @@ use crate::{
 };
 
 /// The agent store format this ai reads and writes.
-pub const FORMAT: u32 = 5;
-const THREADS: &str = "threads";
-const ITEMS: &str = "items.jsonl";
-const LINES: &str = "lines.jsonl";
-const SESSIONS: &str = "sessions.jsonl";
-const ATTACHMENTS: &str = "attachments.jsonl";
-const AGENTS: &str = "agents.jsonl";
-const SOURCES: &str = "sources";
+pub const FORMAT: u32 = 6;
+/// The agent store's directory in a project's folder of `~/ai`, and of this machine's files for
+/// the project in `~/.ai`.
+pub const DIR: &str = "agents";
+pub(super) const THREADS: &str = "threads";
+pub(super) const ITEMS: &str = "items.jsonl";
+pub(super) const LINES: &str = "lines.jsonl";
+pub(super) const SESSIONS: &str = "sessions.jsonl";
+pub(super) const ATTACHMENTS: &str = "attachments.jsonl";
+pub(super) const AGENTS: &str = "agents.jsonl";
+pub(super) const SOURCES: &str = "sources.jsonl";
 /// The lock every writer of a thread's files takes.
 const WRITE_LOCK: &str = "write.lock";
 /// The compactor's lock on a thread, and its log.
 const COMPACT_LOCK: &str = "compact.lock";
 const COMPACT_LOG: &str = "compact.log";
-/// What a thread's repository leaves out: locks and logs.
-const IGNORES: &str = "*.lock\n*.log\n";
 
 /// `name` if it names a thread: letters, digits, `-` and `_`, starting with a letter or digit.
 pub fn check_name(name: &str) -> Result<&str> {
@@ -101,12 +105,15 @@ impl Added {
     }
 }
 
-/// A session as its harness's adapter reads it.
+/// A session as its harness's adapter reads it: its items, its subagents, and its files by
+/// their path in `dir`, the transcript's directory; `main` is the transcript's own.
 #[derive(Debug, Default)]
 pub struct Transcript {
     pub items: Vec<Item>,
     pub agents: Vec<Subagent>,
     pub files: BTreeMap<PathBuf, Vec<u8>>,
+    pub dir: PathBuf,
+    pub main: PathBuf,
 }
 
 /// A thread at a glance.
@@ -131,37 +138,60 @@ pub struct Mark {
     sessions: u64,
 }
 
-/// The agents of one project, shared by its linked worktrees: a directory of [threads](Thread),
-/// each a git repository of its own, so access to one thread reaches no other. Beside them lie
-/// the store's format and the sessions' locks, which no repository holds.
+/// The agents of one project, shared by its checkouts: a directory of [threads](Thread) in the
+/// project's [folder](Project::folder) of the user's repository `~/ai`, which `ai` commits;
+/// beside them the store's format. The threads' locks and logs and the sessions' locks are this
+/// machine's, in `~/.ai`.
 pub struct Store {
     project: Project,
+    homes: Homes,
     root: PathBuf,
+    /// This machine's files for the project's agents.
+    local: PathBuf,
     cwd: PathBuf,
 }
 
 impl Store {
-    /// The agents of the project at or above `dir`; `None` outside a project.
-    /// A store of another format is refused.
+    /// The agents of the project at or above `dir`, in the user's `~/ai`; `None` outside a
+    /// project. A store of another format, or agents an older ai kept, are refused.
     pub fn find(dir: &Path) -> Result<Option<Store>> {
-        Project::find(dir)?.map(|p| Store::of(p, dir)).transpose()
+        match Project::find(dir)? {
+            Some(p) => Ok(Some(Store::of(p, &Homes::user()?, dir)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Store::find`] in `homes`.
+    pub fn find_in(homes: &Homes, dir: &Path) -> Result<Option<Store>> {
+        Project::find(dir)?
+            .map(|p| Store::of(p, homes, dir))
+            .transpose()
     }
 
     /// [`Store::find`], else an error saying how to make the project.
     pub fn open(dir: &Path) -> Result<Store> {
-        Store::of(Project::require(dir)?, dir)
+        Store::open_in(&Homes::user()?, dir)
     }
 
-    /// Where the agents of `project` live: `agents` in its [private store](Project::store).
-    pub fn root(project: &Project) -> PathBuf {
-        project.store().join("agents")
+    /// [`Store::open`] in `homes`.
+    pub fn open_in(homes: &Homes, dir: &Path) -> Result<Store> {
+        Store::of(Project::require(dir)?, homes, dir)
     }
 
-    fn of(project: Project, cwd: &Path) -> Result<Store> {
-        let root = Store::root(&project);
+    /// Where the agents of `project` live: `agents` in its [folder](Project::folder) of
+    /// `homes.repo`.
+    pub fn root(homes: &Homes, project: &Project) -> Result<PathBuf> {
+        Ok(project.folder(homes)?.join(DIR))
+    }
+
+    fn of(project: Project, homes: &Homes, cwd: &Path) -> Result<Store> {
+        convert::refuse_pending(&project, homes)?;
+        let root = Store::root(homes, &project)?;
         file::check_format(&root, FORMAT, "agent")?;
         Ok(Store {
+            local: homes.machine.join(DIR).join(&project.id),
             project,
+            homes: homes.clone(),
             root,
             cwd: cwd.to_path_buf(),
         })
@@ -169,6 +199,11 @@ impl Store {
 
     pub(super) fn project(&self) -> &Project {
         &self.project
+    }
+
+    /// Where it lives: the user's `~/ai` and this machine's `~/.ai`.
+    pub fn homes(&self) -> &Homes {
+        &self.homes
     }
 
     /// The directory it was found from.
@@ -181,15 +216,17 @@ impl Store {
         &self.root
     }
 
-    /// Makes the store's directory and format file before its first write.
-    fn ensure(root: &Path) -> Result<()> {
-        file::ensure_format(root, FORMAT)
+    /// Claims the project's folder and makes the store's directory and format file, before its
+    /// first write.
+    fn ensure(&self) -> Result<()> {
+        self.project.claim(&self.homes)?;
+        file::ensure_format(&self.root, FORMAT)
     }
 
     pub(super) fn session_lock(&self, harness: &str, session: &str) -> Result<file::Lock> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
-        let dir = self.root.join("sessions").join(harness);
+        let dir = self.local.join("sessions").join(harness);
         fs::create_dir_all(&dir).at(&dir)?;
         file::lock(&dir.join(format!("{session}.lock")))
     }
@@ -224,6 +261,7 @@ impl Store {
         Ok(Thread {
             name: name.into(),
             dir: self.root.join(THREADS).join(name),
+            local: self.local.join(THREADS).join(name),
         })
     }
 
@@ -236,51 +274,33 @@ impl Store {
         Ok(t)
     }
 
-    /// Creates agent `name` with an empty thread, a git repository of its own; an error if it
-    /// exists. The thread is made beside its place and renamed in, so it never shows without
-    /// its repository.
+    /// Creates agent `name` with an empty thread; an error if it exists.
     pub fn create(&self, name: &str) -> Result<Thread> {
         let t = self.thread(name)?;
-        let exists = || anyhow!("Agent {name} already exists in this project.");
-        if t.exists()? {
-            return Err(exists());
-        }
-        Store::ensure(&self.root)?;
+        self.ensure()?;
         let threads = self.root.join(THREADS);
         fs::create_dir_all(&threads).at(&threads)?;
-        let tmp = tempfile::Builder::new()
-            .prefix(".new-")
-            .tempdir_in(&threads)
-            .at(&threads)?;
-        let ignore = tmp.path().join(".gitignore");
-        fs::write(&ignore, IGNORES).at(&ignore)?;
-        repo::create(tmp.path())?;
-        match fs::rename(tmp.path(), &t.dir) {
-            Ok(()) => {
-                let _ = tmp.keep();
-                Ok(t)
+        match fs::create_dir(&t.dir) {
+            Ok(()) => Ok(t),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                bail!("Agent {name} already exists in this project.")
             }
-            Err(_) if t.exists()? => Err(exists()),
             Err(e) => Err(e).at(&t.dir),
         }
     }
 
-    /// Commits every thread's repository as one commit `msg` each; nothing for a thread that
-    /// did not change. A thread that fails is reported once every other is committed.
+    /// Commits the project's folder of `~/ai` as one commit `msg`, leaving the rest of the
+    /// repository as it is; nothing if the folder did not change or does not exist.
     pub fn commit(&self, msg: &str) -> Result<()> {
-        let failed: Vec<String> = self
-            .threads()?
-            .iter()
-            .filter_map(|t| {
-                repo::commit(&t.dir, "ai", msg)
-                    .err()
-                    .map(|e| format!("Cannot commit {}: {e:#}", pretty(&t.dir)))
-            })
-            .collect();
-        if !failed.is_empty() {
-            bail!("{}", failed.join("\n"));
+        let folder = self.project.folder(&self.homes)?;
+        if !folder.exists() {
+            return Ok(());
         }
-        Ok(())
+        let rel = folder
+            .strip_prefix(&self.homes.repo)
+            .expect("a project's folder is in the user's repository");
+        repo::commit_paths(&self.homes.repo, &[rel], "ai", msg)
+            .with_context(|| format!("Cannot commit {}", pretty(&folder)))
     }
 
     /// Every thread, by name.
@@ -339,21 +359,19 @@ impl Store {
         Ok(list)
     }
 
-    /// Whether `dir` shares this store: an existing directory of this project, in its main
-    /// checkout or a linked worktree of it. Another clone has its own store.
+    /// Whether `dir` shares this store: an existing directory of this project, in any checkout or
+    /// clone of it.
     pub fn holds(&self, dir: &Path) -> bool {
-        let same = |a: &Path, b: &Path| fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
-        Project::find(dir).is_ok_and(|p| {
-            p.is_some_and(|p| p.id == self.project.id && same(&p.home, &self.project.home))
-        })
+        Project::find(dir).is_ok_and(|p| p.is_some_and(|p| p.id == self.project.id))
     }
 }
 
-/// One thread: a directory `threads/<name>` of the store, a git repository of every file of the
-/// thread but its locks and log.
+/// One thread: a directory `threads/<name>` of the store; its locks and its compactor's log
+/// are this machine's, in `local`.
 pub struct Thread {
     name: String,
     dir: PathBuf,
+    local: PathBuf,
 }
 
 impl Thread {
@@ -371,6 +389,7 @@ impl Thread {
     pub fn snapshot(&self) -> Result<Snapshot> {
         let events = segments::read(&self.dir.join(ATTACHMENTS))?;
         let tracks = segments::read(&self.dir.join(SESSIONS))?;
+        let sources = segments::read(&self.dir.join(SOURCES))?;
         let lines = segments::read(&self.dir.join(LINES))?;
         let agents = segments::read(&self.dir.join(AGENTS))?;
         Ok(Snapshot {
@@ -379,6 +398,7 @@ impl Thread {
             items: segments::read(&self.dir.join(ITEMS))?,
             lines,
             tracks,
+            sources,
             agents,
             events,
         })
@@ -386,7 +406,13 @@ impl Thread {
 
     /// The writers' lock on this thread's files.
     pub(super) fn writer(&self) -> Result<file::Lock> {
-        file::lock(&self.dir.join(WRITE_LOCK))
+        file::lock(&self.local_file(WRITE_LOCK)?)
+    }
+
+    /// The file `name` among this machine's files for the thread, their directory made.
+    fn local_file(&self, name: &str) -> Result<PathBuf> {
+        fs::create_dir_all(&self.local).at(&self.local)?;
+        Ok(self.local.join(name))
     }
 
     fn append<T: Serialize>(&self, file: &str, rows: &[T]) -> Result<()> {
@@ -413,28 +439,24 @@ impl Thread {
 
     /// The compactor's lock on this thread; `None` while another process holds it.
     pub fn try_lock(&self) -> Result<Option<file::Lock>> {
-        file::try_lock(&self.lock_path())
+        file::try_lock(&self.local_file(COMPACT_LOCK)?)
     }
 
     /// The compactor's lock on this thread, waiting for it however long another process holds
     /// it.
     pub fn lock(&self) -> Result<file::Lock> {
-        file::lock(&self.lock_path())
+        file::lock(&self.local_file(COMPACT_LOCK)?)
     }
 
     /// The compactor's lock on this thread, waiting for it until `deadline`; `None` if another
     /// process still holds it then.
     pub fn lock_before(&self, deadline: Instant) -> Result<Option<file::Lock>> {
-        file::lock_before(&self.lock_path(), deadline)
+        file::lock_before(&self.local_file(COMPACT_LOCK)?, deadline)
     }
 
-    fn lock_path(&self) -> PathBuf {
-        self.dir.join(COMPACT_LOCK)
-    }
-
-    /// The compactor's log, beside its lock.
+    /// The compactor's log, beside its lock, on this machine.
     pub fn log_path(&self) -> PathBuf {
-        self.dir.join(COMPACT_LOG)
+        self.local.join(COMPACT_LOG)
     }
 
     /// Where the compactor keeps its calls to the model: `threads/<name>/calls`.
@@ -511,6 +533,7 @@ pub struct Snapshot {
     items: Vec<u8>,
     lines: Vec<u8>,
     tracks: Vec<u8>,
+    sources: Vec<u8>,
     agents: Vec<u8>,
     events: Vec<u8>,
 }
@@ -683,19 +706,26 @@ impl Snapshot {
     }
 
     /// The binding of `t`, from its session's attachment changes `events`: when it was last
-    /// attached here, and detached if a change followed. `None` until an attachment to this
-    /// thread is recorded.
-    fn bind(&self, t: Track, events: &[&Event]) -> Option<Binding> {
-        let i = events.iter().rposition(|e| e.state == State::Attached)?;
-        Some(Binding {
+    /// attached here, and detached if a change followed, with its transcript's path. `None`
+    /// until an attachment to this thread is recorded.
+    fn bind(&self, t: Track, events: &[&Event]) -> Result<Option<Binding>> {
+        let Some(i) = events.iter().rposition(|e| e.state == State::Attached) else {
+            return Ok(None);
+        };
+        let home = source::home_here(&t.harness);
+        let transcript = t
+            .transcript
+            .map(|p| source::locate(&t.harness, home.as_deref(), &p))
+            .transpose()?;
+        Ok(Some(Binding {
             attached: events[i].at,
             detached: events.get(i + 1).map(|e| e.at),
             harness: t.harness,
             session: t.session,
-            transcript: t.transcript,
+            transcript,
             graft: t.graft,
             tip: t.tip,
-        })
+        }))
     }
 
     /// Every session bound to this thread, attached or not, by harness and session id.
@@ -705,14 +735,14 @@ impl Snapshot {
         for e in &events {
             by.entry((&e.harness, &e.session)).or_default().push(e);
         }
-        Ok(self
-            .tracks()?
-            .into_values()
-            .filter_map(|t| {
-                let events = by.get(&(t.harness.as_str(), t.session.as_str()))?.clone();
-                self.bind(t, &events)
-            })
-            .collect())
+        let mut out = Vec::new();
+        for t in self.tracks()?.into_values() {
+            let Some(events) = by.get(&(t.harness.as_str(), t.session.as_str())).cloned() else {
+                continue;
+            };
+            out.extend(self.bind(t, &events)?);
+        }
+        Ok(out)
     }
 
     pub fn binding(&self, harness: &str, session: &str) -> Result<Option<Binding>> {
@@ -724,7 +754,7 @@ impl Snapshot {
             .iter()
             .filter(|e| e.harness == harness && e.session == session)
             .collect();
-        Ok(self.bind(t, &mine))
+        self.bind(t, &mine)
     }
 
     /// The newest tip of a session: the item of its transcript's newest entry.
@@ -817,19 +847,79 @@ impl Snapshot {
             .collect())
     }
 
-    /// Adds the items of `t` this thread lacks, for session `b`, and archives its files: a
-    /// root hangs on `b.graft`, `b.tip` moves to its newest entry. Entries are known by
-    /// harness and entry id. The caller holds `thread`'s writer lock and read this snapshot
-    /// under it.
-    pub(super) fn ingest(&self, thread: &Thread, b: &mut Track, t: &Transcript) -> Result<Added> {
-        let sources = self
-            .dir
-            .join(SOURCES)
-            .join(check_id(&b.harness, "harness")?)
-            .join(check_id(&b.session, "session")?);
-        for (relative, bytes) in &t.files {
-            archive(&sources, relative, bytes)?;
+    /// The newest record of each file of a session this thread read, by harness and path.
+    pub(super) fn pointers(&self) -> Result<BTreeMap<(String, PathBuf), Pointer>> {
+        let mut out = BTreeMap::new();
+        for (i, l) in jsonl::lines(&self.sources).enumerate() {
+            let p: Pointer = jsonl::decode(l).with_context(|| {
+                format!("Thread {}: source record {} is corrupt", self.name, i + 1)
+            })?;
+            out.insert((p.harness.clone(), p.path.clone()), p);
         }
+        Ok(out)
+    }
+
+    /// The records of `t`'s files this thread lacks, for session `b`: a file is recorded again
+    /// when it grew or changed. An error if a file it recorded is gone, or if the transcript no
+    /// longer begins with the bytes it recorded: the harness's files are the only copy, so the
+    /// error says to restore them.
+    fn point(&self, b: &Track, t: &Transcript) -> Result<Vec<Pointer>> {
+        let home = source::home_here(&b.harness);
+        let mut known: BTreeMap<PathBuf, Pointer> = self
+            .pointers()?
+            .into_values()
+            .filter(|p| p.harness == b.harness && p.session == b.session)
+            .map(|p| (p.path.clone(), p))
+            .collect();
+        let mut out = Vec::new();
+        for (relative, bytes) in &t.files {
+            let abs = t.dir.join(relative);
+            let path = source::point(home.as_deref(), &abs);
+            let hash = source::hash(bytes)?;
+            if let Some(old) = known.remove(&path) {
+                if old.len == bytes.len() as u64 && old.hash == hash {
+                    continue;
+                }
+                let kept = usize::try_from(old.len).ok().and_then(|n| bytes.get(..n));
+                let prefix = kept.map(source::hash).transpose()?;
+                if *relative == t.main && prefix.as_deref() != Some(old.hash.as_str()) {
+                    bail!(
+                        "Thread {}: {} no longer begins with the {} bytes this thread read from \
+                         it. Restore it from your backup of ~/.ai/harness.",
+                        self.name,
+                        pretty(&abs),
+                        old.len
+                    );
+                }
+            }
+            out.push(Pointer {
+                harness: b.harness.clone(),
+                session: b.session.clone(),
+                path,
+                len: bytes.len() as u64,
+                hash,
+            });
+        }
+        if let Some(gone) = known.into_values().next() {
+            let abs = source::locate(&b.harness, home.as_deref(), &gone.path)?;
+            bail!(
+                "Thread {}: {} is gone; this thread read {} bytes of it. Restore it from your \
+                 backup of ~/.ai/harness.",
+                self.name,
+                pretty(&abs),
+                gone.len
+            );
+        }
+        Ok(out)
+    }
+
+    /// Adds the items of `t` this thread lacks, for session `b`, and records its files: a root
+    /// hangs on `b.graft`, `b.tip` moves to its newest entry. Entries are known by harness and
+    /// entry id. The caller holds `thread`'s writer lock and read this snapshot under it.
+    pub(super) fn ingest(&self, thread: &Thread, b: &mut Track, t: &Transcript) -> Result<Added> {
+        check_id(&b.harness, "harness")?;
+        check_id(&b.session, "session")?;
+        thread.append(SOURCES, &self.point(b, t)?)?;
         let mut main = Append::new(self.heads()?);
         let first = main.len();
         for item in &t.items {
@@ -890,36 +980,6 @@ impl Snapshot {
             items: added,
             agent_items,
         })
-    }
-}
-
-/// Copies `bytes` to the segmented file `relative` under `root`: appended when they extend the
-/// copy there, else written whole, replacing a file or directory standing in the way.
-fn archive(root: &Path, relative: &Path, bytes: &[u8]) -> Result<()> {
-    let p = root.join(relative);
-    let mut up: Vec<&Path> = relative
-        .ancestors()
-        .skip(1)
-        .filter(|a| !a.as_os_str().is_empty())
-        .collect();
-    up.reverse();
-    for a in up {
-        let a = root.join(a);
-        if segments::is_segmented(&a) {
-            fs::remove_dir_all(&a).at(&a)?;
-        }
-    }
-    if !segments::is_segmented(&p) {
-        if p.is_dir() {
-            fs::remove_dir_all(&p).at(&p)?;
-        }
-        return segments::write(&p, bytes);
-    }
-    let old = segments::read_all(&p)?;
-    match bytes.strip_prefix(old.as_slice()) {
-        Some([]) => Ok(()),
-        Some(new) => segments::extend(&p, new),
-        None => segments::write(&p, bytes),
     }
 }
 

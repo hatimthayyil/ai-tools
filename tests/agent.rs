@@ -8,6 +8,7 @@ use std::{
 
 use ai_tools::{
     agent::{Item, Key, Kind, LineKind, Store, Synced, Tree, claude, read, sync},
+    config::Homes,
     memory::Who,
     project::Project,
     segments,
@@ -91,7 +92,7 @@ impl Repo {
         let dir = TempDir::new().unwrap();
         let repo = dir.path().join("repo");
         gix::init(&repo).unwrap();
-        Project::init(&repo).unwrap();
+        Project::init_in(&repo, &homes_of(&repo)).unwrap();
         git(&repo, &["add", "ai.toml"]);
         git(&repo, &["commit", "-q", "-m", "root"]);
         let r = Repo { dir };
@@ -104,7 +105,9 @@ impl Repo {
     }
 
     fn store(&self) -> Store {
-        Store::find(&self.path()).unwrap().unwrap()
+        Store::find_in(&self.homes(), &self.path())
+            .unwrap()
+            .unwrap()
     }
 
     /// Writes the transcript of `session`.
@@ -139,10 +142,26 @@ impl Repo {
         })
     }
 
-    /// The agent store of the project, in its checkout.
+    /// The agent store of the project, in its folder of the user's repository.
     fn store_dir(&self) -> PathBuf {
-        self.path().join(".ai/local/agents")
+        self.homes().repo.join("projects/repo/agents")
     }
+
+    /// The user's homes, beside the project.
+    fn homes(&self) -> Homes {
+        homes_of(&self.path())
+    }
+
+    /// This machine's files for the project's agents: their locks and logs.
+    fn local_dir(&self) -> PathBuf {
+        let id = Project::find(&self.path()).unwrap().unwrap().id;
+        self.homes().machine.join("agents").join(id)
+    }
+}
+
+/// The user's homes for the project at `repo`: beside it, never the real ones.
+fn homes_of(repo: &Path) -> Homes {
+    Homes::at(&repo.parent().unwrap().join("home"))
 }
 
 fn entries(items: &[Item]) -> Vec<String> {
@@ -172,15 +191,39 @@ fn text(p: &Path) -> String {
     String::from_utf8(segments::read_all(p).unwrap()).unwrap()
 }
 
-fn assert_source(r: &Repo, thread: &str, path: &str, expected: &[u8]) {
-    let p = r.store_dir().join("threads").join(thread).join(path);
-    assert!(segments::is_segmented(&p), "missing original file: {path}");
-    let bytes = segments::read_all(&p).unwrap();
-    assert!(
-        bytes == expected,
-        "source bytes differ for {path}: expected {} bytes, found {}",
-        expected.len(),
-        bytes.len()
+/// The newest record of `file` in thread `thread`'s sources: its length and hash.
+fn source(r: &Repo, thread: &str, file: &Path) -> Option<(u64, String)> {
+    let p = r
+        .store_dir()
+        .join("threads")
+        .join(thread)
+        .join("sources.jsonl");
+    text(&p)
+        .lines()
+        .rev()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|v| v["path"].as_str() == file.to_str())
+        .map(|v| {
+            (
+                v["len"].as_u64().unwrap(),
+                v["hash"].as_str().unwrap().into(),
+            )
+        })
+}
+
+/// The git blob id of `bytes`.
+fn blob(bytes: &[u8]) -> String {
+    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
+        .unwrap()
+        .to_string()
+}
+
+fn assert_source(r: &Repo, thread: &str, file: &Path, expected: &[u8]) {
+    assert_eq!(
+        source(r, thread, file),
+        Some((expected.len() as u64, blob(expected))),
+        "the record of {}",
+        file.display()
     );
 }
 
@@ -195,10 +238,10 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     assert!(!first.is_empty() && first.start == 0);
 
     r.transcript("s-1", &all);
-    let more = added(sync(&r.path(), "claude", "s-1", None).unwrap());
+    let more = added(sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap());
     assert_eq!(more.start, first.end);
     let head = r.state("dev");
-    let none = added(sync(&r.path(), "claude", "s-1", Some(&path)).unwrap());
+    let none = added(sync(&r.homes(), &r.path(), "claude", "s-1", Some(&path)).unwrap());
     assert!(none.is_empty());
     assert_eq!(r.state("dev"), head, "no commit when nothing is new");
 
@@ -223,7 +266,7 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
     assert!(b.is_attached());
     assert_eq!(
         fs::read_to_string(r.store_dir().join("format")).unwrap(),
-        "5\n"
+        "6\n"
     );
     let events = text(&r.store_dir().join("threads/dev/attachments.jsonl"));
     assert_eq!(events.lines().count(), 1, "one attachment: {events}");
@@ -235,28 +278,28 @@ fn attach_ingests_a_session_and_sync_adds_only_new_entries() {
 fn an_unattached_session_is_not_attached() {
     let r = Repo::new();
     let outside = TempDir::new().unwrap();
-    let s = sync(outside.path(), "claude", "s-1", None).unwrap();
+    let s = sync(&r.homes(), outside.path(), "claude", "s-1", None).unwrap();
     assert_eq!(s, Synced::NotAttached, "outside a repository");
     assert_eq!(
-        sync(&r.path(), "claude", "s-1", None).unwrap(),
+        sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap(),
         Synced::NotAttached
     );
     let path = r.transcript("s-1", &lines("plain.jsonl"));
     let store = r.store();
     store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
     assert_eq!(
-        sync(&r.path(), "claude", "s-2", None).unwrap(),
+        sync(&r.homes(), &r.path(), "claude", "s-2", None).unwrap(),
         Synced::NotAttached
     );
     assert_eq!(store.detach("claude", "s-1").unwrap(), Some("dev".into()));
     assert_eq!(store.detach("claude", "s-1").unwrap(), None);
     let head = r.state("dev");
     assert_eq!(
-        sync(&r.path(), "claude", "s-1", Some(&path)).unwrap(),
+        sync(&r.homes(), &r.path(), "claude", "s-1", Some(&path)).unwrap(),
         Synced::NotAttached
     );
     assert_eq!(r.state("dev"), head);
-    assert!(sync(&r.path(), "claude", "../s-1", None).is_err());
+    assert!(sync(&r.homes(), &r.path(), "claude", "../s-1", None).is_err());
 }
 
 #[test]
@@ -269,7 +312,10 @@ fn a_session_without_a_transcript_yet_is_bound_and_synced_later() {
         .unwrap();
     assert!(a.added.is_empty());
     r.transcript("s-1", &lines("plain.jsonl"));
-    assert_eq!(added(sync(&r.path(), "claude", "s-1", None).unwrap()), 0..4);
+    assert_eq!(
+        added(sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap()),
+        0..4
+    );
 }
 
 #[test]
@@ -442,7 +488,7 @@ fn a_session_can_attach_to_another_thread_after_explicit_detach() {
         .map(|t| t.name().to_string())
         .collect();
     assert_eq!(names, ["dev", "one", "two"]);
-    match sync(&r.path(), "claude", "s-1", None).unwrap() {
+    match sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap() {
         Synced::Attached { thread, added } => assert!(thread == "two" && added.is_empty()),
         Synced::NotAttached => panic!("attached to two"),
     }
@@ -500,7 +546,7 @@ fn attaching_elsewhere_is_rejected_without_changing_either_thread() {
 }
 
 #[test]
-fn attaching_archives_complete_original_session_files() {
+fn attaching_records_every_file_of_the_session_and_copies_none() {
     let r = Repo::new();
     let store = r.store();
     let mut original = fs::read(fixture("plain.jsonl")).unwrap();
@@ -542,12 +588,13 @@ fn attaching_archives_complete_original_session_files() {
 
     let snapshot = store.thread("dev").unwrap().snapshot().unwrap();
     for (name, bytes) in &files {
-        assert_source(&r, "dev", &format!("sources/claude/s-1/{name}"), bytes);
+        assert_source(&r, "dev", &r.dir.path().join(name), bytes);
     }
-    let unrelated = r
-        .store_dir()
-        .join("threads/dev/sources/claude/s-1/unrelated.json");
-    assert!(!unrelated.exists());
+    assert_eq!(
+        source(&r, "dev", &r.dir.path().join("unrelated.json")),
+        None
+    );
+    assert!(!r.store_dir().join("threads/dev/sources").exists());
     assert_eq!(
         snapshot.items().unwrap(),
         claude::read(&path, "s-1").unwrap()
@@ -555,7 +602,7 @@ fn attaching_archives_complete_original_session_files() {
 }
 
 #[test]
-fn sync_archives_source_changes_without_new_projected_items() {
+fn sync_records_source_changes_without_new_projected_items() {
     let r = Repo::new();
     let store = r.store();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
@@ -574,62 +621,86 @@ fn sync_archives_source_changes_without_new_projected_items() {
         Synced::Attached { added, .. } if added.is_empty()
     ));
 
-    assert_source(&r, "dev", "sources/claude/s-1/s-1.jsonl", &original);
+    assert_source(&r, "dev", &path, &original);
     assert_ne!(r.state("dev"), before);
-    let archived = r.state("dev");
+    let recorded = r.state("dev");
     store.sync("claude", "s-1", None).unwrap();
-    assert_eq!(r.state("dev"), archived, "unchanged sources write nothing");
+    assert_eq!(r.state("dev"), recorded, "unchanged sources write nothing");
 }
 
 #[test]
-fn original_files_survive_source_changes_and_disappearance() {
+fn a_rewritten_companion_file_is_recorded_again() {
     let r = Repo::new();
     let store = r.store();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
-    let original = fs::read(&path).unwrap();
     let artifact = path.with_extension("").join("tool-results/output.bin");
     fs::create_dir_all(artifact.parent().unwrap()).unwrap();
     fs::write(&artifact, b"original\0artifact\xff").unwrap();
     store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
-    let mut changed = original.clone();
+    let mut changed = fs::read(&path).unwrap();
     changed.extend_from_slice(b"{\"type\":\"future-event\"}\n");
     fs::write(&path, &changed).unwrap();
     fs::write(&artifact, b"changed artifact").unwrap();
-    store.sync("claude", "s-1", None).unwrap();
-    fs::remove_file(&path).unwrap();
-    fs::remove_file(&artifact).unwrap();
 
     store.sync("claude", "s-1", None).unwrap();
 
-    assert_source(&r, "dev", "sources/claude/s-1/s-1.jsonl", &changed);
-    assert_source(
-        &r,
-        "dev",
-        "sources/claude/s-1/s-1/tool-results/output.bin",
-        b"changed artifact",
-    );
+    assert_source(&r, "dev", &path, &changed);
+    assert_source(&r, "dev", &artifact, b"changed artifact");
 }
 
 #[test]
-fn a_source_path_changing_kind_replaces_the_archived_entry() {
+fn a_harness_file_that_is_gone_or_cut_is_an_error_naming_it() {
     let r = Repo::new();
     let store = r.store();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
-    let companion = path.with_extension("");
-    fs::create_dir_all(companion.join("x")).unwrap();
-    fs::write(companion.join("x/inner"), b"inner").unwrap();
+    let artifact = path.with_extension("").join("tool-results/output.bin");
+    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    fs::write(&artifact, b"artifact").unwrap();
     store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    let before = r.state("dev");
 
-    fs::remove_dir_all(companion.join("x")).unwrap();
-    fs::write(companion.join("x"), b"now a file").unwrap();
-    store.sync("claude", "s-1", None).unwrap();
-    assert_source(&r, "dev", "sources/claude/s-1/s-1/x", b"now a file");
+    fs::remove_file(&artifact).unwrap();
+    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
+    assert!(
+        e.contains(&artifact.display().to_string())
+            && e.contains("is gone")
+            && e.contains("Restore it from your backup of ~/.ai/harness"),
+        "{e}"
+    );
+    fs::write(&artifact, b"artifact").unwrap();
 
-    fs::remove_file(companion.join("x")).unwrap();
-    fs::create_dir_all(companion.join("x")).unwrap();
-    fs::write(companion.join("x/inner"), b"a dir again").unwrap();
-    store.sync("claude", "s-1", None).unwrap();
-    assert_source(&r, "dev", "sources/claude/s-1/s-1/x/inner", b"a dir again");
+    let all = fs::read(&path).unwrap();
+    fs::write(&path, &all[..all.len() / 2]).unwrap();
+    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
+    assert!(
+        e.contains(&path.display().to_string())
+            && e.contains(&format!("no longer begins with the {} bytes", all.len())),
+        "{e}"
+    );
+    assert_eq!(r.state("dev"), before, "a failed sync writes nothing");
+
+    fs::remove_file(&path).unwrap();
+    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
+    assert!(e.contains("is gone"), "{e}");
+}
+
+#[test]
+fn a_harness_file_under_its_home_is_recorded_from_the_home() {
+    let r = Repo::new();
+    let home = r.dir.path().join("home/.claude");
+    let path = home.join("projects/-x/s-1.jsonl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, lines("plain.jsonl").concat()).unwrap();
+    let moved = r.dir.path().join("moved");
+    let p = ai_tools::agent::point(Some(&home), &path);
+    assert_eq!(p, Path::new("projects/-x/s-1.jsonl"));
+    assert_eq!(
+        ai_tools::agent::locate("claude", Some(&moved), &p).unwrap(),
+        moved.join("projects/-x/s-1.jsonl"),
+        "a record under the home holds wherever the home's files move"
+    );
+    let outside = r.dir.path().join("s-1.jsonl");
+    assert_eq!(ai_tools::agent::point(Some(&home), &outside), outside);
 }
 
 #[test]
@@ -676,13 +747,13 @@ fn subagents_are_kept_beside_the_main_tree() {
     let items = s.agent_items("claude", &agent.agent).unwrap();
     assert_eq!(items, read.agents[0].items);
     let head = r.state("dev");
-    let again = sync(&r.path(), "claude", "s-1", None).unwrap();
+    let again = sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap();
     assert!(matches!(again, Synced::Attached { added, .. } if added.is_empty()));
     assert_eq!(r.state("dev"), head);
 }
 
 #[test]
-fn missing_main_transcript_preserves_subagent_linkage() {
+fn a_missing_main_transcript_is_an_error_and_keeps_subagent_linkage() {
     let r = Repo::new();
     let path = r.transcript("s-1", &lines("subagent.jsonl"));
     let agents = path.with_extension("").join("subagents");
@@ -700,8 +771,9 @@ fn missing_main_transcript_preserves_subagent_linkage() {
     assert!(before[0].call.is_some());
     fs::remove_file(&path).unwrap();
 
-    store.sync("claude", "s-1", None).unwrap();
+    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
 
+    assert!(e.contains("is gone"), "{e}");
     assert_eq!(thread.snapshot().unwrap().agents().unwrap(), before);
 }
 
@@ -763,40 +835,48 @@ fn the_compactor_lock_is_per_thread() {
     assert!(b.try_lock().unwrap().is_some());
     drop(held);
     assert!(a.try_lock().unwrap().is_some());
-    assert!(r.store_dir().join("threads/a/compact.lock").is_file());
+    assert!(r.local_dir().join("threads/a/compact.lock").is_file());
 }
 
 #[test]
-fn each_thread_is_a_repository_holding_all_of_the_thread() {
+fn a_commit_takes_the_projects_folder_and_leaves_the_rest_of_the_repository() {
     let r = Repo::new();
     let store = r.store();
     let p = r.transcript("s-1", &lines("plain.jsonl"));
     store.attach("dev", "claude", "s-1", Some(&p)).unwrap();
     let t = store.create("other").unwrap();
     assert!(t.try_lock().unwrap().is_some());
+    let ai = r.homes().repo;
+    fs::write(ai.join("notes.md"), "staged\n").unwrap();
+    git(&ai, &["add", "notes.md"]);
+    fs::write(ai.join("draft.md"), "untracked\n").unwrap();
     store.commit("ai agent attach dev").unwrap();
 
-    let dev = r.store_dir().join("threads/dev");
-    let other = r.store_dir().join("threads/other");
-    assert_eq!(
-        fs::read_to_string(dev.join(".gitignore")).unwrap(),
-        "*.lock\n*.log\n"
-    );
-    assert_eq!(git(&dev, &["log", "--format=%s"]), "ai agent attach dev\n");
-    let files = git(&dev, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert_eq!(git(&ai, &["log", "--format=%s"]), "ai agent attach dev\n");
+    let files = git(&ai, &["ls-tree", "-r", "--name-only", "HEAD"]);
     for f in [
-        ".gitignore",
-        "attachments.jsonl/000000.jsonl",
-        "items.jsonl/000000.jsonl",
-        "sessions.jsonl/000000.jsonl",
+        "projects/repo/id",
+        "projects/repo/ai.toml",
+        "projects/repo/agents/format",
+        "projects/repo/agents/threads/dev/attachments.jsonl/000000.jsonl",
+        "projects/repo/agents/threads/dev/items.jsonl/000000.jsonl",
+        "projects/repo/agents/threads/dev/sessions.jsonl/000000.jsonl",
+        "projects/repo/agents/threads/dev/sources.jsonl/000000.jsonl",
     ] {
         assert!(files.lines().any(|l| l == f), "{f} in {files}");
     }
-    assert!(!files.contains(".lock"), "{files}");
-    assert_eq!(git(&dev, &["status", "--porcelain"]), "");
+    assert!(
+        files.lines().all(|l| l.starts_with("projects/repo/")),
+        "only the project's folder is committed: {files}"
+    );
+    assert!(
+        !files.contains(".lock") && !files.contains(".log"),
+        "{files}"
+    );
     assert_eq!(
-        git(&other, &["ls-tree", "-r", "--name-only", "HEAD"]),
-        ".gitignore\n"
+        git(&ai, &["status", "--porcelain"]),
+        "A  notes.md\n?? draft.md\n",
+        "what the user staged stays staged, and the project's folder is clean"
     );
 
     let mut root: Vec<String> = fs::read_dir(r.store_dir())
@@ -806,12 +886,13 @@ fn each_thread_is_a_repository_holding_all_of_the_thread() {
     root.sort();
     assert_eq!(
         root,
-        ["format", "sessions", "threads"],
-        "the store's root holds its format and the sessions' locks, no file of a thread"
+        ["format", "threads"],
+        "the store's root holds its format; locks are this machine's"
     );
+    assert!(r.local_dir().join("threads/other/compact.lock").is_file());
 
     store.commit("again").unwrap();
-    assert_eq!(git(&dev, &["log", "--format=%s"]), "ai agent attach dev\n");
+    assert_eq!(git(&ai, &["log", "--format=%s"]), "ai agent attach dev\n");
     assert_eq!(
         store.create("dev").err().unwrap().to_string(),
         "Agent dev already exists in this project."
@@ -831,7 +912,7 @@ fn a_session_attached_to_two_threads_is_an_error() {
         &segments::read_all(&events).unwrap(),
     )
     .unwrap();
-    let e = sync(&r.path(), "claude", "s-1", None).unwrap_err();
+    let e = sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap_err();
     assert_eq!(
         e.to_string(),
         "Session claude s-1 is attached to dev and other. Detach it from all but one."
@@ -847,7 +928,7 @@ fn worktrees_share_the_threads() {
     let p = r.transcript("s-1", &lines("plain.jsonl"));
     let sub = wt.join("deep");
     fs::create_dir_all(&sub).unwrap();
-    let store = Store::find(&sub).unwrap().unwrap();
+    let store = Store::find_in(&r.homes(), &sub).unwrap().unwrap();
     store.attach("dev", "claude", "s-1", Some(&p)).unwrap();
     let names: Vec<String> = r
         .store()
@@ -860,7 +941,7 @@ fn worktrees_share_the_threads() {
     assert!(r.store_dir().join("threads/dev").is_dir());
     assert!(!wt.join(".ai").exists());
     assert!(store.thread("dev").unwrap().try_lock().unwrap().is_some());
-    assert!(r.store_dir().join("threads/dev/compact.lock").is_file());
+    assert!(r.local_dir().join("threads/dev/compact.lock").is_file());
     let main = r.store();
     assert_eq!(
         main.thread("dev")
@@ -872,7 +953,7 @@ fn worktrees_share_the_threads() {
         4
     );
     assert!(matches!(
-        sync(&r.path(), "claude", "s-1", None).unwrap(),
+        sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap(),
         Synced::Attached { .. }
     ));
 }
@@ -883,11 +964,11 @@ fn a_newer_store_is_refused() {
     let p = r.transcript("s-1", &lines("plain.jsonl"));
     r.store().attach("dev", "claude", "s-1", Some(&p)).unwrap();
     let before = r.state("dev");
-    fs::write(r.store_dir().join("format"), "6\n").unwrap();
-    let want = "This agent store is format 6; this ai reads up to 5. Upgrade ai.";
-    let found = Store::find(&r.path()).map(|_| ());
+    fs::write(r.store_dir().join("format"), "7\n").unwrap();
+    let want = "This agent store is format 7; this ai reads up to 6. Upgrade ai.";
+    let found = Store::find_in(&r.homes(), &r.path()).map(|_| ());
     assert_eq!(found.unwrap_err().to_string(), want);
-    let s = sync(&r.path(), "claude", "s-1", None).map(|_| ());
+    let s = sync(&r.homes(), &r.path(), "claude", "s-1", None).map(|_| ());
     assert_eq!(s.unwrap_err().to_string(), want);
     assert_eq!(r.state("dev"), before);
 }
@@ -1003,7 +1084,14 @@ fn sync_child() {
         return;
     };
     let (repo, session) = arg.split_once(' ').unwrap();
-    let s = sync(Path::new(repo), "claude", session, None).unwrap();
+    let s = sync(
+        &homes_of(Path::new(repo)),
+        Path::new(repo),
+        "claude",
+        session,
+        None,
+    )
+    .unwrap();
     assert!(matches!(s, Synced::Attached { .. }));
 }
 

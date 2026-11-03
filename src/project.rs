@@ -13,8 +13,10 @@ use tempfile::NamedTempFile;
 use toml_edit::DocumentMut;
 
 use crate::{
-    config::{self, FILE, LOCAL},
+    agent,
+    config::{self, FILE, Homes, LOCAL},
     file::{AtPath, pretty},
+    repo,
 };
 
 /// The type of a project's id: `project_` and a UUIDv7, as a TypeID.
@@ -29,23 +31,30 @@ pub struct Table {
 }
 
 /// A project: the directory of the nearest `ai.toml` at or above where `ai` runs, never the
-/// user's, holding the id `ai init` minted.
+/// user's, holding the id `ai init` minted. Its agents and private settings live in its
+/// [folder](Project::folder) of the user's repository, `~/ai`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     /// The directory holding its `ai.toml`.
     pub dir: PathBuf,
-    /// Where it keeps its private store: see [`home`].
+    /// Where its checkouts meet: see [`home`].
     pub home: PathBuf,
     pub id: String,
     /// Its slug: `[project] name`, else the directory's name.
     pub name: String,
 }
 
+/// Where `~/ai` keeps every project's folder.
+pub const PROJECTS: &str = "projects";
+
+/// The file in a project's folder naming the project that holds the folder.
+const ID: &str = "id";
+
 impl Project {
     /// The project at or above `dir`; `None` without an `ai.toml` holding an id.
     pub fn find(dir: &Path) -> Result<Option<Project>> {
         match config::project_file(dir) {
-            Some(p) => Project::read(&p),
+            Some(p) => Project::at(&p),
             None => Ok(None),
         }
     }
@@ -69,18 +78,14 @@ impl Project {
     }
 
     /// The project of the `ai.toml` at `p`; `None` without the file or an id in it.
-    fn read(p: &Path) -> Result<Option<Project>> {
+    pub(crate) fn at(p: &Path) -> Result<Option<Project>> {
         let t = config::project_table(p)?.unwrap_or_default();
         let Some(id) = t.id else {
             return Ok(None);
         };
         check_id(&id).map_err(|e| anyhow!("{}: [project] id: {e}", pretty(p)))?;
         let dir = p.parent().unwrap_or(p).to_path_buf();
-        let name = t.name.unwrap_or_else(|| {
-            dir.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
+        let name = name_of(&dir, t.name);
         Ok(Some(Project {
             home: home(&dir)?,
             dir,
@@ -89,10 +94,15 @@ impl Project {
         }))
     }
 
-    /// The project at `dir`, minting an id into its `ai.toml` when it has none, the rest of the
-    /// file kept as written; with its private settings in its store, linked from its
-    /// `ai.local.toml`, and that link and the store in its `.gitignore`.
+    /// [`Project::init_in`] with the user's `~/ai`.
     pub fn init(dir: &Path) -> Result<Project> {
+        Project::init_in(dir, &Homes::user()?)
+    }
+
+    /// The project at `dir`, minting an id into its `ai.toml` when it has none, the rest of the
+    /// file kept as written; its [folder](Project::claim) in `homes.repo` claimed, its private
+    /// settings made there and linked from its `ai.local.toml`, that link in its `.gitignore`.
+    pub fn init_in(dir: &Path, homes: &Homes) -> Result<Project> {
         let p = dir.join(FILE);
         if config::is_user(&p) {
             bail!(
@@ -100,28 +110,168 @@ impl Project {
                 pretty(&p)
             );
         }
-        config::check_link(&home(dir)?)?;
-        let project = match Project::read(&p)? {
+        let found = Project::at(&p)?;
+        let at = home(dir)?;
+        let old = at.join(OLD_STORE);
+        if old.exists() {
+            bail!(
+                "{} holds this project's agents as an older ai kept them. Run `ai agent list` on \
+                 a terminal to move them to {}.",
+                pretty(&old),
+                pretty(&homes.repo)
+            );
+        }
+        let private = match &found {
+            Some(project) => project.private(homes)?,
+            None => homes
+                .repo
+                .join(PROJECTS)
+                .join(name_of(
+                    dir,
+                    config::project_table(&p)?.and_then(|t| t.name),
+                ))
+                .join(FILE),
+        };
+        config::check_link(&at, &private)?;
+        let project = match found {
             Some(project) => project,
             None => mint(dir, &p)?,
         };
         ignore_untracked(dir)?;
-        link_private(&project.home)?;
+        project.claim(homes)?;
         Ok(project)
     }
 
-    /// Its private store: a directory in its [home](Project::home).
-    pub fn store(&self) -> PathBuf {
-        self.home.join(STORE)
+    /// Its folder in `homes.repo`: the folder of `projects/` its id holds, whatever its name;
+    /// else `projects/<name>`, which [`Project::claim`] makes. Every checkout and clone of the
+    /// project finds the same folder. An error if another project holds the name.
+    pub fn folder(&self, homes: &Homes) -> Result<PathBuf> {
+        let projects = homes.repo.join(PROJECTS);
+        match fs::read_dir(&projects) {
+            Ok(entries) => {
+                for e in entries {
+                    let p = e.at(&projects)?.path();
+                    if read_id(&p)?.as_deref() == Some(self.id.as_str()) {
+                        return Ok(p);
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).at(&projects),
+        }
+        check_folder_name(&self.name)?;
+        let named = projects.join(&self.name);
+        if let Some(other) = read_id(&named)? {
+            bail!(
+                "Another project ({other}) holds the name {} in {}. Give this one another name: \
+                 set [project] name in {}.",
+                self.name,
+                pretty(&projects),
+                pretty(&self.dir.join(FILE))
+            );
+        }
+        Ok(named)
+    }
+
+    /// Its private settings: the `ai.toml` in its [folder](Project::folder).
+    pub fn private(&self, homes: &Homes) -> Result<PathBuf> {
+        Ok(self.folder(homes)?.join(FILE))
+    }
+
+    /// Makes its [folder](Project::folder) and claims it with its id; makes its private settings
+    /// there if missing and links them from its `ai.local.toml`. Makes `homes.repo` a git
+    /// repository first unless it is one. Returns the folder.
+    pub fn claim(&self, homes: &Homes) -> Result<PathBuf> {
+        repo::ensure(&homes.repo)?;
+        let _lock = repo::lock(&homes.repo)?;
+        let named = self.folder(homes)?;
+        fs::create_dir_all(&named).at(&named)?;
+        let id = named.join(ID);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&id)
+        {
+            Ok(mut f) => f.write_all(format!("{}\n", self.id).as_bytes()).at(&id)?,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).at(&id),
+        }
+        let private = named.join(FILE);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&private)
+        {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).at(&private),
+        }
+        link(&self.home.join(LOCAL), &private)?;
+        Ok(named)
     }
 }
 
-/// Where a project keeps its private data, below its [home](Project::home), which the project's
-/// git ignores. The rest of `.ai` is the project's.
-pub const STORE: &str = ".ai/local";
+/// The name of the project at `dir`: `name`, its `[project] name`, else the directory's name.
+fn name_of(dir: &Path, name: Option<String>) -> String {
+    name.unwrap_or_else(|| {
+        dir.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    })
+}
 
-/// Where the project at `dir` keeps its private store: in a linked git worktree, the same
-/// directory in the main checkout; else `dir`.
+/// Where an older ai kept a project's agents and private settings, in its [home](Project::home).
+pub const OLD_STORE: &str = ".ai/local";
+
+/// `name` if it can name a project's folder: letters, digits, `.`, `-` and `_`, but not `.` or
+/// `..`.
+fn check_folder_name(name: &str) -> Result<()> {
+    let ok = !matches!(name, "" | "." | "..")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    if !ok {
+        bail!(
+            "The project name '{name}' cannot name a folder: use letters, digits, '.', '-' and \
+             '_'. Set [project] name in the project's {FILE}."
+        );
+    }
+    Ok(())
+}
+
+/// The id of the project holding the folder `dir`; `None` if none holds it.
+fn read_id(dir: &Path) -> Result<Option<String>> {
+    let p = dir.join(ID);
+    match fs::read_to_string(&p) {
+        Ok(t) => Ok(Some(t.trim().to_string())),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e).at(&p),
+    }
+}
+
+/// Makes `link`, in a project's [home](Project::home), a symbolic link to `target`, replacing a
+/// link to anything else; refuses a file of its own there.
+fn link(link: &Path, target: &Path) -> Result<()> {
+    if fs::read_link(link).ok().as_deref() == Some(target) {
+        return Ok(());
+    }
+    let dir = link.parent().unwrap_or(Path::new("."));
+    config::check_link(dir, target)?;
+    let tmp = dir.join(format!(".{LOCAL}.{}", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(target, &tmp).at(&tmp)?;
+    fs::rename(&tmp, link).at(link)
+}
+
+/// Where the checkouts of the project at `dir` meet, holding the link to its private settings:
+/// in a linked git worktree, the same directory in the main checkout; else `dir`.
 pub fn home(dir: &Path) -> Result<PathBuf> {
     let Ok(repo) = gix::discover(dir) else {
         return Ok(dir.to_path_buf());
@@ -150,34 +300,11 @@ fn mint(dir: &Path, p: &Path) -> Result<Project> {
     let table = doc.entry("project").or_insert(toml_edit::table());
     table["id"] = toml_edit::value(PREFIX.create_type_id::<V7>().to_string());
     write(dir, p, &doc.to_string())?;
-    Project::read(p)?.context("ai init wrote no project id.")
+    Project::at(p)?.context("ai init wrote no project id.")
 }
 
-/// Makes the private settings of the project at `home` if missing, and its [`LOCAL`] link to
-/// them.
-fn link_private(home: &Path) -> Result<()> {
-    let file = config::private_file(home);
-    if let Some(dir) = file.parent() {
-        fs::create_dir_all(dir).at(dir)?;
-    }
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&file)
-    {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e).at(&file),
-    }
-    let link = home.join(LOCAL);
-    if fs::symlink_metadata(&link).is_ok() {
-        return Ok(());
-    }
-    std::os::unix::fs::symlink(Path::new(STORE).join(FILE), &link).at(&link)
-}
-
-/// What a project keeps out of git: the link to its private settings, and its private store.
-const UNTRACKED: [&str; 2] = [LOCAL, ".ai/local/"];
+/// What a project keeps out of git: the link to its private settings.
+const UNTRACKED: [&str; 1] = [LOCAL];
 
 /// Adds each of [`UNTRACKED`] to the `.gitignore` in `dir` as `/<name>`, unless a line there
 /// already names it, with or without its slashes.
@@ -235,9 +362,11 @@ fn check_id(id: &str) -> Result<()> {
 pub struct Init {}
 
 impl Init {
-    /// Makes the current directory a project, printing its id.
+    /// Makes the current directory a project, printing its id; on a terminal, first offers to
+    /// move agents an older ai kept in the project.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
+        agent::convert::offer(&cwd)?;
         println!("{}", Project::init(&cwd)?.id);
         Ok(ExitCode::SUCCESS)
     }

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{
     Deserialize, Deserializer,
     de::{DeserializeOwned, DeserializeSeed, Error as _, IgnoredAny, MapAccess, Visitor},
@@ -14,30 +14,26 @@ use serde::{
 use crate::{
     agent,
     file::{AtPath, pretty},
-    memory, project, summariser,
+    memory,
+    project::{self, Project},
+    summariser,
 };
 
 /// The settings file: the user's in [`home`], a project's at or above where `ai` runs.
 pub const FILE: &str = "ai.toml";
 
-/// The link in a project's top directory to its [private settings](private_file).
+/// The link in a project's top directory to its [private settings](Project::private).
 pub const LOCAL: &str = "ai.local.toml";
 
-/// One user's overrides of the settings of the project at `home`: an `ai.toml` in its private
-/// store.
-pub fn private_file(home: &Path) -> PathBuf {
-    home.join(project::STORE).join(FILE)
-}
-
-/// Refuses an [`LOCAL`] in `home` that is a file of its own rather than the link to
-/// [`private_file`].
-pub fn check_link(home: &Path) -> Result<()> {
+/// Refuses an [`LOCAL`] in `home` that is a file of its own rather than the link to `private`,
+/// the project's private settings.
+pub fn check_link(home: &Path, private: &Path) -> Result<()> {
     let p = home.join(LOCAL);
     match fs::symlink_metadata(&p) {
         Ok(m) if !m.file_type().is_symlink() => bail!(
             "{} is a file of its own. Move it to {}, then run `ai init` to link it.",
             pretty(&p),
-            pretty(&private_file(home))
+            pretty(private)
         ),
         Ok(_) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -48,6 +44,31 @@ pub fn check_link(home: &Path) -> Result<()> {
 /// `~/.ai`: the user's settings, and every store not pointed elsewhere.
 pub fn home() -> Option<PathBuf> {
     std::env::home_dir().map(|h| h.join(".ai"))
+}
+
+/// Where `ai` keeps one user's stores. `repo` is the user's git repository, `~/ai`: every
+/// thread and each project's private settings, what a new machine needs. `machine` is `~/.ai`:
+/// what belongs to this machine and never goes in git, such as locks, logs and archives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Homes {
+    pub repo: PathBuf,
+    pub machine: PathBuf,
+}
+
+impl Homes {
+    /// `~/ai` and `~/.ai`.
+    pub fn user() -> Result<Homes> {
+        let home = std::env::home_dir().context("Cannot find your home directory: set HOME.")?;
+        Ok(Homes::at(&home))
+    }
+
+    /// `ai` and `.ai` in `dir`, as a home directory holds them.
+    pub fn at(dir: &Path) -> Homes {
+        Homes {
+            repo: dir.join("ai"),
+            machine: dir.join(".ai"),
+        }
+    }
 }
 
 fn user_file() -> Option<PathBuf> {
@@ -299,20 +320,28 @@ pub(crate) fn project_table(p: &Path) -> Result<Option<project::Table>> {
 #[derive(Clone, Debug)]
 pub struct Settings {
     user: Option<PathBuf>,
+    homes: Option<Homes>,
     cwd: PathBuf,
 }
 
 impl Settings {
-    /// The user's `ai.toml`, under the nearest one at or above `cwd`, under the
-    /// [private settings](private_file) of that project's [`home`](project::home).
+    /// The user's `ai.toml`, under the nearest one at or above `cwd`, under that project's
+    /// [private settings](Project::private) in `~/ai`.
     pub fn find(cwd: &Path) -> Settings {
-        Settings::load(user_file().as_deref(), cwd)
+        Settings::load(user_file().as_deref(), Homes::user().ok().as_ref(), cwd)
     }
 
-    /// [`Settings::find`] with the user's file at `user`.
-    pub fn load(user: Option<&Path>, cwd: &Path) -> Settings {
+    /// [`Settings::find`] with the private settings under `homes`.
+    pub fn find_in(homes: &Homes, cwd: &Path) -> Settings {
+        Settings::load(user_file().as_deref(), Some(homes), cwd)
+    }
+
+    /// [`Settings::find`] with the user's file at `user` and the private settings under
+    /// `homes`; without `homes`, no private settings.
+    pub fn load(user: Option<&Path>, homes: Option<&Homes>, cwd: &Path) -> Settings {
         Settings {
             user: user.map(Path::to_path_buf),
+            homes: homes.cloned(),
             cwd: cwd.to_path_buf(),
         }
     }
@@ -408,8 +437,15 @@ impl Settings {
             Some(dir) => Some(project::home(dir)?),
             None => None,
         };
-        if let Some(h) = &home {
-            check_link(h)?;
+        let private = match (project.as_deref(), &self.homes) {
+            (Some(p), Some(homes)) => match Project::at(p)? {
+                Some(project) => Some(project.private(homes)?),
+                None => None,
+            },
+            _ => None,
+        };
+        if let (Some(h), Some(p)) = (&home, &private) {
+            check_link(h, p)?;
         }
         let beside = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
         let sources = [
@@ -418,8 +454,7 @@ impl Settings {
                 let dir = beside(&p);
                 (p, dir, Layer::Project)
             }),
-            home.as_deref()
-                .map(|h| (private_file(h), h.to_path_buf(), Layer::Local)),
+            private.zip(home.clone()).map(|(p, h)| (p, h, Layer::Local)),
         ]
         .into_iter()
         .flatten()

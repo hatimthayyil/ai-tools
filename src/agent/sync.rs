@@ -2,11 +2,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::agent::{
-    claude,
-    record::{Binding, State, Track, check_id},
-    source,
-    store::{Added, Store, Thread, Transcript},
+use crate::{
+    agent::{
+        claude,
+        record::{Binding, State, Track, check_id},
+        source,
+        store::{Added, Store, Thread, Transcript},
+    },
+    config::Homes,
 };
 
 /// The outcome of [`sync`].
@@ -37,12 +40,15 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
     if files.is_empty() {
         return Ok(Transcript::default());
     }
+    let name = Path::new(
+        path.file_name()
+            .ok_or_else(|| anyhow::anyhow!("A transcript needs a file name."))?,
+    );
+    let dir = path
+        .parent()
+        .context("A transcript needs a parent directory.")?;
     match harness {
         claude::HARNESS => {
-            let name = Path::new(
-                path.file_name()
-                    .ok_or_else(|| anyhow::anyhow!("A transcript needs a file name."))?,
-            );
             let items = files
                 .get(name)
                 .map_or_else(Vec::new, |bytes| claude::parse_bytes(session, bytes));
@@ -51,6 +57,8 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
                 items,
                 agents,
                 files,
+                dir: dir.to_path_buf(),
+                main: name.to_path_buf(),
             })
         }
         _ => bail!("ai agent cannot read {harness} sessions."),
@@ -58,9 +66,15 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
 }
 
 /// Ingests the new entries of an attached session; a session attached to no thread of the
-/// project at `dir` is [`Synced::NotAttached`].
-pub fn sync(dir: &Path, harness: &str, session: &str, transcript: Option<&Path>) -> Result<Synced> {
-    match Store::find(dir)? {
+/// project at `dir`, its agents in `homes`, is [`Synced::NotAttached`].
+pub fn sync(
+    homes: &Homes,
+    dir: &Path,
+    harness: &str,
+    session: &str,
+    transcript: Option<&Path>,
+) -> Result<Synced> {
+    match Store::find_in(homes, dir)? {
         Some(store) => store.sync(harness, session, transcript),
         None => Ok(Synced::NotAttached),
     }
@@ -129,10 +143,18 @@ impl Store {
                 graft: None,
                 tip: None,
             });
-        let path = transcript.map(Path::to_path_buf).or(old.transcript.clone());
+        let home = source::home_here(harness);
+        let path = match transcript {
+            Some(p) => Some(p.to_path_buf()),
+            None => old
+                .transcript
+                .as_deref()
+                .map(|p| source::locate(harness, home.as_deref(), p))
+                .transpose()?,
+        };
         let t = read(harness, session, path.as_deref())?;
         let mut b = Track {
-            transcript: path,
+            transcript: path.map(|p| source::point(home.as_deref(), &p)),
             ..old.clone()
         };
         let _w = thread.writer()?;
@@ -175,21 +197,28 @@ impl Store {
             );
         }
         let bound = target.snapshot()?.track(harness, session)?;
-        let path: Option<PathBuf> = transcript
-            .map(Path::to_path_buf)
-            .or_else(|| bound.as_ref()?.transcript.clone());
+        let home = source::home_here(harness);
+        let path: Option<PathBuf> = match transcript {
+            Some(p) => Some(p.to_path_buf()),
+            None => bound
+                .as_ref()
+                .and_then(|b| b.transcript.as_deref())
+                .map(|p| source::locate(harness, home.as_deref(), p))
+                .transpose()?,
+        };
         let t = read(harness, session, path.as_deref())?;
         let w = target.writer()?;
         let snap = target.snapshot()?;
+        let pointer = path.map(|p| source::point(home.as_deref(), &p));
         let mut b = match bound.clone() {
             Some(b) => Track {
-                transcript: path.or(b.transcript),
+                transcript: pointer.or(b.transcript),
                 ..b
             },
             None => Track {
                 harness: harness.into(),
                 session: session.into(),
-                transcript: path,
+                transcript: pointer,
                 graft: snap.graft()?,
                 tip: None,
             },
@@ -243,7 +272,7 @@ mod tests {
 
     /// A project at `dir` with `agents`.
     fn init(dir: &Path, agents: &[&str]) {
-        crate::project::Project::init(dir).unwrap();
+        crate::project::Project::init_in(dir, &homes(dir)).unwrap();
         for a in agents {
             open(dir).create(a).unwrap();
         }
@@ -251,7 +280,12 @@ mod tests {
 
     /// The agent store of the project at `dir`.
     fn open(dir: &Path) -> Store {
-        Store::find(dir).unwrap().unwrap()
+        Store::find_in(&homes(dir), dir).unwrap().unwrap()
+    }
+
+    /// The user's homes for the project at `dir`: in it, never the real ones.
+    fn homes(dir: &Path) -> Homes {
+        Homes::at(&dir.join("home"))
     }
 
     fn plain() -> String {
@@ -355,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn archived_source_and_projection_use_the_same_captured_bytes() {
+    fn recorded_source_and_projection_use_the_same_captured_bytes() {
         let dir = tempfile::TempDir::new().unwrap();
         init(dir.path(), &["dev"]);
         let store = open(dir.path());
@@ -380,12 +414,17 @@ mod tests {
 
         let snapshot = store.thread("dev").unwrap().snapshot().unwrap();
         assert_eq!(snapshot.len().unwrap(), 1);
-        let archived = store.dir().join("threads/dev/sources/claude/s-1/s-1.jsonl");
+        let pointers = snapshot.pointers().unwrap();
+        let p = &pointers[&("claude".to_string(), path.clone())];
         assert_eq!(
-            crate::segments::read_all(&archived).unwrap(),
-            original.as_bytes(),
-            "archived bytes must match the parsed observation"
+            (p.len, p.hash.as_str()),
+            (
+                original.len() as u64,
+                source::hash(original.as_bytes()).unwrap().as_str()
+            ),
+            "the recorded bytes must be the parsed observation's"
         );
+        assert!(!store.dir().join("threads/dev/sources").exists());
         assert_ne!(fs::read(path).unwrap(), original.as_bytes());
     }
 

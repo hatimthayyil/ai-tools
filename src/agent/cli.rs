@@ -17,7 +17,7 @@ use jiff::Timestamp;
 
 use crate::{
     agent::{
-        claude,
+        claude, convert,
         id::Id,
         record::{Binding, Key},
         rollup::Rollup,
@@ -26,7 +26,7 @@ use crate::{
         sync::Synced,
         view::{Branch, Counts},
     },
-    config::FILE,
+    config::{FILE, Homes},
     file::{self, AtPath},
     memory::{Backend, Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page,
@@ -41,7 +41,7 @@ pub const NOT_ATTACHED: u8 = 3;
 #[command(
     name = "agent",
     about = "Agents: named threads that span harness sessions, kept in this project.",
-    after_help = "Each agent's thread lives in .ai/local/agents in the project's main checkout."
+    after_help = "Each agent's thread lives in ~/ai/projects/<project>/agents, which ai commits; their locks and logs are this machine's, in ~/.ai/agents."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -180,9 +180,11 @@ pub struct Resume {
 }
 
 impl Resume {
-    /// Runs in the current directory.
+    /// Runs in the current directory, on a terminal first offering to move agents an older ai
+    /// kept.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
+        convert::offer(&cwd)?;
         self.run(&cwd)
     }
 
@@ -309,9 +311,20 @@ fn committing<T>(cwd: &Path, msg: &str, op: impl FnOnce() -> Result<T>) -> Resul
 }
 
 impl Cli {
-    /// Runs in the current directory, printing to stdout.
+    /// Runs in the current directory, printing to stdout; on a terminal, a porcelain command
+    /// first offers to move agents an older ai kept.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
+        if !matches!(
+            self.command,
+            Some(
+                Command::SyncSession { .. }
+                    | Command::CompactSession { .. }
+                    | Command::EndSession { .. }
+            )
+        ) {
+            convert::offer(&cwd)?;
+        }
         let terminal = io::stdout().is_terminal();
         match self.run(&cwd, &mut io::stdout().lock(), terminal) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
@@ -621,8 +634,8 @@ fn worktree(store: &Store, cwd: &Path, name: &str) -> Result<PathBuf> {
     let dir = fs::canonicalize(dir).at(dir)?;
     if !store.holds(&dir) {
         bail!(
-            "Agent {name}'s worktree {} does not share this project's agents: make it a git \
-             worktree of {}, holding an {FILE} with the id {}.",
+            "Agent {name}'s worktree {} does not share this project's agents: make it a checkout \
+             of {}, holding an {FILE} with the id {}.",
             file::pretty(&dir),
             file::pretty(&store.project().home),
             store.project().id
@@ -778,7 +791,13 @@ fn sync_session(cwd: &Path, s: Session) -> Result<ExitCode> {
     let Some(c) = s.current() else {
         return not_attached();
     };
-    match super::sync(cwd, &c.harness, &c.session, c.transcript.as_deref())? {
+    match super::sync(
+        &Homes::user()?,
+        cwd,
+        &c.harness,
+        &c.session,
+        c.transcript.as_deref(),
+    )? {
         Synced::NotAttached => not_attached(),
         Synced::Attached { thread, added } => {
             if !added.is_empty() {

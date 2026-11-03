@@ -16,6 +16,9 @@ pub const SUMMARISE_LOG: &str = "summarise.log";
 
 /// The log at `path`, opened for appending.
 pub fn open(path: &Path) -> Result<File> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).at(dir)?;
+    }
     OpenOptions::new()
         .create(true)
         .append(true)

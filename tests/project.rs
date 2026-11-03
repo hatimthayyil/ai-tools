@@ -4,7 +4,10 @@ use std::{
     process::{Command, Output},
 };
 
-use ai_tools::{config::Settings, project::Project};
+use ai_tools::{
+    config::{Homes, Settings},
+    project::Project,
+};
 use tempfile::TempDir;
 
 /// A home and a directory `work` beside it, in a temporary directory.
@@ -29,6 +32,11 @@ impl Sandbox {
 
     fn user(&self) -> PathBuf {
         self.root.join("home/.ai")
+    }
+
+    /// The user's homes, which `ai` finds from this sandbox's `HOME`.
+    fn homes(&self) -> Homes {
+        Homes::at(&self.root.join("home"))
     }
 
     /// `ai args` run in `dir`, with this home.
@@ -75,30 +83,20 @@ fn init_mints_an_id_once() {
 }
 
 #[test]
-fn init_ignores_the_link_and_the_private_store_once() {
+fn init_ignores_the_link_once() {
     let s = Sandbox::new();
     let ignore = s.work().join(".gitignore");
     ok(&s.ai(&s.work(), &["init"]));
-    assert_eq!(
-        fs::read_to_string(&ignore).unwrap(),
-        "/ai.local.toml\n/.ai/local/\n"
-    );
+    assert_eq!(fs::read_to_string(&ignore).unwrap(), "/ai.local.toml\n");
     ok(&s.ai(&s.work(), &["init"]));
-    assert_eq!(
-        fs::read_to_string(&ignore).unwrap(),
-        "/ai.local.toml\n/.ai/local/\n"
-    );
+    assert_eq!(fs::read_to_string(&ignore).unwrap(), "/ai.local.toml\n");
 
     for (before, after) in [
-        ("/target", "/target\n/ai.local.toml\n/.ai/local/\n"),
-        ("/target\n", "/target\n/ai.local.toml\n/.ai/local/\n"),
-        ("ai.local.toml\n", "ai.local.toml\n/.ai/local/\n"),
-        ("/.ai/local\n", "/.ai/local\n/ai.local.toml\n"),
-        (
-            ".ai/local/\n/ai.local.toml\n",
-            ".ai/local/\n/ai.local.toml\n",
-        ),
-        ("/.ai/\n", "/.ai/\n/ai.local.toml\n/.ai/local/\n"),
+        ("/target", "/target\n/ai.local.toml\n"),
+        ("/target\n", "/target\n/ai.local.toml\n"),
+        ("ai.local.toml\n", "ai.local.toml\n"),
+        ("/ai.local.toml/\n", "/ai.local.toml/\n"),
+        ("/.ai/\n", "/.ai/\n/ai.local.toml\n"),
     ] {
         fs::write(&ignore, before).unwrap();
         ok(&s.ai(&s.work(), &["init"]));
@@ -110,13 +108,14 @@ fn init_ignores_the_link_and_the_private_store_once() {
 fn init_links_the_private_settings_once() {
     let s = Sandbox::new();
     let link = s.work().join("ai.local.toml");
-    let private = s.work().join(".ai/local/ai.toml");
+    let private = s.homes().repo.join("projects/work/ai.toml");
     ok(&s.ai(&s.work(), &["init"]));
-    assert_eq!(
-        fs::read_link(&link).unwrap(),
-        Path::new(".ai/local/ai.toml")
-    );
+    assert_eq!(fs::read_link(&link).unwrap(), private);
     assert_eq!(fs::read_to_string(&private).unwrap(), "");
+    assert!(
+        s.homes().repo.join(".git").is_dir(),
+        "~/ai becomes a repository"
+    );
 
     fs::write(&link, "[summariser]\nmodel = \"opus\"\n").unwrap();
     ok(&s.ai(&s.work(), &["init"]));
@@ -125,10 +124,7 @@ fn init_links_the_private_settings_once() {
         "[summariser]\nmodel = \"opus\"\n",
         "the link writes through, and init keeps what is there"
     );
-    assert_eq!(
-        fs::read_link(&link).unwrap(),
-        Path::new(".ai/local/ai.toml")
-    );
+    assert_eq!(fs::read_link(&link).unwrap(), private);
 }
 
 #[test]
@@ -139,13 +135,12 @@ fn init_refuses_a_local_file_of_its_own() {
     assert_eq!(
         fails(&s.ai(&s.work(), &["init"])),
         format!(
-            "{} is a file of its own. Move it to {}, then run `ai init` to link it.\n",
+            "{} is a file of its own. Move it to ~/ai/projects/work/ai.toml, then run `ai init` to link it.\n",
             link.display(),
-            s.work().join(".ai/local/ai.toml").display()
         )
     );
     assert!(!s.work().join("ai.toml").exists(), "nothing is written");
-    assert!(!s.work().join(".ai").exists());
+    assert!(!s.homes().repo.exists());
 }
 
 #[test]
@@ -170,7 +165,7 @@ fn init_keeps_what_the_file_already_says() {
 #[test]
 fn a_project_is_found_from_below_and_named_by_its_directory() {
     let s = Sandbox::new();
-    let id = Project::init(&s.work()).unwrap().id;
+    let id = Project::init_in(&s.work(), &s.homes()).unwrap().id;
     let deep = s.work().join("a/b");
     fs::create_dir_all(&deep).unwrap();
     let p = Project::find(&deep).unwrap().unwrap();
@@ -215,7 +210,7 @@ fn the_users_own_file_is_never_a_project_file() {
     fs::write(&user, "[summariser]\nmodel = \"opus\"\n").unwrap();
     let below = s.user().join("chat");
     fs::create_dir_all(&below).unwrap();
-    let settings = Settings::load(Some(&user), &below);
+    let settings = Settings::load(Some(&user), Some(&s.homes()), &below);
     assert_eq!(settings.summariser().unwrap().model(), "opus");
     assert_eq!(
         fails(&s.ai(&below, &["agent", "list"])),
@@ -227,7 +222,7 @@ fn the_users_own_file_is_never_a_project_file() {
         "~/.ai/ai.toml holds your own settings; a project's ai.toml sits in its top directory.\n"
     );
     fs::write(&user, "[project]\nname = \"me\"\n").unwrap();
-    let err = Settings::load(Some(&user), &s.work())
+    let err = Settings::load(Some(&user), Some(&s.homes()), &s.work())
         .summariser()
         .unwrap_err()
         .to_string();

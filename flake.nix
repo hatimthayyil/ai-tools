@@ -61,5 +61,7 @@
           default = ai;
         }
       );
+
+      homeModules.default = import ./nix/home.nix self;
     };
 }

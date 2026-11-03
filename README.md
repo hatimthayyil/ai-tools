@@ -5,6 +5,7 @@ The `ai` CLI: an all-in-one AI tool.
 - `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory view` prints the whole memory as one short view.
 - `ai notes`: a global knowledge store for AI agents. Each note is one claim, filed in a tree of topics; Claude Code summarises every topic from its children, so an agent can browse the tree or search it.
 - `ai agent`: named agents, each with one thread that spans its sessions. The thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
+- `ai harness`: every harness's own files, its transcripts above all, kept under `~/.ai/harness`, each folder linked from where its harness looks for it.
 
 ## Install
 
@@ -80,12 +81,21 @@ Notes are Markdown files in a git repository at `~/.ai/notes`, or at `$AI_NOTES_
 ### Projects
 
 ```sh
-ai init  # make this directory a project, once: mints its id into ai.toml, links ai.local.toml to .ai/local/ai.toml, ignores both ai.local.toml and .ai/local/ in .gitignore, prints the id
+ai init  # make this directory a project, once: mints its id into ai.toml, claims its folder in ~/ai, links ai.local.toml to its private settings there, ignores ai.local.toml in .gitignore, prints the id
 ```
 
 `ai agent` works in a project: the directory of the nearest `ai.toml` at or above the current directory, never `~/.ai/ai.toml`. It need not be a git repository. Its id is a TypeID, `project_` and a UUIDv7; commit `ai.toml`, so every clone and worktree is the same project. `ai` writes nothing to a repository's `.git`.
 
-A project keeps three places for ai: `ai/`, the agents' visible workspace; `.ai/`, hidden and tracked by the project's git; and `.ai/local/`, one user's private data, which the project's git ignores. `.ai/local/` holds the agents' threads and the private settings, in the project's main checkout. Each thread, `.ai/local/agents/threads/<name>/`, holds everything of its agent and is a git repository of its own, made with the agent, so the thread keeps its history and access to one thread reaches no other. Events commit every thread, once each, naming the command: creating an agent, attaching, detaching, resuming, `/ai` and other builds, a session's end (`ai agent attach dev`, `ai agent end-session`). A turn's sync, a view and the background summariser write without committing; the next event commits what they wrote. A thread that did not change gets no commit. Each thread's `.gitignore` leaves out its locks and log. A command that fails still commits what it wrote; a commit that fails is an error, after every other thread is committed.
+A project's repository holds only what the project shares: `ai/`, the agents' visible workspace; `.ai/`, hidden and tracked; and `ai.toml`. Everything of one user's agents lives in two homes of theirs:
+
+- `~/ai`, a git repository the user keeps, as they keep their dotfiles: each project's folder, `~/ai/projects/<project>/`, with the project's id in `id`, its private settings in `ai.toml`, and its agents' threads in `agents/threads/<name>/`. `ai init` claims the folder: a name another project's id holds is refused, with a hint to set `[project] name`. Every checkout and clone of the project finds the folder by its id. `~/ai` is made a repository when `ai` first writes to it; a `~/ai` that holds files but is no repository is refused.
+- `~/.ai`, what belongs to this machine and never goes in git: the threads' locks and compactor logs in `~/.ai/agents/<project id>/`, the harnesses' files in `~/.ai/harness/`, archives.
+
+A thread keeps its items, lines, session tracks, attachment changes and subagents, never a copy of a session's files: it records each file it read (its harness, its path from the harness's home, its length and git blob id) in `sources.jsonl`. The harness's own files, in `~/.ai/harness`, are the only copy, so a sync that finds a recorded file gone, or a transcript that no longer begins with the bytes the thread read, is an error naming the file and saying to restore it from the backup of `~/.ai/harness`.
+
+Events commit the project's folder of `~/ai` as one commit naming the command: creating an agent, attaching, detaching, resuming, `/ai` and other builds, a session's end (`ai agent attach dev`, `ai agent end-session`). A commit touches no other path of `~/ai`, and of its index only that folder's entries, so what you stage there yourself stays staged. A turn's sync, a view and the background summariser write without committing; the next event commits what they wrote. A command that fails still commits what it wrote.
+
+Agents an older ai kept in `.ai/local/` of the project are refused until they move. On a terminal, an `ai agent` command, `ai resume` or `ai init` offers the move: the threads and private settings go to the project's folder in `~/ai`, each copied session file becomes a record of the harness's own file, and a copy the harness no longer holds whole is restored into the harness's files first; the old store is archived whole, its git history included, in `~/.ai/archive/<project id>/`, then removed from the project.
 
 ### ai agent
 
@@ -102,7 +112,7 @@ ai agent grep -a dev <regex>          # search it; repeat -a to search several a
 ai agent build -a dev                 # write its summaries now: its plan, then a bar per level (a line per summary off a terminal); --rebuild, --model; --dry-run prints the plan only; --preview writes each line and stores nothing
 ```
 
-Only `new` creates an agent; `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in `.ai/local/agents/` in the project's main checkout, so its linked worktrees share them; `ai init` adds `/.ai/local/` to `.gitignore`.
+Only `new` creates an agent; `resume`, `attach` and the reading commands refuse a name it has not made. Unnamed, a command reads the session's agent, else the project's only agent, else the one you pick on a terminal; elsewhere it lists the agents. Inside a session, `/ai new <name>` creates an agent and attaches the session to it, and `/ai attach <name>` and `/ai detach` attach and detach it, so the agent reads its thread with `ai agent view` and `ai agent zoom <id>`. `/ai` replaces the context with `ai view`: the whole memory, then, in an attached session, the thread's view, so the agent wakes with no further reads. If it cannot build the thread's view, it says why and compacts nothing. An unattached session compacts into the memory alone. `/compact` and auto-compaction stay Claude Code's own. Threads live in the project's folder of `~/ai`, so every checkout and clone of the project shares them.
 
 A session is attached to one agent at a time. Detach it explicitly before attaching it to another; the previous agent's thread keeps the recorded history.
 
@@ -112,9 +122,33 @@ A thread is JSON Lines files: append-only records and summaries, beside byte-for
 
 This needs the [Claude Code plugin](#claude-code-plugin).
 
+### ai harness
+
+```sh
+ai harness status  # where each harness folder stands
+ai harness link    # link each folder that does not exist yet; never moves data
+ai harness move    # move what nothing is using, finish moves cut short, prune old backups
+ai harness prune   # delete every backup nothing wrote to since its move, without waiting
+```
+
+Each harness writes its transcripts and session files into its own folder: Claude Code `projects`, Codex `sessions` and `archived_sessions`, pi `sessions`, DSH `sessions` and `attachments`, Gemini `tmp`, opencode `storage` and `opencode.db`, Hermes `sessions` and `state.db`. `ai harness` keeps each one at `~/.ai/harness/<harness>/<path>` (folder mode 700) and puts a link where it was, so the harness and everything that recorded the old path find it there. A harness's folder is where the harness itself looks: its variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `DSH_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME`, `HERMES_HOME`) when that is an absolute path, else its default under `$HOME`. The link goes where the folder really sits, its parent resolved, so a folder reached through a linked parent is replaced there. A folder already under `~/.ai/harness`, as an agent's own harness folder is, is left alone, and so is a link to anywhere else.
+
+`link` makes the missing folders and links them, so a harness installed later writes straight into `~/.ai/harness`; a database is linked only once it exists, since SQLite must not meet a link to nothing. A folder that still holds data waits for `move`.
+
+`move` moves a folder only while nothing can write to it: no process of its harness runs, matched on its first four arguments, and no process has a file or its working folder in it or where it goes, both read from `/proc` and checked again after the copy. It refuses a database whose `-wal` is not empty, a place under `~/.ai/harness` holding other data, and a copy that would leave less than 1G free. It copies the folder beside its place, compares every entry's kind, mode, size and SHA-1 (collision-checked, as git hashes) with the original, swaps in the link with termination signals held back, then reads the copy back through the link; anything that differs puts the original back. The original stays as `<folder>.moved-to-ai`, and the move's record, every entry's hash among it, as `<place>.move.json`. A move cut off is finished or redone by the next `move`. Fourteen days after its move, `move` deletes a backup that still matches its record, meaning nothing wrote to it since; one that does not is kept and reported. A folder in use, and every problem that needs you, is reported; problems make it exit with failure.
+
+With Home Manager, the flake's module runs `link` on every switch and `move` from a user unit started with the user manager: at boot when the user lingers, else at the first login, which never waits for it. Harness services such as `hermes-gateway.service` start after it. Home Manager starts the unit once at the switch that adds it, where `move` leaves alone whatever is in use:
+
+```nix
+{
+  imports = [ inputs.ai-tools.homeModules.default ];
+  services.ai-harness.enable = true;
+}
+```
+
 ### Settings
 
-`ai` reads `~/.ai/ai.toml`, then the nearest `ai.toml` at or above the current directory, then the project's private settings, `.ai/local/ai.toml` beside it; each file's keys win over the one before. The private settings are one user's overrides of a project's settings, kept in the private store. `ai init` creates them and links `ai.local.toml` to them, so you find them beside `ai.toml`; it adds the link to the project's `.gitignore`. An `ai.local.toml` that is a file of its own, not the link, is an error that says to move it. In a linked git worktree, `ai` reads the private settings from the same folder in the main checkout, so one file serves every worktree. They take the same tables, except `[project]`. Every key is optional:
+`ai` reads `~/.ai/ai.toml`, then the nearest `ai.toml` at or above the current directory, then the project's private settings, `ai.toml` in its folder of `~/ai`; each file's keys win over the one before. The private settings are one user's overrides of a project's settings, which no repository of the project holds; a project needs its id for them. `ai init` creates them and links `ai.local.toml` to them, so you find them beside `ai.toml`; it adds the link to the project's `.gitignore`, and in a linked git worktree puts the link in the main checkout. An `ai.local.toml` that is a file of its own, not the link, is an error that says to move it. Every checkout and clone of the project reads the same file. They take the same tables, except `[project]`. Every key is optional:
 
 ```toml
 [project]          # a project's ai.toml only
@@ -157,7 +191,7 @@ An agent's `instructions` is relative to the folder of the file that sets it, so
 
 An agent's `reports-to` names the agents it reports to; it may have several, so the agents form a hierarchy that need not be a tree. A file that sets `reports-to` replaces the list from the files before it, and `reports-to = []` clears it. A command that reads the hierarchy refuses one where an agent reports to itself, to a name no `[agents.<name>]` table defines, or, through others, to an agent below it; no command reads it yet. The agents below an agent, through any number of levels, are the threads it may read besides its own; never a sibling's or a superior's. Nothing enforces that yet: every session counts as the user's.
 
-`ai agent resume` starts a new session in the agent's `worktree`, else in the current directory, and adds its `instructions` to the harness's system prompt, for a new session and a resumed one (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a git worktree of the project's main checkout, at a commit holding its `ai.toml`, so its sessions find the threads in the main checkout's `.ai/local/agents`; a plain copy, or another clone, has its own. A session in the worktree reads the private settings from the main checkout.
+`ai agent resume` starts a new session in the agent's `worktree`, else in the current directory, and adds its `instructions` to the harness's system prompt, for a new session and a resumed one (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a checkout of the project, holding its `ai.toml` with the project's id, so its sessions find the project's threads in `~/ai`. A session in the worktree reads the same private settings.
 
 With `backend = "api"`, `ai` calls the provider's API through [genai](https://github.com/jeremychone/rust-genai). `model` names the provider, one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`, `open_router`, `groq`, `together`, `fireworks`, …), then the model as that provider spells it. The key comes from the provider's environment variable (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, …), never from `ai.toml`; a command that needs the summariser fails when it is unset. Each call is kept, like a `claude -p` one, in the store's `calls/`: the request, the provider's reply as it came, and its token counts. Costs count as zero unless the provider reports them (OpenRouter does). In this repository, `secretspec set DEEPSEEK_API_KEY` stores the key once, and `secretspec run -- ai memory build` passes it.
 

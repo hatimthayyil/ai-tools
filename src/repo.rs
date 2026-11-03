@@ -1,10 +1,10 @@
 use std::{
     collections::HashMap,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use gix::{
     ObjectId,
     bstr::{BStr, ByteSlice},
@@ -13,7 +13,7 @@ use gix::{
 };
 use ignore::WalkBuilder;
 
-use crate::file::{self, AtPath};
+use crate::file::{self, AtPath, pretty};
 
 const GIT: &str = ".git";
 const LOCK: &str = "ai-commit.lock";
@@ -50,6 +50,104 @@ pub fn create(dir: &Path) -> Result<()> {
         Err(_) if exists(dir) => Ok(()),
         r => r.at(&git),
     }
+}
+
+/// Makes `dir` a git repository unless it is one. An absent or empty directory becomes one; a
+/// directory holding files but no repository is refused, since what it holds is someone's.
+pub fn ensure(dir: &Path) -> Result<()> {
+    if exists(dir) {
+        return Ok(());
+    }
+    match fs::read_dir(dir).map(|mut entries| entries.next().is_some()) {
+        Ok(true) => bail!(
+            "{} holds files but is not a git repository. Make it one (git init {}) or move it \
+             aside: ai keeps its threads there.",
+            pretty(dir),
+            dir.display()
+        ),
+        Ok(false) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).at(dir),
+    }
+    create(dir)
+}
+
+/// Commits what is under each of `paths`, relative to the repository at `dir`, as one commit
+/// `msg` by the user's git identity, else `me`: HEAD's tree with those paths as they are on disk
+/// and everything else as HEAD has it; nothing when that tree is HEAD's. Of the index, only the
+/// entries under `paths` change, so what the user staged elsewhere stays staged. A file whose
+/// stat matches its index entry keeps that entry's blob unread.
+pub fn commit_paths(dir: &Path, paths: &[&Path], me: &str, msg: &str) -> Result<()> {
+    let _lock = lock(dir)?;
+    let mut repo = gix::open(dir)?;
+    repo.committer_or_set_fallback(me, "ai@localhost")?;
+    let mut index: gix::index::File = (**repo.index_or_empty()?).clone();
+    let parent = repo.head()?.id().map(|id| id.detach());
+    let base = match parent {
+        Some(p) => repo.find_commit(p)?.tree_id()?.detach(),
+        None => ObjectId::empty_tree(repo.object_hash()),
+    };
+    let mut ed = repo.edit_tree(base)?;
+    let mut prefixes = Vec::new();
+    let mut stats = HashMap::new();
+    let mut stale = false;
+    for p in paths {
+        let prefix = p
+            .to_str()
+            .with_context(|| format!("{} is not UTF-8.", pretty(p)))?
+            .trim_end_matches('/')
+            .to_string();
+        ed.remove(prefix.as_str())?;
+        for (rel, abs) in files_under(dir, p)? {
+            let stat = Metadata::from_path_no_follow(&abs)
+                .at(&abs)
+                .and_then(|m| Ok(Stat::from_fs(&m)?))?;
+            let known = index
+                .entry_by_path(rel.as_bytes().as_bstr())
+                .filter(|e| e.stat == stat)
+                .map(|e| e.id);
+            let id = match known {
+                Some(id) => id,
+                None => {
+                    stale = true;
+                    repo.write_blob(fs::read(&abs).at(&abs)?)?.detach()
+                }
+            };
+            ed.upsert(&rel, EntryKind::Blob, id)?;
+            stats.insert(rel, stat);
+        }
+        prefixes.push(prefix);
+    }
+    let tree = ed.write()?.detach();
+    let same = match parent {
+        Some(p) => repo.find_commit(p)?.tree_id()? == tree,
+        None => tree == ObjectId::empty_tree(repo.object_hash()),
+    };
+    if same && !stale {
+        return Ok(());
+    }
+    if !same {
+        let me = repo.committer().context("No committer.")??;
+        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
+    }
+    let under = |path: &BStr| {
+        prefixes.iter().any(|p| {
+            path == p.as_bytes().as_bstr()
+                || (path.starts_with(p.as_bytes()) && path.get(p.len()) == Some(&b'/'))
+        })
+    };
+    index.remove_entries(|_, path, _| under(path));
+    let fresh = repo.index_from_tree(&tree)?;
+    for (e, path) in fresh.entries().iter().map(|e| (e, e.path(&fresh))) {
+        if under(path) {
+            let stat = stats.get(&path_str(path)).copied().unwrap_or(e.stat);
+            index.dangerously_push_entry(stat, e.id, e.flags, e.mode, path);
+        }
+    }
+    index.sort_entries();
+    index.remove_tree();
+    index.write(Default::default())?;
+    Ok(())
 }
 
 /// Commits every file of `dir` its `.gitignore` keeps, as one commit `msg` by the user's git
@@ -108,6 +206,35 @@ pub fn commit(dir: &Path, me: &str, msg: &str) -> Result<()> {
 
 fn path_str(p: &BStr) -> String {
     p.to_str_lossy().into_owned()
+}
+
+/// Every file under `rel` in the repository at `dir` that its ignore files keep, by its path
+/// relative to `dir`; none if `rel` does not exist.
+fn files_under(dir: &Path, rel: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let root = dir.join(rel);
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let walker = WalkBuilder::new(&root)
+        .standard_filters(false)
+        .git_ignore(true)
+        .git_exclude(true)
+        .parents(true)
+        .require_git(false)
+        .filter_entry(|e| e.file_name() != GIT)
+        .build();
+    let mut out = Vec::new();
+    for e in walker {
+        let e = e?;
+        if !e.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let rel = e.path().strip_prefix(dir).expect("under the walk's root");
+        if let Some(rel) = rel.to_str() {
+            out.push((rel.to_string(), e.path().to_path_buf()));
+        }
+    }
+    Ok(out)
 }
 
 /// Every file under `dir` but `.git` and what its ignore files leave out, by its path relative
