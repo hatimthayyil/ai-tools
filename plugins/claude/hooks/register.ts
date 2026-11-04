@@ -59,6 +59,8 @@ async function compactSession($: EngineInterface, args: string[], cancelled?: Ab
   cancelled?.addEventListener('abort', stop, { once: true })
   try {
     for await (const { stream, text } of child) out[stream] += text
+    // A stream closed mid-read resolves `result` with undefined, not the rejection HookStream documents.
+    if (cancelled?.aborted) return { exitCode: -1, ...out }
     return { exitCode: (await child.result).code ?? -1, ...out }
   } catch (err) {
     return { exitCode: -1, stdout: out.stdout, stderr: String(err) }
@@ -114,6 +116,7 @@ async function fold($: EngineInterface, cancelled?: AbortSignal): Promise<string
   await $.clock.sleep(FLUSH_MS)
   const args = await session($)
   const ready = await compactSession($, args, cancelled)
+  if (cancelled?.aborted) return 'Not folded: cancelled.'
   if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not folded: ${reply(ready)}`
   if (ready.exitCode === 0 && ready.stdout === '') return 'Not folded: the thread holds nothing yet.'
   const shown = await ai($, ['view', '--whole', ...args])

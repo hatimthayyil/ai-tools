@@ -54,7 +54,8 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
     if (spawning.hangs) {
       await new Promise<void>(stopped => next.signal.addEventListener('abort', stopped, { once: true }))
       killed.push(e.argv)
-      return { value: { code: null, signal: 'SIGTERM' } }
+      // As in the engine, a stream closed mid-read ends without a result.
+      return { value: undefined as never }
     }
     const [code, stdout, stderr] = answer(e.argv.slice(1))
     if (stdout !== '') yield { stream: 'stdout' as const, text: stdout }
@@ -124,7 +125,10 @@ test(
         tier: 'prepend',
         register(on) {
           on('command.run', { command: 'fold' }, async ($, e, next) => {
-            void next(e).catch(() => undefined)
+            void next(e).then(
+              ({ text }) => $.ui.log(`beneath: ${text}`),
+              (err: unknown) => $.ui.log(`beneath threw: ${String(err)}`),
+            )
             await $.clock.sleep(5_000)
             return { text: 'Cancelled.' }
           })
@@ -143,6 +147,7 @@ test(
     await world.clock.advance(5_000)
     expect((await ran).text).toBe('Cancelled.')
     await world.clock.advance(0)
+    expect(world.logs).toEqual(['beneath: Not folded: cancelled.'])
     expect(world.killed).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
     expect(world.calls).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
     expect(world.compacts).toEqual([])
