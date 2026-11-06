@@ -1,4 +1,4 @@
-import type { On, SessionCompactInput, SessionMessage } from 'claude-code'
+import type { CommandSpec, On, PromptFillResult, SessionCompactInput, SessionMessage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
@@ -33,7 +33,25 @@ function run($: Engine, command: string, args: string) {
 
 const ai = ($: Engine, args: string) => run($, 'ai', args)
 const fold = ($: Engine, args = '') => run($, 'fold', args)
+const reply = ($: Engine, args = '') => run($, 'reply', args)
 const recall = ($: Engine, args: string) => run($, 'recall', args)
+
+/** The prompt box, answering each `$.prompt.fill` with `answer`'s result. */
+function box(on: On, answer: () => PromptFillResult = () => ({ isFilled: true })) {
+  const fills: { text: string; mode: string }[] = []
+  on('prompt.fill', async (_$, e) => {
+    fills.push({ text: e.text, mode: e.mode })
+    return answer()
+  })
+  return fills
+}
+
+/** The mouse selection: each `$.ui.selection()` answers `text`, or nothing while it is undefined. */
+function selecting(on: On) {
+  const selection: { text?: string } = {}
+  on('ui.selection', async () => ({ value: selection.text === undefined ? undefined : { text: selection.text } }))
+  return selection
+}
 
 function engine(on: On, answer: (args: readonly string[]) => Answer) {
   const clock = mock.clock(on)
@@ -399,6 +417,107 @@ test('/ai alone prints its usage, /fold with words after it says it takes none, 
   expect(world.calls).toEqual([])
   expect(world.compacts).toEqual([])
   expect(await compact($)).toEqual(NATIVE)
+})
+
+test('/reply is a command that runs mid-turn', async ($, on) => {
+  const specs: CommandSpec[] = []
+  on('command.register', async (_$, e) => {
+    specs.push(e)
+    return { value: { command: e.name } }
+  })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const spec = specs.find(s => s.name === 'reply')
+  expect(spec?.immediate).toBe(true)
+})
+
+test('/reply puts the answer ai reply quotes into the prompt box at the cursor, then a line to answer on', async ($, on) => {
+  const QUOTED = '> The docs fork is done.\n>\n> It added a section.\n\n> The tests fork is done too.\n'
+  const world = engine(on, () => [0, QUOTED, ''])
+  const fills = box(on)
+  selecting(on)
+  await start($, 'resume')
+  expect((await reply($)).text).toBeUndefined()
+  expect((await reply($, ' -2#1 ')).text).toBeUndefined()
+  expect((await reply($, '--help')).text).toBeUndefined()
+  expect((await reply($, '595  -1\t597#2 ')).text).toBeUndefined()
+  expect((await reply($, ' "595, -1" ')).text).toBeUndefined()
+  // ai reply splits the references and drops their quotes, so the plugin passes them on as typed.
+  expect(world.calls).toEqual([
+    ['ai', 'reply', ...ALL_ARGS, '--'],
+    ['ai', 'reply', ...ALL_ARGS, '--', '-2#1'],
+    ['ai', 'reply', ...ALL_ARGS, '--', '--help'],
+    ['ai', 'reply', ...ALL_ARGS, '--', '595  -1\t597#2'],
+    ['ai', 'reply', ...ALL_ARGS, '--', '"595, -1"'],
+  ])
+  expect(fills).toEqual(Array(5).fill({ text: `${QUOTED.trimEnd()}\n\n`, mode: 'insert' }))
+})
+
+test('/reply in a session whose start never reached the plugin finds the transcript by its id', async ($, on) => {
+  const world = engine(on, () => [0, '> Done.\n', ''])
+  box(on)
+  selecting(on)
+  expect((await reply($)).text).toBeUndefined()
+  expect(world.calls).toEqual([['ai', 'reply', ...SESSION_ARGS, '--']])
+})
+
+test('/reply with nothing after it quotes the text selected with the mouse, else the latest answer', async ($, on) => {
+  const world = engine(on, () => [0, '> Latest.\n', ''])
+  const fills = box(on)
+  const selection = selecting(on)
+  await start($, 'resume')
+  selection.text = '\n\n  - Should I fix it?  \r\n\n  - And the docs?\n\n'
+  expect((await reply($)).text).toBeUndefined()
+  expect((await reply($, '   ')).text).toBeUndefined()
+  selection.text = ' \n\t'
+  expect((await reply($)).text).toBeUndefined()
+  selection.text = undefined
+  expect((await reply($)).text).toBeUndefined()
+  expect(world.calls).toEqual([
+    ['ai', 'reply', ...ALL_ARGS, '--'],
+    ['ai', 'reply', ...ALL_ARGS, '--'],
+  ])
+  const selected = { text: '>   - Should I fix it?\n>\n>   - And the docs?\n\n', mode: 'insert' }
+  const latest = { text: '> Latest.\n\n', mode: 'insert' }
+  expect(fills).toEqual([selected, selected, latest, latest])
+})
+
+test('/reply with references quotes what they pick, whatever is selected', async ($, on) => {
+  const world = engine(on, () => [0, '> Older.\n', ''])
+  const fills = box(on)
+  const selection = selecting(on)
+  await start($, 'resume')
+  selection.text = 'Selected.'
+  expect((await reply($, '-2')).text).toBeUndefined()
+  expect(world.calls).toEqual([['ai', 'reply', ...ALL_ARGS, '--', '-2']])
+  expect(fills).toEqual([{ text: '> Older.\n\n', mode: 'insert' }])
+})
+
+test('/reply says why it quotes nothing: ai reply fails, or the prompt box takes nothing', async ($, on) => {
+  const PICKS_NONE = 'The latest answer has 2 replies, so #3 picks none. To quote part of an answer, select it and run /reply.'
+  let answer: Answer = [1, '', `${PICKS_NONE}\n`]
+  engine(on, () => answer)
+  const fills = box(on, () => ({ isFilled: false }))
+  selecting(on)
+  await start($, 'resume')
+  expect((await reply($, '#3')).text).toBe(`Not quoted: ${PICKS_NONE}`)
+  expect(fills).toEqual([])
+  answer = [0, '> Done.\n', '']
+  // The kit strips the cause a hook gives, so the engine's own refusals (a dialog, no box) go untested.
+  expect((await reply($)).text).toBe('Not quoted: the prompt box did not take it.')
+  expect(fills).toEqual([{ text: '> Done.\n\n', mode: 'insert' }])
+})
+
+test('/reply quotes the answer and shows what ai reply warned of beside it', async ($, on) => {
+  const ALONE =
+    "ai reply read this session's transcript alone, as it cannot read this project's agents: This agent store is format 99; this ai reads up to 6. Upgrade ai."
+  const world = engine(on, args => (args[0] === 'reply' ? [0, '> Done.\n', `${ALONE}\n`] : [0, '', '']))
+  const fills = box(on)
+  selecting(on)
+  await start($, 'resume')
+  expect((await reply($)).text).toBeUndefined()
+  expect(fills).toEqual([{ text: '> Done.\n\n', mode: 'insert' }])
+  expect(world.logs).toEqual([ALONE])
 })
 
 test('/ai new creates the agent, then attaches the session to it; a failed new attaches nothing', async ($, on) => {

@@ -99,14 +99,14 @@ async function sync($: EngineInterface, command: 'sync-session' | 'end-session',
   if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) $.ui.log(`ai agent ${command} failed: ${ran.stderr.trim()}`)
 }
 
-function reply(ran: Ran): string {
+function outcome(ran: Ran): string {
   if (ran.exitCode === 0) return ran.stdout.trim()
   if (ran.exitCode === NOT_ATTACHED) return 'This session is not attached to an agent. Attach it with /ai attach <name>.'
-  return ran.stderr.trim() || `ai agent exited with code ${ran.exitCode}.`
+  return ran.stderr.trim() || `ai exited with code ${ran.exitCode}.`
 }
 
 async function attach($: EngineInterface, name: string): Promise<string> {
-  return reply(await agent($, ['attach', name, ...(await session($))], LONG_MS))
+  return outcome(await agent($, ['attach', name, ...(await session($))], LONG_MS))
 }
 
 async function isWithheld($: EngineInterface): Promise<boolean> {
@@ -171,12 +171,12 @@ async function fold($: EngineInterface, cancelled?: AbortSignal): Promise<string
   const args = sessionArgs(old, await transcriptOf($, old))
   const ready = await compactSession($, args, cancelled)
   if (cancelled?.aborted) return 'Not folded: cancelled.'
-  if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not folded: ${reply(ready)}`
+  if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not folded: ${outcome(ready)}`
   if (ready.exitCode === 0 && ready.stdout === '') return 'Not folded: the thread holds nothing yet.'
   const isAttached = ready.exitCode === 0
   if (!isAttached && (await isWithheld($))) return WITHHELD
   const shown = await ai($, ['view', '--whole', ...args])
-  if (shown.exitCode !== 0) return `Not folded: ${reply(shown)}`
+  if (shown.exitCode !== 0) return `Not folded: ${outcome(shown)}`
   if (cancelled?.aborted) return 'Not folded: cancelled.'
   if (isAttached) {
     carrying = true
@@ -186,6 +186,56 @@ async function fold($: EngineInterface, cancelled?: AbortSignal): Promise<string
     $.clock.after(0, () => $.command.run({ command: 'compact' }))
   }
   return undefined
+}
+
+/** Why the prompt box took no text, by the engine's refusal; a hook's refusal carries none. */
+const UNFILLED = {
+  dialog: 'a dialog holds the prompt box',
+  no_composer: 'this session has no prompt box',
+} as const
+
+/**
+ * `text` with `> ` before each line, `>` alone on an empty one, without the empty lines it
+ * starts or ends with, as `ai reply` quotes.
+ */
+function quoted(text: string): string {
+  return text
+    .trimEnd()
+    .replace(/^[\r\n]+/, '')
+    .split(/\r?\n/)
+    .map(line => line.trimEnd())
+    .map(line => (line === '' ? '>' : `> ${line}`))
+    .join('\n')
+}
+
+/**
+ * What `/reply` quotes: the replies `refs` picks, as typed, which `ai reply` splits and quotes;
+ * with none, the text selected with the mouse, else the latest answer. Either the quote, or why
+ * there is none. What `ai reply` warns of beside a quote is logged: it read the transcript alone.
+ */
+async function quotation($: EngineInterface, refs: string): Promise<{ text: string } | { failed: string }> {
+  if (refs === '') {
+    const selected = (await $.ui.selection())?.text ?? ''
+    if (selected.trim() !== '') return { text: quoted(selected) }
+  }
+  const ran = await ai($, ['reply', ...(await session($)), '--', ...(refs === '' ? [] : [refs])])
+  if (ran.exitCode !== 0) return { failed: outcome(ran) }
+  const warned = ran.stderr.trim()
+  if (warned !== '') $.ui.log(warned)
+  return { text: ran.stdout }
+}
+
+/**
+ * Puts what `/reply` with `refs` quotes into the prompt box at the cursor, so a draft stays,
+ * with an empty line after it to answer on. Returns why it put nothing, else undefined.
+ */
+async function quote($: EngineInterface, refs: string): Promise<string | undefined> {
+  const q = await quotation($, refs)
+  if ('failed' in q) return `Not quoted: ${q.failed}`
+  const filled = await $.prompt.fill({ text: `${q.text.trimEnd()}\n\n`, mode: 'insert' })
+  if (filled.isFilled) return undefined
+  const why = filled.refusal === undefined ? 'the prompt box did not take it' : UNFILLED[filled.refusal]
+  return `Not quoted: ${why}.`
 }
 
 /**
@@ -278,6 +328,13 @@ export const register: Register = on => {
         'ai: a read-only fork briefs you on your message from your memory, the thread and the repository',
       argumentHint: '<message>',
     })
+    await $.command.register({
+      name: 'reply',
+      description:
+        'ai: quote the text you selected, else the latest answer, into the prompt box; -N an older answer, N the answer to your message at turn N, #k one reply in it',
+      argumentHint: '[-N | N | #k | -N#k | N#k ...]',
+      immediate: true,
+    })
     return next(e)
   })
 
@@ -315,16 +372,21 @@ export const register: Register = on => {
     return { text: (await fold($, next.signal)) ?? 'Folding.' }
   })
 
+  on('command.run', { command: 'reply' }, async ($, e) => {
+    const failed = await quote($, e.args.trim())
+    return failed === undefined ? {} : { text: failed }
+  })
+
   on('command.run', { command: 'ai' }, async ($, e) => {
     const [sub, ...rest] = e.args.trim().split(/\s+/)
     if (sub === 'new' && rest.length === 1) {
       const made = await agent($, ['new', rest[0]!])
-      if (made.exitCode !== 0) return { text: reply(made) }
+      if (made.exitCode !== 0) return { text: outcome(made) }
       return { text: `Created agent ${rest[0]}. ${await attach($, rest[0]!)}` }
     }
     if (sub === 'attach' && rest.length === 1) return { text: await attach($, rest[0]!) }
     if (sub === 'detach' && rest.length === 0) {
-      return { text: reply(await agent($, ['detach', ...(await session($))])) }
+      return { text: outcome(await agent($, ['detach', ...(await session($))])) }
     }
     return { text: USAGE }
   })
