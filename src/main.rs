@@ -29,6 +29,10 @@ enum Command {
         about = "Print a part of a long output, as the part before it names it: ai page 17:2."
     )]
     Page(ai_tools::page::Cli),
+    #[command(
+        about = "Quote an answer to one of your messages, each line after '> ', to reply inline."
+    )]
+    Reply(ai_tools::agent::Reply),
     #[command(about = "Make this directory a project: mint its id into its ai.toml, once.")]
     Init(ai_tools::project::Init),
     #[command(
@@ -47,6 +51,7 @@ fn main() -> ExitCode {
         Command::Resume(cli) => cli.exec(),
         Command::View(cli) => cli.exec(),
         Command::Page(cli) => cli.exec(),
+        Command::Reply(cli) => cli.exec(),
         Command::Init(cli) => cli.exec(),
         Command::Backup(cli) => cli.exec(),
         Command::Convert(cli) => cli.exec(),

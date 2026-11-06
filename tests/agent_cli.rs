@@ -616,9 +616,11 @@ fn plumbing_is_hidden_from_help() {
             assert!(!help.contains(flag), "{cmd} {flag}: {help}");
         }
     }
-    let help = stdout(&s.top(None, &["view", "--help"]));
-    for flag in ["--harness", "--session", "--transcript"] {
-        assert!(!help.contains(flag), "ai view {flag}: {help}");
+    for cmd in ["view", "reply"] {
+        let help = stdout(&s.top(None, &[cmd, "--help"]));
+        for flag in ["--harness", "--session", "--transcript"] {
+            assert!(!help.contains(flag), "ai {cmd} {flag}: {help}");
+        }
     }
 }
 
@@ -908,6 +910,377 @@ fn compact_session_fails_with_its_reason() {
         s.ai(&[&["compact-session"][..], &flags].concat()),
         "ai agent cannot read pi sessions.\n",
     );
+}
+
+/// What `ai reply` adds to the error of a reference that fails.
+const PART: &str = "To quote part of an answer, select it and run /reply.";
+
+/// `reply.jsonl`'s turns are listed in `src/agent/reply.rs`'s tests: 7 "Tell me when they finish."
+/// opens the latest answer.
+#[test]
+fn reply_quotes_answers_from_an_unattached_session_s_transcript_anywhere() {
+    let s = Sandbox::new();
+    let t = s.transcript("s-1", &fixture("reply.jsonl"));
+    let t = t.to_str().unwrap();
+    let latest = "> The docs fork is done.\n>\n> It added a README section.\n\n\
+                  > The tests fork is done too.\n";
+    ok(s.top(Some("s-1"), &["reply"]), latest);
+    ok(
+        s.top(Some("s-1"), &["reply", "-2"]),
+        "> Two forks are on it.\n",
+    );
+    ok(s.top(Some("s-1"), &["reply", "7"]), latest);
+    let outside = |args: &[&str]| {
+        let flags = ["reply", "--session", "s-1", "--transcript", t, "--"];
+        s.bin(&s.root.join("out"))
+            .args(flags)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    ok(outside(&["-2#1"]), "> Two forks are on it.\n");
+    ok(outside(&["7#2"]), "> The tests fork is done too.\n");
+    let no_10 = format!("This session has no turn 10: its turns run from 0 to 9. {PART}\n");
+    fails(outside(&["10"]), &no_10);
+    fails(s.top(Some("s-1"), &["reply", "10"]), &no_10);
+    let o = s.top(Some("s-1"), &["reply", "--", "--help"]);
+    assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
+    assert!(
+        stderr(&o).starts_with("Not a reply reference: --help."),
+        "{}",
+        stderr(&o)
+    );
+    let bare = s.bin(&s.root.join("out")).arg("reply").output().unwrap();
+    fails(bare, "No Claude Code session: run this inside one.\n");
+    fails(
+        s.top(Some("s-2"), &["reply"]),
+        "Cannot find the transcript of session s-2.\n",
+    );
+    fails(
+        s.top(
+            None,
+            &[
+                "reply",
+                "--harness",
+                "pi",
+                "--session",
+                "p-1",
+                "--transcript",
+                t,
+            ],
+        ),
+        "ai reply reads only Claude Code sessions, not pi.\n",
+    );
+}
+
+#[test]
+fn reply_reads_a_transcript_not_written_yet_as_a_session_with_no_replies() {
+    let s = Sandbox::new();
+    let reply = |t: &Path, refs: &[&str]| {
+        let flags = ["reply", "--session", "s-1", "--transcript"];
+        let out = s.root.join("out");
+        let mut o = s.bin(&out);
+        o.args(flags).arg(t).arg("--").args(refs).output().unwrap()
+    };
+    let unwritten = s.root.join("out/s-1.jsonl");
+    fails(
+        reply(&unwritten, &[]),
+        &format!("This session has no replies yet, so -1 has nothing to quote. {PART}\n"),
+    );
+    fails(
+        reply(&unwritten, &["0"]),
+        &format!("This session has no turns yet, so 0 has nothing to quote. {PART}\n"),
+    );
+    let dir = s.root.join("out");
+    fails(
+        reply(&dir, &[]),
+        &format!("Cannot read {}.\n", dir.display()),
+    );
+}
+
+#[test]
+fn reply_quotes_several_references_in_order_and_none_if_one_fails() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &fixture("reply.jsonl"));
+    ok(
+        s.top(Some("s-1"), &["reply", "-2", "#2", "-2"]),
+        "> Two forks are on it.\n\n> The tests fork is done too.\n\n> Two forks are on it.\n",
+    );
+    fails(
+        s.top(Some("s-1"), &["reply", "-1", "x"]),
+        &format!(
+            "Not a reply reference: x. Use -N, N, #k, -N#k or N#k; ai reply --help shows each. \
+             {PART}\n"
+        ),
+    );
+    fails(
+        s.top(Some("s-1"), &["reply", "-1", "#3"]),
+        &format!("The latest answer has 2 replies, so #3 picks none. {PART}\n"),
+    );
+}
+
+/// As `/reply` passes on what follows it, typed: in one argument, commas or spaces between the
+/// references, quotes around them or around the lot.
+#[test]
+fn reply_takes_references_split_by_commas_or_spaces_and_drops_their_quotes() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &fixture("reply.jsonl"));
+    let both = "> Two forks are on it.\n\n> The tests fork is done too.\n";
+    for args in [
+        &["-2", "#2"][..],
+        &["-2,#2"],
+        &["-2, #2"],
+        &["-2  #2 "],
+        &["\"-2,#2\""],
+        &["'-2', '#2'"],
+        &["-2,", "'#2'"],
+    ] {
+        ok(
+            s.top(Some("s-1"), &[&["reply", "--"][..], args].concat()),
+            both,
+        );
+    }
+    let latest = stdout(&s.top(Some("s-1"), &["reply"]));
+    ok(s.top(Some("s-1"), &["reply", "--", " , ''"]), &latest);
+    fails(
+        s.top(Some("s-1"), &["reply", "--", "1,2"]),
+        &format!("Turn 1 is the report \"Check\", not your message, and it has no reply. {PART}\n"),
+    );
+}
+
+/// One turn of session `id`: `ask`, then the final reply `answer`, entries `{n}` after `after`.
+fn turn(id: &str, n: u32, after: Option<&str>, ask: &str, answer: &str) -> String {
+    let at = |k: u32| format!("2026-11-03T10:{:02}:{:02}.000Z", n, k);
+    let user = json!({
+        "parentUuid": after, "isSidechain": false, "type": "user",
+        "message": {"role": "user", "content": ask}, "origin": {"kind": "human"},
+        "uuid": format!("{id}-u{n}"), "timestamp": at(0), "sessionId": id,
+        "cwd": "/home/user/project", "version": "2.1.317",
+    });
+    let reply = json!({
+        "parentUuid": format!("{id}-u{n}"), "isSidechain": false, "type": "assistant",
+        "message": {"model": "claude-opus-5-5", "role": "assistant",
+            "content": [{"type": "text", "text": answer}], "stop_reason": "end_turn"},
+        "uuid": format!("{id}-a{n}"), "timestamp": at(1), "sessionId": id,
+        "cwd": "/home/user/project", "version": "2.1.317",
+    });
+    format!("{user}\n{reply}\n")
+}
+
+/// Numbered as in `reply_quotes_answers_from_an_unattached_session_s_transcript_anywhere`, then
+/// on: session s-2 continues the thread at turn 10.
+#[test]
+fn an_attached_session_numbers_turns_as_its_thread_does_synced_first() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &fixture("reply.jsonl"));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let latest = stdout(&s.top(Some("s-1"), &["reply"]));
+    ok(s.top(Some("s-1"), &["reply", "7"]), &latest);
+    fails(
+        s.top(Some("s-1"), &["reply", "10"]),
+        &format!("This branch has no turn 10: its turns run from 0 to 9. {PART}\n"),
+    );
+    ok(
+        s.top(Some("s-1"), &["reply", "6", "7#2", "-1#1"]),
+        "> Two forks are on it.\n\n> The tests fork is done too.\n\n> The docs fork is done.\n>\n\
+         > It added a README section.\n",
+    );
+
+    let mut text = turn("s-2", 0, None, "And now?", "Now this.");
+    s.transcript("s-2", &text);
+    ok(s.top(Some("s-2"), &["reply", "0"]), "> Now this.\n");
+    ok(s.ai_in("s-2", &["attach", "dev"]), "Attached to dev.\n");
+    ok(s.ai_in("s-2", &["zoom", "10.0"]), "10.0|user: And now?\n");
+    ok(s.top(Some("s-2"), &["reply", "10"]), "> Now this.\n");
+    ok(
+        s.top(Some("s-2"), &["reply", "0"]),
+        &stdout(&s.top(Some("s-1"), &["reply", "0"])),
+    );
+    text += &turn("s-2", 1, Some("s-2-a0"), "Then?", "Then this.");
+    s.transcript("s-2", &text);
+    ok(
+        s.top(Some("s-2"), &["reply", "11", "-1"]),
+        "> Then this.\n\n> Then this.\n",
+    );
+}
+
+/// What a fold leaves at the start of the session `id` it goes on in: `/clear`, as Claude Code
+/// records a command it runs itself, then the view the plugin appends, entry `{id}-view`.
+fn folded(id: &str) -> String {
+    let row = |uuid: &str, after: Option<&str>, more: Value| {
+        let mut v = json!({
+            "parentUuid": after, "isSidechain": false, "type": "user",
+            "uuid": format!("{id}-{uuid}"), "timestamp": "2026-11-03T10:00:00.000Z",
+            "sessionId": id, "cwd": "/home/user/project", "version": "2.1.322",
+        });
+        v.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        format!("{v}\n")
+    };
+    let said = |content: &str| json!({"role": "user", "content": content});
+    let caveat = "<local-command-caveat>The command below was run directly in Claude Code, not \
+                  sent to you as a request.</local-command-caveat>";
+    let clear = "<command-name>/clear</command-name>\n            \
+                 <command-message>clear</command-message>\n            \
+                 <command-args></command-args>";
+    let view = "# Memory\n\nYou are awake.\n\n# Thread `dev`\n\n7.1|ai: The view's last reply.\n";
+    [
+        row(
+            "caveat",
+            None,
+            json!({"isMeta": true, "message": said(caveat)}),
+        ),
+        row(
+            "clear",
+            Some(&format!("{id}-caveat")),
+            json!({"message": said(clear)}),
+        ),
+        row(
+            "view",
+            Some(&format!("{id}-clear")),
+            json!({"isMeta": true, "origin": {"kind": "plugin", "name": "ai"},
+                "message": said(view)}),
+        ),
+    ]
+    .concat()
+}
+
+/// The report of the fork `from` to session `id`, then the final reply `answer` to it, entries
+/// `{id}-w{n}` and `{id}-a{n}` after `after`.
+fn reported(id: &str, n: u32, after: &str, from: &str, answer: &str) -> String {
+    let at = |k: u32| format!("2026-11-03T11:{:02}:{:02}.000Z", n, k);
+    let notice = format!(
+        "<task-notification>\n<task-id>w{n}</task-id>\n<status>completed</status>\n\
+         <summary>Agent \"{from}\" finished</summary>\n<result>Done.</result>\n\
+         </task-notification>"
+    );
+    let report = json!({
+        "parentUuid": after, "isSidechain": false, "type": "user",
+        "message": {"role": "user", "content": notice},
+        "origin": {"kind": "task-notification", "producer": "session-task"},
+        "promptSource": "system", "uuid": format!("{id}-w{n}"), "timestamp": at(0),
+        "sessionId": id, "cwd": "/home/user/project", "version": "2.1.322",
+    });
+    let reply = json!({
+        "parentUuid": format!("{id}-w{n}"), "isSidechain": false, "type": "assistant",
+        "message": {"model": "claude-opus-5-5", "role": "assistant",
+            "content": [{"type": "text", "text": answer}], "stop_reason": "end_turn"},
+        "uuid": format!("{id}-a{n}"), "timestamp": at(1), "sessionId": id,
+        "cwd": "/home/user/project", "version": "2.1.322",
+    });
+    format!("{report}\n{reply}\n")
+}
+
+/// Session s-2 goes on where s-1 folded: attached to its thread, its transcript holding the
+/// fold's own rows and no answer.
+#[test]
+fn after_a_fold_an_attached_session_counts_answers_back_into_the_session_before() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &fixture("reply.jsonl"));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let latest = stdout(&s.top(Some("s-1"), &["reply"]));
+    assert!(latest.ends_with("> The tests fork is done too.\n"));
+
+    let mut text = folded("s-2");
+    s.transcript("s-2", &text);
+    fails(
+        s.top(Some("s-2"), &["reply"]),
+        &format!("This session has no replies yet, so -1 has nothing to quote. {PART}\n"),
+    );
+    ok(s.ai_in("s-2", &["attach", "dev"]), "Attached to dev.\n");
+    ok(s.top(Some("s-2"), &["reply"]), &latest);
+    ok(s.top(Some("s-2"), &["reply", "7"]), &latest);
+    ok(
+        s.top(Some("s-2"), &["reply", "-2", "#2"]),
+        "> Two forks are on it.\n\n> The tests fork is done too.\n",
+    );
+    fails(
+        s.top(Some("s-2"), &["reply", "-6"]),
+        &format!("-6 is past the oldest answer: this branch has 5 answers. {PART}\n"),
+    );
+
+    // A fork started before the fold reports to the session after it.
+    text += &reported("s-2", 0, "s-2-view", "Late", "The late fork is done.");
+    s.transcript("s-2", &text);
+    ok(s.top(Some("s-2"), &["reply"]), "> The late fork is done.\n");
+    ok(s.top(Some("s-2"), &["reply", "-2"]), &latest);
+    fails(
+        s.top(Some("s-2"), &["reply", "10"]),
+        &format!(
+            "Turn 10 is the report \"Late\", not your message, and its reply follows a fold, in \
+             no answer to a message of yours. {PART}\n"
+        ),
+    );
+
+    text += &turn("s-2", 1, Some("s-2-a0"), "And now?", "Now this.");
+    s.transcript("s-2", &text);
+    ok(
+        s.top(Some("s-2"), &["reply", "-1", "-2", "-3"]),
+        &format!("> Now this.\n\n> The late fork is done.\n\n{latest}"),
+    );
+    ok(s.top(Some("s-2"), &["reply", "11"]), "> Now this.\n");
+    fails(
+        s.top(Some("s-2"), &["reply", "-8"]),
+        &format!("-8 is past the oldest answer: this branch has 7 answers. {PART}\n"),
+    );
+    ok(s.top(Some("s-1"), &["reply"]), &latest);
+}
+
+/// A store of a format this ai does not read is refused whole, as agents an older ai kept are.
+#[test]
+fn reply_counts_back_in_the_transcript_alone_and_says_so_when_the_agents_cannot_be_read() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &fixture("reply.jsonl"));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let latest = stdout(&s.top(Some("s-1"), &["reply"]));
+    fs::write(s.store().dir().join("format"), "99\n").unwrap();
+    let refused = "This agent store is format 99; this ai reads up to ";
+
+    let warned = |o: &Output| {
+        let alone = "ai reply read this session's transcript alone, as it cannot read this \
+                     project's agents: ";
+        let e = stderr(o);
+        assert!(
+            e.starts_with(&format!("{alone}{refused}")) && e.ends_with(". Upgrade ai.\n"),
+            "{e}"
+        );
+        assert_eq!(e.lines().count(), 1, "{e}");
+    };
+    let o = s.top(Some("s-1"), &["reply"]);
+    assert_eq!((code(&o), stdout(&o)), (0, latest.clone()));
+    warned(&o);
+    let o = s.top(Some("s-1"), &["reply", "-2", "#2"]);
+    assert_eq!(
+        (code(&o), stdout(&o).as_str()),
+        (
+            0,
+            "> Two forks are on it.\n\n> The tests fork is done too.\n"
+        )
+    );
+    warned(&o);
+
+    for refs in [&["7"][..], &["-1", "7"]] {
+        let o = s.top(Some("s-1"), &[&["reply"][..], refs].concat());
+        assert_eq!((code(&o), stdout(&o).as_str()), (1, ""), "{refs:?}");
+        let e = stderr(&o);
+        assert!(
+            e.starts_with(refused) && e.ends_with(". Upgrade ai.\n"),
+            "a turn's number is the thread's: {e}"
+        );
+    }
 }
 
 #[test]

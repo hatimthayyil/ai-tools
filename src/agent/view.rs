@@ -511,6 +511,11 @@ impl Branch {
         &self.tree.items()[self.path[p]]
     }
 
+    /// Its items from the root to its tip: the path its turns and ids count along.
+    pub fn items(&self) -> Vec<&Item> {
+        (0..self.path.len()).map(|p| self.item(p)).collect()
+    }
+
     /// The id of the items at positions `r`, all in one turn.
     fn items_id(&self, r: &Range<usize>) -> Id {
         let p = self.tree.place(self.path[r.start]);

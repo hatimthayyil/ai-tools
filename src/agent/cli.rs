@@ -1145,7 +1145,16 @@ fn carry_session(cwd: &Path, out: &mut dyn Write, from: &str, s: Session) -> Res
 /// Session `s`, synced, with its threads and the thread it is attached to; `None` outside an
 /// agent session or a project, or for an unattached session.
 fn synced(cwd: &Path, s: Session) -> Result<Option<(Store, Thread, Current)>> {
-    let (Some(c), Some(store)) = (s.current(), Store::find(cwd)?) else {
+    match s.current() {
+        Some(c) => synced_session(cwd, c),
+        None => Ok(None),
+    }
+}
+
+/// Session `c`, synced, with its threads and the thread it is attached to; `None` outside a
+/// project, or while it is attached to none.
+fn synced_session(cwd: &Path, c: Current) -> Result<Option<(Store, Thread, Current)>> {
+    let Some(store) = Store::find(cwd)? else {
         return Ok(None);
     };
     if store.sync(&c.harness, &c.session, c.transcript.as_deref())? == Synced::NotAttached {
@@ -1320,6 +1329,132 @@ fn grep(
         render,
     )?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// What `ai reply --help` shows after its options.
+const REPLY_HELP: &str = "\
+Examples:
+  ai reply          the latest answer
+  ai reply -2       the answer before it
+  ai reply '#2'     the second reply in the latest answer
+  ai reply 597      the answer to your message at turn 597
+  ai reply 597#2    the second reply in that answer
+  ai reply 595 -1   both, in that order
+  ai reply 595,-1   the same
+
+An answer is what the assistant replies to one of your messages, up to your next message, a fold or a compaction between turns, without what it writes between tool calls.
+
+Turns count from 0. Each message to the assistant starts one, yours or a fork's report. An attached session numbers them as its thread's view does, and counts answers back through its thread, into the sessions before it: right after /fold, -1 is the last answer before the fold. Any other session counts its own. If the project's agents cannot be read, -N counts in the session's own transcript and a warning says so, while a turn's number fails.
+
+Spaces or commas separate references, and quotes around one are dropped. Quote '#k' in a shell, where # starts a comment. If one reference fails, nothing prints.
+
+In Claude Code, /reply puts the quote in the prompt box. With nothing after it, it quotes the text you selected with the mouse, if any, else the latest answer.";
+
+/// `ai reply`: the assistant's answers in this session, quoted.
+#[derive(Args, Debug)]
+#[command(after_help = REPLY_HELP)]
+pub struct Reply {
+    #[arg(
+        value_name = "REF",
+        allow_hyphen_values = true,
+        help = "-N, N, #k, -N#k or N#k, as the examples below show [default: -1]"
+    )]
+    refs: Vec<String>,
+    #[command(flatten)]
+    session: Session,
+}
+
+impl Reply {
+    /// Runs in the current directory, printing to stdout.
+    pub fn exec(self) -> Result<ExitCode> {
+        let cwd = env::current_dir().context("Cannot read the current directory.")?;
+        match reply(&cwd, &mut io::stdout().lock(), &self.refs, self.session) {
+            Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
+            r => r,
+        }
+    }
+}
+
+/// Prints the replies each of the references in `args` picks, in the order given, a blank line
+/// between them; the latest answer for none. They read session `s`'s branch of the thread it
+/// is attached to, synced first, so `-N` counts back into the sessions before it; else its
+/// transcript. When the branch cannot be read, answers counted back are read from the transcript
+/// alone, with a warning on stderr; a turn's number is the thread's, so it fails. A reference's
+/// error ends with how to quote part of an answer.
+fn reply(cwd: &Path, out: &mut dyn Write, args: &[String], s: Session) -> Result<ExitCode> {
+    use super::reply::{PART, Ref, Which, Whose, quote, split};
+    let hint = |e: anyhow::Error| anyhow!("{e:#} {PART}");
+    let refs = match split(args) {
+        refs if refs.is_empty() => vec![""],
+        refs => refs,
+    };
+    let refs: Vec<(&str, Ref)> = refs
+        .into_iter()
+        .map(|r| Ok((r, r.parse().map_err(hint)?)))
+        .collect::<Result<_>>()?;
+    let Some(c) = s.current() else {
+        bail!("No Claude Code session: run this inside one.");
+    };
+    if c.harness != claude::HARNESS {
+        bail!(
+            "ai reply reads only Claude Code sessions, not {}.",
+            c.harness
+        );
+    }
+    let each = |path: &[&super::model::Item], whose: Whose| -> Result<Vec<String>> {
+        refs.iter()
+            .map(|&(at, r)| quote(path, at, r, whose).map_err(hint))
+            .collect()
+    };
+    let numbered = refs.iter().any(|(_, r)| matches!(r.which, Which::Turn(_)));
+    let branch = match attached_branch(cwd, &c) {
+        Err(e) if !numbered => {
+            eprintln!(
+                "ai reply read this session's transcript alone, as it cannot read this project's agents: {e:#}"
+            );
+            None
+        }
+        r => r?,
+    };
+    let quotes = match branch {
+        Some(b) => each(&b.items(), Whose::Branch)?,
+        None => {
+            let tree = session_tree(cwd, &c)?;
+            let path = tree.tips().last().map_or_else(Vec::new, |&t| tree.path(t));
+            each(&path, Whose::Session)?
+        }
+    };
+    write!(out, "{}", quotes.join("\n"))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The items of session `c`'s transcript, linked into their branches. Claude Code names the
+/// transcript when the session starts but writes it later, so a given path with no file yet
+/// holds no items, as sync reads it.
+fn session_tree(cwd: &Path, c: &Current) -> Result<super::model::Tree> {
+    let Some(path) = c.transcript(cwd) else {
+        bail!("Cannot find the transcript of session {}.", c.session);
+    };
+    let unwritten = |e: &anyhow::Error| {
+        e.downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::NotFound)
+    };
+    let items = match claude::read(&path, &c.session) {
+        Err(e) if unwritten(&e) => Vec::new(),
+        r => r?,
+    };
+    Ok(super::model::Tree::new(items))
+}
+
+/// Session `c`'s branch of the thread it is attached to, synced first, as `ai agent zoom` reads
+/// it: to its newest item, else to where it took the thread up. `None` outside a project, while
+/// the session is attached to none, or while its branch holds no item, as its transcript then
+/// holds none either.
+fn attached_branch(cwd: &Path, c: &Current) -> Result<Option<Branch>> {
+    let Some((_, t, c)) = synced_session(cwd, c.clone())? else {
+        return Ok(None);
+    };
+    read_branch(&t.snapshot()?, Some(&c), Counts::default())
 }
 
 /// What one line of level `l` of a thread covers: a turn's work, a turn, or turns.
