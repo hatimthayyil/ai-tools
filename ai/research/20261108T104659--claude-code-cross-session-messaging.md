@@ -92,8 +92,8 @@ Postpone `ai` mail: the store, the gate and `ai desk` (team note layers 3 and 4)
 
 Glue worth building now, smallest first:
 
-1. `ai resume <agent>` passes `--name`, so the agent's session answers to its agent name. The spelling can't contain `@` (§2). A dotted name works (`main.xs-probe` was reachable), so `main.ai-tools` would; the bare agent name is shorter but collides across projects, and the collision gives one session a variant name.
-2. If the user wants the agreed gate before the sandbox: a `PreToolUse` hook in the `ai` plugin returning `ask` for `SendMessage` to another session. It gives one approval per message in the sender's pane, no edit, and is advisory until the sandbox.
+1. `ai resume <agent>` passes `--name`, so the agent's session answers to its address, `<project>.<agent>` (`ai-tools.main`; team note §8). The spelling can't contain `@` (§2); a dotted name works (`main.xs-probe` was reachable). The bare agent name is shorter but collides across projects, and the collision gives one session a variant name.
+2. The approval of each message belongs to the desk in Emacs (team note §7): a `PreToolUse` hook on `SendMessage` to another session returns `ask`, or waits for the desk's decision. It is advisory until the sandbox.
 
 ## Not verified
 

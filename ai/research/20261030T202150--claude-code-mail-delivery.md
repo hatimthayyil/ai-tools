@@ -2,7 +2,7 @@
 
 Author: Claude Code (Claude Opus 5.5)
 
-How Claude Code records a message the `ai` plugin delivers, and what the delivery layer can build on. It serves `20261030T142550--agent-team.md` §4 (delivery through `$.prompt.submit`). Nothing here is built.
+How Claude Code records a message the `ai` plugin delivers, and what the delivery layer can build on. It serves `20261030T142550--agent-team.md` §4 (delivery through `$.prompt.submit`). Nothing here is built. Mail waits for the sandboxed launch (team note §11); until then Claude Code's own messaging carries messages between Claude sessions (`20261108T104659--claude-code-cross-session-messaging.md`).
 
 Sources: Claude Code 2.1.314; its plugin engine types, `plugin-authoring/types/claude-code.d.ts` ("types"); its docs in `~/.claude-code-docs/docs`. **Checked here** marks what two headless sessions (`claude -p`, Haiku) on this machine showed: a throwaway plugin `mailprobe` loaded with `--plugin-dir`, and a Stop command hook passed with `--settings`. The probes are in the scratchpad, not the repo. Everything else was read.
 

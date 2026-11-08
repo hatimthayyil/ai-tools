@@ -25,7 +25,7 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 
 **Writes go around the gate.**
 - herdr's socket (`HERDR_SOCKET_PATH`, in `~/.config/herdr`) offers `pane read`, `agent read`, `agent prompt`, `send-text` and `send-keys` to any process in a pane: read another agent's screen, or type into it. Read from `herdr pane --help` and `herdr agent --help`; not exercised.
-- Claude Code's peer sockets sit in `/run/user/1000/cc-socks` (note 971). **Checked here** (location).
+- Claude Code's peer sockets sit in `/run/user/1000/cc-socks` (note 971). **Checked here** (location). Any process of the user can post to any session's socket under a sender name it makes up; the receiver checks only the pid (`20261108T104659--claude-code-cross-session-messaging.md`).
 - The session D-Bus (`/run/user/1000/bus`) and systemd's user manager start processes outside any sandbox (`systemd-run --user`). Not exercised.
 
 **Policy is writable.** `ai.toml` at user, project and private level (src/config.rs:17-47) are ordinary files in the user's home.
@@ -34,7 +34,7 @@ Sources are cited by path and line. Local repos: ai-tools at the working tree, C
 
 ## Agreed
 
-1. Mail is stored in per-sender outboxes, and the desk writes approved mail into the recipient's inbox (recommendation 2, team note §10).
+1. Mail is stored in per-sender outboxes, and `ai`, run from the desk outside every sandbox, writes approved mail into the recipient's inbox (recommendation 2, team note §10).
 2. One Claude credentials file is bound read-write into every sandbox (recommendation 4). It cannot keep one login as stated ("How Claude writes linked files" below); the replacement awaits the user.
 3. A session not started through `ai resume` counts as the user's own ("The gap that remains").
 4. The setting is `reports-to = [...]` (recommendation 5).
@@ -58,29 +58,30 @@ Mask by construction: a tmpfs over `~/ai`, `~/.ai`, `~/.claude` and the runtime 
 
 A sandboxed agent that runs `ai resume` for another agent gets a nested sandbox that can only narrow what it already has.
 
-**2. Identity is location.** Inside its sandbox an agent can write only its own outbox, so a message's sender is the owner of the outbox it sits in. The desk runs outside every sandbox, as the user: it reads outboxes, and on approval writes the message, as approved or edited, into the recipient's inbox, which the recipient can read but not write. No environment variable, flag or token decides who sent a message or who approved it. The session binding stays, to find an agent's thread, never as authority.
+**2. Identity is location.** Inside its sandbox an agent can write only its own outbox, so a message's sender is the owner of the outbox it sits in. `ai`, run by the user from the desk outside every sandbox, reads outboxes, and on approval writes the message, as approved or edited, into the recipient's inbox, which the recipient can read but not write. No environment variable, flag or token decides who sent a message or who approved it. The session binding stays, to find an agent's thread, never as authority.
 
-**3. History stays outside every sandbox.** Threads live in `~/ai`, one repository (Agreed 5). A sandbox binds thread files, never `~/ai/.git`, so an agent can neither read another thread through git objects nor rewrite history: what it can damage is what changed since the last commit. `ai` outside the sandbox commits: the user's own commands, the desk, and the `ai resume` process that launched the agent, which commits what its agent wrote (storage note, "Writing to `~/ai`"). Today's code still gives each thread a repository of its own (src/agent/store.rs, `Store::create`); that is undone with the move to `~/ai`.
+**3. History stays outside every sandbox.** Threads live in `~/ai`, one repository (Agreed 5). A sandbox binds thread files, never `~/ai/.git`, so an agent can neither read another thread through git objects nor rewrite history: what it can damage is what changed since the last commit. `ai` outside the sandbox commits: the user's own commands, those the desk runs, and the `ai resume` process that launched the agent, which commits what its agent wrote (storage note, "Writing to `~/ai`"). Today's code still gives each thread a repository of its own (src/agent/store.rs, `Store::create`); that is undone with the move to `~/ai`.
 
 **4. Each agent gets its own harness state.** Claude Code reads and writes `~/.claude/projects/<dir>/` for its own session, and agents in one repo share that folder. A `CLAUDE_CONFIG_DIR` per agent separates them; `ai` already honours that variable (src/agent/claude.rs:26-31). pi and DSH take a per-agent home the same way (`$DSH_HOME`, deepseek-harness apps/cli/reference/README.md:137). Agents share the user's subscription through a long-lived token `ai resume` hands each one, with no credentials file inside any sandbox ("How Claude writes linked files" below; it replaces Agreed decision 2, pending the user).
 
 **5. Rank stays the setting; `ai` compiles it into grants at launch.** An agent's read grants are the threads of every agent below it. Several superiors make the hierarchy a graph, not a tree; `ai` refuses a cycle. The setting is a list in the agent's own table:
 
 ```toml
+# the project's private settings in ~/ai
 [agents.developer]
-reports-to = ["main", "engineer@~"]
+reports-to = ["main", "engineer"]
 ```
 
-`reports-to` names the relation, reads as plain English, and takes several names (Agreed). Each name resolves in the scope of the file it is written in: `main` is this project's main, `engineer@~` the user-level `engineer`, and a tracked `ai.toml` holds only names of its own project (Agreed, team note §8). Explicit per-thread grants would be a second setting that nothing needs yet.
+`reports-to` names the relation, reads as plain English, and takes several names (Agreed). A name resolves by the team note's rule (§8), in the project, then at user level: `main` is this project's main, and `engineer` the user-level `engineer`, as the project has none. A tracked `ai.toml` holds only names of its own project, so this link up sits in the private settings (Agreed, team note §8). Explicit per-thread grants would be a second setting that nothing needs yet.
 
-Built (src/config.rs): `ai` reads `reports-to` from every `ai.toml`, a later file's list replacing an earlier one's, and `Settings::hierarchy` refuses an agent reporting to itself, to a name with no `[agents.<name>]` table, or in a cycle, naming the cycle; only the commands that read the hierarchy fail on it, never `ai memory` or another agent's commands. `Hierarchy::below` gives the agents below an agent through any number of levels: the threads the launcher grants read-only. Nothing enforces the grants until the launcher exists. Not built: resolution by file scope. Today's check looks names up among the tables of every file merged, which the scoped rule replaces.
+Built (src/config.rs): `ai` reads `reports-to` from every `ai.toml`, a later file's list replacing an earlier one's, and `Settings::hierarchy` refuses an agent reporting to itself, to a name with no `[agents.<name>]` table, or in a cycle, naming the cycle; only the commands that read the hierarchy fail on it, never `ai memory` or another agent's commands. `Hierarchy::below` gives the agents below an agent through any number of levels: the threads the launcher grants read-only. Nothing enforces the grants until the launcher exists. Not built: resolution by that rule. Today's check looks names up among the tables of every file merged.
 
 **6. bubblewrap, invoked by `ai`, from a path fixed at build time by Nix.** Codex looks `bwrap` up only outside the working directory, so a repo cannot plant one (codex-rs/linux-sandbox/README.md). Nix can do better: the store path is compiled in.
 
 ### What this changes in agreed design
 
 - **Mail store.** A sender appending into the recipient's thread would need write access into every recipient's thread. Each sender writes only its own outbox, and the desk delivers approved mail into the recipient's inbox (Agreed, team note §10): every file keeps a single writer, and the path proves the sender.
-- **Order.** The sandboxed launch comes before mail: mail's sender identity and the gate rest on it.
+- **Order.** The sandboxed launch comes before mail: mail's sender identity and the gate rest on it. Until it lands, Claude Code's own messaging carries messages between Claude sessions; the sandbox hides its sockets (table above), so `ai`'s mail takes over then (Agreed, team note §11).
 - **The CLI's own checks** become friendly errors. The kernel enforces; `ai` explains.
 
 ### The gap that remains
