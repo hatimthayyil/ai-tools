@@ -281,6 +281,31 @@ impl Store {
         Ok(t)
     }
 
+    /// Agent `name`'s address, `<project>.<name>`: the name of the project's folder in `~/ai`,
+    /// which every checkout and clone shares, a dot, then the agent's name. An agent's name holds
+    /// no dot, so an address splits at its last dot. An error if the folder's name holds a
+    /// character an address can't.
+    pub fn address(&self, name: &str) -> Result<String> {
+        check_name(name)?;
+        let folder = self.root.parent().unwrap_or(&self.root);
+        let project = folder
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let ok = !project.is_empty()
+            && project
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+        if !ok {
+            bail!(
+                "The project's folder {} has a name an agent's address can't begin with: use \
+                 letters, digits, '.', '-' and '_'. Rename the folder; ai finds it by its id.",
+                pretty(folder)
+            );
+        }
+        Ok(format!("{project}.{name}"))
+    }
+
     /// Creates agent `name` with an empty thread; an error if it exists.
     pub fn create(&self, name: &str) -> Result<Thread> {
         let t = self.thread(name)?;

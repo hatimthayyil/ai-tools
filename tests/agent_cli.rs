@@ -583,6 +583,7 @@ fn plumbing_is_hidden_from_help() {
         "sync-session",
         "compact-session",
         "end-session",
+        "session-name",
         "nap",
         "claude",
     ] {
@@ -1241,7 +1242,7 @@ fn resuming_a_new_agent_binds_a_new_session_and_starts_claude() {
     ok(s.ai(&["resume", "dev", "--", "--model", "haiku"]), "");
     let argv = s.argv();
     assert_eq!(argv[0], "--session-id");
-    assert_eq!(argv[2..], ["--model", "haiku"]);
+    assert_eq!(argv[2..], ["--name=repo.dev", "--model", "haiku"]);
     assert_eq!(s.claude_dir(), s.repo());
     let id = &argv[1];
     assert_eq!(id.len(), 36);
@@ -1325,7 +1326,10 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
     ok(s.ai_in("s-2", &["detach"]), "Detached from dev.\n");
 
     ok(s.ai(&["resume", "dev", "--", "--model", "haiku"]), "");
-    assert_eq!(s.argv(), ["--resume", "s-2", "--model", "haiku"]);
+    assert_eq!(
+        s.argv(),
+        ["--resume", "s-2", "--name=repo.dev", "--model", "haiku"]
+    );
     assert_eq!(s.claude_dir(), s.repo());
     let t = s.store().thread("dev").unwrap();
     let b = t
@@ -1340,7 +1344,7 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
     fs::create_dir(&sub).unwrap();
     let o = s.cmd(&sub).args(["resume", "dev"]).output().unwrap();
     assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
-    assert_eq!(s.argv(), ["--resume", "s-2"]);
+    assert_eq!(s.argv(), ["--resume", "s-2", "--name=repo.dev"]);
     assert_eq!(
         s.claude_dir(),
         s.repo(),
@@ -1367,7 +1371,7 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
     );
     let argv = s.argv();
     assert_eq!(argv[0], "--session-id");
-    assert_eq!(argv[2..], ["--model", "haiku"]);
+    assert_eq!(argv[2..], ["--name=repo.dev", "--model", "haiku"]);
     let b = t
         .snapshot()
         .unwrap()
@@ -1396,8 +1400,82 @@ fn ai_resume_is_ai_agent_resume() {
 
     let o = s.top(None, &["resume", "dev", "--", "--model", "haiku"]);
     assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
-    assert_eq!(s.argv(), ["--resume", "s-1", "--model", "haiku"]);
+    assert_eq!(
+        s.argv(),
+        ["--resume", "s-1", "--name=repo.dev", "--model", "haiku"]
+    );
     assert_eq!(s.claude_dir(), s.repo());
+}
+
+#[test]
+fn a_session_is_named_by_its_agents_address() {
+    let s = Sandbox::new();
+    fails(
+        s.ai(&["session-name", "dev"]),
+        "No agent dev in this project. Create it: ai agent new dev\n",
+    );
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai(&["session-name", "dev"]), "repo.dev\n");
+    ok(s.ai(&["resume", "dev", "--", "--name", "mine"]), "");
+    assert_eq!(
+        s.argv()[2..],
+        ["--name=repo.dev", "--name", "mine"],
+        "the user's --name comes last, so Claude Code keeps it"
+    );
+    let o = s.ai(&["session-name", "a.b"]);
+    assert_eq!(code(&o), 1);
+    assert!(
+        stderr(&o).contains("is not a thread name"),
+        "{}",
+        stderr(&o)
+    );
+
+    let dotted = s.root.join("quran.thayyil.net");
+    s.init(&dotted);
+    let at = |args: &[&str]| s.cmd(&dotted).args(args).output().unwrap();
+    ok(
+        at(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(at(&["session-name", "dev"]), "quran.thayyil.net.dev\n");
+
+    let long = "l".repeat(196);
+    ok(
+        s.ai(&["new", &long]),
+        &format!("Created agent {long}. Start it: ai agent resume {long}\n"),
+    );
+    let refused = format!(
+        "Claude Code cuts a session's name at 200 characters, and repo.{long} has 201. Give the \
+         agent, or the project's folder, a shorter name.\n"
+    );
+    fails(s.ai(&["session-name", &long]), &refused);
+    fails(s.ai(&["resume", &long]), &refused);
+    assert!(!s.root.join("out/argv").exists(), "nothing started");
+    let t = s.store().thread(&long).unwrap();
+    assert!(
+        t.snapshot().unwrap().bindings().unwrap().is_empty(),
+        "no session was bound"
+    );
+    let fits = "f".repeat(195);
+    ok(
+        s.ai(&["new", &fits]),
+        &format!("Created agent {fits}. Start it: ai agent resume {fits}\n"),
+    );
+    ok(s.ai(&["session-name", &fits]), &format!("repo.{fits}\n"));
+
+    let folder = s.homes().repo.join("projects/repo");
+    let odd = s.homes().repo.join("projects/re po");
+    fs::rename(&folder, &odd).unwrap();
+    fails(
+        s.ai(&["session-name", "dev"]),
+        "The project's folder ~/ai/projects/re po has a name an agent's address can't begin \
+         with: use letters, digits, '.', '-' and '_'. Rename the folder; ai finds it by its id.\n",
+    );
+    fs::rename(&odd, s.homes().repo.join("projects/renamed")).unwrap();
+    ok(s.ai(&["session-name", "dev"]), "renamed.dev\n");
 }
 
 #[test]
@@ -1526,13 +1604,19 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
         [
             "--session-id",
             &session,
+            "--name=repo.dev",
             "--append-system-prompt",
             "Keep it short.",
             "--model",
             "haiku"
-        ]
+        ],
+        "a session in the worktree takes the project's name, not the worktree's"
     );
     assert_eq!(s.claude_dir(), wt);
+    ok(
+        s.cmd(&wt).args(["session-name", "dev"]).output().unwrap(),
+        "repo.dev\n",
+    );
     let t = s.store().thread("dev").unwrap();
     let b = t
         .snapshot()
@@ -1563,6 +1647,7 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
         [
             "--resume",
             &session,
+            "--name=repo.dev",
             "--append-system-prompt",
             "Keep it short."
         ]
@@ -1577,9 +1662,17 @@ fn an_agent_runs_in_its_worktree_with_its_instructions() {
     fs::write(s.repo().join("agents/mine.md"), "Say why.").unwrap();
     ok(s.ai(&["resume", "dev"]), "");
     let argv = s.argv();
-    assert_eq!(argv[..3], ["--resume", &session, "--append-system-prompt"]);
     assert_eq!(
-        argv[3..].join("\n"),
+        argv[..4],
+        [
+            "--resume",
+            &session,
+            "--name=repo.dev",
+            "--append-system-prompt"
+        ]
+    );
+    assert_eq!(
+        argv[4..].join("\n"),
         "Keep it short.\n\nSay why.",
         "the project's instructions, then the local ones (argv is saved a line per argument)"
     );
@@ -1625,7 +1718,7 @@ fn threads_resolve_in_the_current_repository_only() {
     );
     let o = s.cmd(&other).args(["resume", "dev"]).output().unwrap();
     assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
-    assert_eq!(s.argv(), ["--resume", "s-2"]);
+    assert_eq!(s.argv(), ["--resume", "s-2", "--name=other.dev"]);
     assert_eq!(s.claude_dir(), other);
 }
 

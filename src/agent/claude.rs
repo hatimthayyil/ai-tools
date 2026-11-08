@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use jiff::Timestamp;
 use serde_json::Value;
 
@@ -14,6 +14,22 @@ use crate::agent::model::{Item, Kind, Marker, SourceId};
 pub const HARNESS: &str = "claude";
 
 const INTERRUPT: &str = "[Request interrupted by user";
+
+/// The most characters Claude Code keeps of a session's name, from `--name` or `/rename`.
+const NAME_MAX: usize = 200;
+
+/// `address` as the name of a Claude Code session, the name other sessions send messages to;
+/// an error if Claude Code would cut it.
+pub fn session_name(address: &str) -> Result<&str> {
+    let n = address.chars().count();
+    if n > NAME_MAX {
+        bail!(
+            "Claude Code cuts a session's name at {NAME_MAX} characters, and {address} has {n}. \
+             Give the agent, or the project's folder, a shorter name."
+        );
+    }
+    Ok(address)
+}
 
 /// The session running this process, from `CLAUDE_CODE_SESSION_ID`.
 pub fn session_id() -> Option<String> {
@@ -490,6 +506,24 @@ mod tests {
     };
 
     const SESSION: &str = "s-1";
+
+    #[test]
+    fn a_session_name_is_its_address_up_to_the_characters_claude_code_keeps() {
+        let fits = format!("p.{}", "a".repeat(NAME_MAX - 2));
+        assert_eq!(session_name(&fits).unwrap(), fits);
+        let wide = format!("p.{}", "é".repeat(NAME_MAX - 2));
+        assert_eq!(
+            session_name(&wide).unwrap(),
+            wide,
+            "characters count, not bytes"
+        );
+        let over = format!("{fits}a");
+        let e = session_name(&over).unwrap_err().to_string();
+        assert!(
+            e.contains("at 200 characters") && e.contains("has 201"),
+            "{e}"
+        );
+    }
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

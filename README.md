@@ -104,8 +104,8 @@ ai agent new dev                      # create agent dev, with an empty thread
 ai agent rename dev reviewer          # rename it; its sessions stay attached, and each [agents.dev]
                                       # table or reports-to naming dev is printed, not changed
 ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in,
-                                      # else a new one, whose context is the thread's view;
-                                      # --harness: claude is the only one yet
+                                      # else a new one, whose context is the thread's view; either
+                                      # way named <project>.dev; --harness: claude is the only one yet
 ai resume dev [-- claude args]        # the same, shorter
 ai agent list                         # the agents here, newest first, and their sessions
 ai agent view dev                     # dev's view, from the summaries written so far
@@ -194,6 +194,8 @@ An agent's `instructions` is relative to the folder of the file that sets it, so
 An agent's `reports-to` names the agents it reports to; it may have several, so the agents form a hierarchy that need not be a tree. A file that sets `reports-to` replaces the list from the files before it, and `reports-to = []` clears it. A command that reads the hierarchy refuses one where an agent reports to itself, to a name no `[agents.<name>]` table defines, or, through others, to an agent below it; no command reads it yet. The agents below an agent, through any number of levels, are the threads it may read besides its own; never a sibling's or a superior's. Nothing enforces that yet: every session counts as the user's.
 
 `ai agent resume` starts a new session in the agent's `worktree`, else in the current directory, and adds its `instructions` to the harness's system prompt, for a new session and a resumed one (Claude Code's `--append-system-prompt`). `ai` creates no worktree: a missing one fails, printing the `git worktree add` command. The worktree must be a checkout of the project, holding its `ai.toml` with the project's id, so its sessions find the project's threads in `~/ai`. A session in the worktree reads the same private settings.
+
+An agent's address is `<project>.<agent>`: the name of the project's folder in `~/ai`, which every checkout and clone shares, a dot, then the agent's name, as in `quran.thayyil.net.dev`. An agent's name holds no dot, so an address splits at its last dot. `ai agent resume` gives the session it as its name (Claude Code's `--name`; a `--name` of yours after `--` wins), so other sessions send it messages by that name. Claude Code cuts a name at 200 characters, so a longer address is refused.
 
 With `backend = "api"`, `ai` calls the provider's API through [genai](https://github.com/jeremychone/rust-genai). `model` names the provider, one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`, `open_router`, `groq`, `together`, `fireworks`, …), then the model as that provider spells it. The key comes from the provider's environment variable (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, …), never from `ai.toml`; a command that needs the summariser fails when it is unset. Each call is kept, like a `claude -p` one, in the store's `calls/`: the request, the provider's reply as it came, and its token counts. Costs count as zero unless the provider reports them (OpenRouter does). In this repository, `secretspec set DEEPSEEK_API_KEY` stores the key once, and `secretspec run -- ai memory build` passes it.
 

@@ -138,6 +138,14 @@ enum Command {
         #[command(flatten)]
         session: Session,
     },
+    #[command(
+        hide = true,
+        about = "plumbing: print the name of the agent's Claude Code sessions, <project>.<agent>."
+    )]
+    SessionName {
+        #[arg(help = "the agent")]
+        name: String,
+    },
 }
 
 /// What `build` writes, and how.
@@ -178,7 +186,7 @@ struct Build {
 #[derive(Args, Debug)]
 #[command(
     about = "continue the agent's newest Claude Code session, else start a new one.",
-    after_help = "A session resumes where it ran. A new one runs in the agent's worktree when ai.toml's [agents.<name>] names one, after writing the summary lines its view needs; if one fails, Claude Code does not start. Either way it gets the agent's instructions."
+    after_help = "A session resumes where it ran. A new one runs in the agent's worktree when ai.toml's [agents.<name>] names one, after writing the summary lines its view needs; if one fails, Claude Code does not start. Either way it gets the agent's instructions, and the agent's address as its name: <project>.<agent>, the name of the project's folder in ~/ai, a dot, then the agent's. Other sessions send it messages by that name. A --name of your own after -- wins."
 )]
 pub struct Resume {
     #[arg(help = "the agent")]
@@ -331,6 +339,7 @@ impl Cli {
                 Command::SyncSession { .. }
                     | Command::CompactSession { .. }
                     | Command::EndSession { .. }
+                    | Command::SessionName { .. }
             )
         ) {
             convert::offer(&cwd)?;
@@ -368,7 +377,8 @@ impl Cli {
             | Command::Zoom { .. }
             | Command::Grep { .. }
             | Command::Build(_)
-            | Command::SyncSession { .. } => {
+            | Command::SyncSession { .. }
+            | Command::SessionName { .. } => {
                 return command.dispatch(cwd, out, terminal);
             }
         };
@@ -402,6 +412,7 @@ impl Command {
                 sync_session(cwd, session)
             }
             Command::CompactSession { session } => compact_session(cwd, out, session),
+            Command::SessionName { name } => session_name(cwd, out, &name),
         }
     }
 }
@@ -590,7 +601,7 @@ fn start_summariser(cwd: &Path, thread: &str) -> Result<()> {
 
 /// Commits the store as resuming agent `name`, then runs `claude args` in `dir`, in place of
 /// this process.
-fn exec_claude(store: &Store, name: &str, dir: &Path, args: &[&str]) -> Result<ExitCode> {
+fn exec_claude(store: &Store, name: &str, dir: &Path, args: &[String]) -> Result<ExitCode> {
     store.commit(&format!("ai agent resume {name}"))?;
     let e = process::Command::new("claude")
         .args(args)
@@ -681,24 +692,41 @@ fn worktree(store: &Store, cwd: &Path, name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// `claude`'s arguments: `first`, the agent's `instructions` as an added system prompt, then
-/// the launcher's `args`.
-fn claude_args<'a>(
-    first: [&'a str; 2],
-    instructions: &'a Option<String>,
-    args: &'a [String],
-) -> Vec<&'a str> {
-    let mut argv = first.to_vec();
+/// `claude`'s arguments: `first`, the session's name `title`, the agent's `instructions` as an
+/// added system prompt, then the launcher's `args`, last so that a `--name` among them wins.
+fn claude_args(
+    first: [&str; 2],
+    title: &str,
+    instructions: &Option<String>,
+    args: &[String],
+) -> Vec<String> {
+    let mut argv = first.map(String::from).to_vec();
+    // One word, so that a name beginning with '-' is never read as an option.
+    argv.push(format!("--name={title}"));
     if let Some(text) = instructions {
-        argv.extend(["--append-system-prompt", text]);
+        argv.extend(["--append-system-prompt".into(), text.clone()]);
     }
-    argv.extend(args.iter().map(String::as_str));
+    argv.extend(args.iter().cloned());
     argv
 }
 
-/// A new Claude Code session attached to agent `name`, in its worktree with its instructions,
-/// bound with its future transcript, once the lines its view needs are written.
-fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
+/// The name of agent `name`'s Claude Code sessions, its address: see [`Store::address`].
+fn title(store: &Store, name: &str) -> Result<String> {
+    Ok(claude::session_name(&store.address(name)?)?.to_string())
+}
+
+/// Prints the name of agent `name`'s Claude Code sessions.
+fn session_name(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
+    let store = Store::open(cwd)?;
+    store.existing(name)?;
+    writeln!(out, "{}", title(&store, name)?)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A new Claude Code session attached to agent `name` and named `title`, in its worktree with
+/// its instructions, bound with its future transcript, once the lines its view needs are
+/// written.
+fn launch(cwd: &Path, name: &str, title: &str, args: &[String]) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
     let t = store.existing(name)?;
     let dir = worktree(&store, cwd, name)?;
@@ -720,15 +748,17 @@ fn launch(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
         &store,
         name,
         &dir,
-        &claude_args(["--session-id", &session], &instructions, args),
+        &claude_args(["--session-id", &session], title, &instructions, args),
     )
 }
 
 /// The thread's newest Claude Code session, resumed attached in the directory it ran in when
 /// it can be, with the agent's instructions; else a new one, saying why when there was one.
+/// Either way the session is named by the agent's address.
 fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
     let t = store.existing(name)?;
+    let title = title(&store, name)?;
     let newest = t
         .snapshot()?
         .bindings()?
@@ -736,7 +766,7 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
         .filter(|b| b.harness == claude::HARNESS)
         .max_by_key(|b| (b.tip, b.attached));
     let why = match &newest {
-        None => return launch(cwd, name, args),
+        None => return launch(cwd, name, &title, args),
         Some(b) => match &b.transcript {
             Some(p) if p.is_file() => match claude::session_dir(p) {
                 Some(dir) if store.holds(&dir) => {
@@ -746,7 +776,7 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
                         &store,
                         name,
                         &dir,
-                        &claude_args(["--resume", &b.session], &instructions, args),
+                        &claude_args(["--resume", &b.session], &title, &instructions, args),
                     );
                 }
                 Some(dir) => format!(
@@ -761,7 +791,7 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
         },
     };
     eprintln!("Cannot resume {name}: {why}. Starting a new session.");
-    launch(cwd, name, args)
+    launch(cwd, name, &title, args)
 }
 
 /// Every thread: its turns, newest activity and branches; under it, its sessions.
