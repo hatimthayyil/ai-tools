@@ -105,8 +105,30 @@ function outcome(ran: Ran): string {
   return ran.stderr.trim() || `ai exited with code ${ran.exitCode}.`
 }
 
+/** Runs `/rename args` once the calling command has returned, since a command run inside it would wait on it. */
+function rename($: EngineInterface, args: string): void {
+  $.clock.after(0, () =>
+    $.command.run({ command: 'rename', args }).catch(err => $.ui.log(`ai: /rename ${args} failed: ${String(err)}`)),
+  )
+}
+
+/** Attaches the session to agent `name`, then names it as `ai agent session-name` spells the agent's address. */
 async function attach($: EngineInterface, name: string): Promise<string> {
-  return outcome(await agent($, ['attach', name, ...(await session($))], LONG_MS))
+  const attached = await agent($, ['attach', name, ...(await session($))], LONG_MS)
+  if (attached.exitCode !== 0) return outcome(attached)
+  const named = await agent($, ['session-name', name])
+  if (named.exitCode !== 0) return `${outcome(attached)} Not renamed: ${outcome(named)}`
+  const title = named.stdout.trim()
+  rename($, title)
+  return `${outcome(attached)} Renaming this session ${title}.`
+}
+
+/** Detaches the session, then has Claude Code name it from its conversation, so the agent's address leaves it. */
+async function detach($: EngineInterface): Promise<string> {
+  const detached = await agent($, ['detach', ...(await session($))])
+  if (detached.exitCode !== 0) return outcome(detached)
+  rename($, '')
+  return `${outcome(detached)} Renaming this session from its conversation.`
 }
 
 async function isWithheld($: EngineInterface): Promise<boolean> {
@@ -319,7 +341,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'ai',
       description:
-        'ai: new <name> creates an agent and attaches this session to it; attach <name> attaches it to an existing agent; detach detaches it',
+        'ai: new <name> creates an agent and attaches this session to it; attach <name> attaches it to an existing agent; both name the session <project>.<name>; detach detaches it and names it from its conversation',
       argumentHint: 'new <name> | attach <name> | detach',
     })
     await $.command.register({
@@ -385,9 +407,7 @@ export const register: Register = on => {
       return { text: `Created agent ${rest[0]}. ${await attach($, rest[0]!)}` }
     }
     if (sub === 'attach' && rest.length === 1) return { text: await attach($, rest[0]!) }
-    if (sub === 'detach' && rest.length === 0) {
-      return { text: outcome(await agent($, ['detach', ...(await session($))])) }
-    }
+    if (sub === 'detach' && rest.length === 0) return { text: await detach($) }
     return { text: USAGE }
   })
 

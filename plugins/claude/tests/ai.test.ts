@@ -93,12 +93,30 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
     compacts.push('/compact')
     return {}
   })
+  const renames: string[] = []
+  const renaming = { fails: false }
+  on('command.run', { command: 'rename' }, async (_$, e) => {
+    // The kit skips a hook that throws, so the run finds no implementation and rejects.
+    if (renaming.fails) throw new Error('refused')
+    renames.push(e.args)
+    return {}
+  })
   on('ui.log', async (_$, e) => {
     logs.push(e.text)
     return { value: undefined }
   })
-  return { clock, calls, spawns, killed, spawning, compacts, logs }
+  return { clock, calls, spawns, killed, spawning, compacts, renames, renaming, logs }
 }
+
+/** `ai agent attach`, `detach` and `session-name` answering as for agent dev of project repo. */
+const attaching = (args: readonly string[]): Answer =>
+  sub(args) === 'attach'
+    ? [0, 'Attached to dev.\n', '']
+    : sub(args) === 'detach'
+      ? [0, 'Detached from dev.\n', '']
+      : sub(args) === 'session-name'
+        ? [0, 'repo.dev\n', '']
+        : [0, VIEW, '']
 
 function start($: Engine, source: 'startup' | 'resume' | 'clear' = 'startup') {
   return $.classic.SessionStart({ source, session_id: SESSION, transcript_path: TRANSCRIPT })
@@ -393,18 +411,72 @@ test('a subagent compacts natively, leaving the view /fold built for the main co
 
 test('/ai attach and detach run ai agent with the session and show its answer', async ($, on) => {
   const world = engine(on, args =>
-    sub(args) === 'attach' ? [0, 'Attached to dev.\n', ''] : [1, '', 'This session is not attached to an agent.\n'],
+    sub(args) === 'detach' ? [1, '', 'This session is not attached to an agent.\n'] : attaching(args),
   )
   await start($)
-  expect((await ai($, 'attach dev')).text).toBe('Attached to dev.')
+  expect((await ai($, 'attach dev')).text).toBe('Attached to dev. Renaming this session repo.dev.')
   expect((await ai($, ' detach ')).text).toBe('This session is not attached to an agent.')
   expect((await ai($, 'attach')).text).toMatch(/^Usage/)
   expect((await ai($, 'fold')).text).toMatch(/^Usage/)
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'agent', 'attach', 'dev', ...ALL_ARGS],
+    ['ai', 'agent', 'session-name', 'dev'],
     ['ai', 'agent', 'detach', ...ALL_ARGS],
   ])
+  await world.clock.advance(0)
+  expect(world.renames).toEqual(['repo.dev'])
+})
+
+test('/ai attach names the session by the agent’s address once its own run has returned', async ($, on) => {
+  const world = engine(on, attaching)
+  await start($)
+  expect((await ai($, 'attach dev')).text).toBe('Attached to dev. Renaming this session repo.dev.')
+  expect(world.renames).toEqual([])
+  await world.clock.advance(0)
+  expect(world.renames).toEqual(['repo.dev'])
+  expect(world.logs).toEqual([])
+})
+
+test('/ai detach detaches, then has Claude Code name the session from its conversation', async ($, on) => {
+  const world = engine(on, attaching)
+  await start($)
+  expect((await ai($, 'detach')).text).toBe('Detached from dev. Renaming this session from its conversation.')
+  await world.clock.advance(0)
+  expect(world.renames).toEqual([''])
+})
+
+test('/ai attach renames nothing when attaching or naming fails, and says why', async ($, on) => {
+  const world = engine(on, args =>
+    args[2] === 'taken'
+      ? [1, '', 'No agent taken in this project. Create it: ai agent new taken\n']
+      : sub(args) === 'session-name'
+        ? [1, '', 'Claude Code cuts a session’s name at 200 characters, and repo.dev has 201.\n']
+        : attaching(args),
+  )
+  await start($)
+  expect((await ai($, 'attach taken')).text).toBe('No agent taken in this project. Create it: ai agent new taken')
+  expect((await ai($, 'attach dev')).text).toBe(
+    'Attached to dev. Not renamed: Claude Code cuts a session’s name at 200 characters, and repo.dev has 201.',
+  )
+  await world.clock.advance(0)
+  expect(world.renames).toEqual([])
+  expect(world.calls).toEqual([
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'attach', 'taken', ...ALL_ARGS],
+    ['ai', 'agent', 'attach', 'dev', ...ALL_ARGS],
+    ['ai', 'agent', 'session-name', 'dev'],
+  ])
+})
+
+test('a /rename that fails after /ai attach is logged', async ($, on) => {
+  const world = engine(on, attaching)
+  world.renaming.fails = true
+  await start($)
+  await ai($, 'attach dev')
+  await world.clock.advance(0)
+  expect(world.renames).toEqual([])
+  expect(world.logs).toEqual([expect.stringMatching(/^ai: \/rename repo\.dev failed: /)])
 })
 
 test('/ai alone prints its usage, /fold with words after it says it takes none, and neither folds', async ($, on) => {
@@ -526,18 +598,21 @@ test('/ai new creates the agent, then attaches the session to it; a failed new a
       ? [1, '', 'Agent taken already exists in this project.\n']
       : sub(args) === 'new'
         ? [0, 'Created agent dev. Start it: ai agent resume dev\n', '']
-        : [0, 'Attached to dev.\n', ''],
+        : attaching(args),
   )
   await start($)
-  expect((await ai($, 'new dev')).text).toBe('Created agent dev. Attached to dev.')
+  expect((await ai($, 'new dev')).text).toBe('Created agent dev. Attached to dev. Renaming this session repo.dev.')
   expect((await ai($, 'new taken')).text).toBe('Agent taken already exists in this project.')
   expect((await ai($, 'new')).text).toMatch(/^Usage/)
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'agent', 'new', 'dev'],
     ['ai', 'agent', 'attach', 'dev', ...ALL_ARGS],
+    ['ai', 'agent', 'session-name', 'dev'],
     ['ai', 'agent', 'new', 'taken'],
   ])
+  await world.clock.advance(0)
+  expect(world.renames).toEqual(['repo.dev'])
 })
 
 const RECALL = 'Recall.\n\n{direction}\n'
