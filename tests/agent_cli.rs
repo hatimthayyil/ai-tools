@@ -2404,3 +2404,179 @@ fn a_commit_after_a_small_append_stores_only_the_open_segments() {
         assert_eq!(p.file_name().unwrap(), newest, "{path} is a closed segment");
     }
 }
+
+#[test]
+fn rename_moves_an_agent_and_keeps_its_sessions_attached() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    ok(
+        s.ai_in("s-1", &["rename", "dev", "reviewer"]),
+        "Renamed agent dev to reviewer.\n",
+    );
+    ok(
+        s.ai_in("s-1", &["list"]),
+        "reviewer  2 turns  2026-10-14 10:00\n\
+         \x20 claude  s-1  attached  2026-10-14 10:00  this session\n",
+    );
+    s.transcript("s-1", &talk(3, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    assert_eq!(turn_ends(&s, "reviewer").len(), 3);
+
+    let ai = s.homes().repo;
+    assert_eq!(
+        git(&ai, &["log", "-1", "--format=%s"]),
+        "ai agent rename dev reviewer\n"
+    );
+    let tree = git(&ai, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(
+        tree.contains("projects/repo/agents/threads/reviewer/items.jsonl/"),
+        "{tree}"
+    );
+    assert!(!tree.contains("/threads/dev/"), "{tree}");
+    fails(
+        s.ai(&["view", "dev"]),
+        "No agent dev in this project. Create it: ai agent new dev\n",
+    );
+}
+
+#[test]
+fn rename_refuses_a_missing_agent_a_taken_name_and_a_bad_one() {
+    let s = Sandbox::new();
+    for name in ["dev", "two"] {
+        ok(
+            s.ai(&["new", name]),
+            &format!("Created agent {name}. Start it: ai agent resume {name}\n"),
+        );
+    }
+    let ai = s.homes().repo;
+    let before = git(&ai, &["log", "--format=%H"]);
+    fails(
+        s.ai(&["rename", "nope", "x"]),
+        "No agent nope in this project. Create it: ai agent new nope\n",
+    );
+    fails(
+        s.ai(&["rename", "dev", "two"]),
+        "Agent two already exists in this project.\n",
+    );
+    fails(
+        s.ai(&["rename", "dev", "dev"]),
+        "Agent dev is already called dev.\n",
+    );
+    fails(
+        s.ai(&["rename", "dev", "a/b"]),
+        "'a/b' is not a thread name: letters, digits, '-' and '_'.\n",
+    );
+    let o = s.outside(&["rename", "dev", "x"]);
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).starts_with("Not in a project"), "{}", stderr(&o));
+    assert_eq!(git(&ai, &["log", "--format=%H"]), before);
+    let list = stdout(&s.ai(&["list"]));
+    assert!(
+        list.contains("dev  0 turns") && list.contains("two  0 turns"),
+        "{list}"
+    );
+}
+
+#[test]
+fn rename_names_each_setting_that_still_names_the_agent_and_changes_none() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let user = s.root.join("home/.ai/ai.toml");
+    let project = s.repo().join("ai.toml");
+    let private = s.homes().repo.join("projects/repo/ai.toml");
+    let append = |p: &Path, text: &str| {
+        let mut f = fs::OpenOptions::new().append(true).open(p).unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+    };
+    append(&user, "\n[agents.dev]\ninstructions = \"dev.md\"\n");
+    append(
+        &project,
+        "\n[agents.dev]\nworktree = \"../dev\"\n\n[agents.lead]\nreports-to = [\"dev\"]\n",
+    );
+    fs::write(&private, "[agents.qa]\nreports-to = [\"main\", \"dev\"]\n").unwrap();
+    let texts: Vec<String> = [&user, &project, &private]
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect();
+    let line_of =
+        |text: &str, needle: &str| text.lines().position(|l| l.contains(needle)).unwrap() + 1;
+
+    let o = s.ai(&["rename", "dev", "reviewer"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o), "Renamed agent dev to reviewer.\n");
+    let project_at = project.display();
+    assert_eq!(
+        stderr(&o),
+        format!(
+            "~/.ai/ai.toml:{}: [agents.dev] no longer applies here: reviewer reads [agents.reviewer].\n\
+             {project_at}:{}: [agents.dev] no longer applies here: reviewer reads [agents.reviewer].\n\
+             {project_at}:{}: lead's reports-to names dev, now reviewer.\n\
+             ~/ai/projects/repo/ai.toml:2: qa's reports-to names dev, now reviewer.\n",
+            line_of(&texts[0], "[agents.dev]"),
+            line_of(&texts[1], "[agents.dev]"),
+            line_of(&texts[1], "reports-to"),
+        )
+    );
+    for (p, text) in [&user, &project, &private].iter().zip(&texts) {
+        assert_eq!(&fs::read_to_string(p).unwrap(), text, "{}", p.display());
+    }
+}
+
+#[test]
+fn rename_goes_ahead_when_a_settings_file_cannot_be_read() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    fs::write(s.root.join("home/.ai/ai.toml"), "[memroy]\n").unwrap();
+    let o = s.ai(&["rename", "dev", "reviewer"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o), "Renamed agent dev to reviewer.\n");
+    let err = stderr(&o);
+    assert!(
+        err.starts_with("Cannot check the settings for dev: ~/.ai/ai.toml: ")
+            && err.contains("memroy"),
+        "{err}"
+    );
+    assert!(s.store().thread("reviewer").unwrap().exists().unwrap());
+}
+
+#[test]
+fn rename_waits_for_a_running_summariser() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let dev = s.store().thread("dev").unwrap();
+    let summarising = dev.lock().unwrap();
+    let mut child = s
+        .cmd(&s.repo())
+        .args(["rename", "dev", "reviewer"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    io::BufRead::read_line(
+        &mut io::BufReader::new(child.stderr.take().unwrap()),
+        &mut line,
+    )
+    .unwrap();
+    assert_eq!(line, "Waiting for agent dev's summariser to finish.\n");
+    assert!(dev.exists().unwrap());
+    drop(summarising);
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(code(&o), 0);
+    assert_eq!(stdout(&o), "Renamed agent dev to reviewer.\n");
+    assert!(!dev.exists().unwrap());
+}

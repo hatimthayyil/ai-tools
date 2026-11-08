@@ -75,6 +75,35 @@ pub fn lock(p: &Path) -> Result<Lock> {
     Ok(Lock(f))
 }
 
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+compile_error!("rename_new renames without replacing only on Linux and macOS.");
+
+/// Renames `from` to `to` unless `to` exists, in one step, so a path made at `to` meanwhile is
+/// never replaced: an error of kind [`io::ErrorKind::AlreadyExists`] if it exists.
+pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
+    let (from, to) = (c(from)?, c(to)?);
+    // SAFETY: both paths are NUL-terminated strings that outlive the call.
+    #[cfg(target_os = "linux")]
+    let r = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    // SAFETY: as above.
+    #[cfg(target_vendor = "apple")]
+    let r = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    match r {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
 /// The format the `store` store in `dir` names; `None` without a format file.
 pub fn format(dir: &Path, store: &str) -> Result<Option<u32>> {
     let p = dir.join(FORMAT);
@@ -113,5 +142,34 @@ pub fn ensure_format(dir: &Path, format: u32) -> Result<()> {
         Ok(mut f) => f.write_all(format!("{format}\n").as_bytes()).at(&p),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e).at(&p),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_new_moves_a_directory_and_never_replaces() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (a, b, c) = (
+            tmp.path().join("a"),
+            tmp.path().join("b"),
+            tmp.path().join("c"),
+        );
+        fs::create_dir(&a).unwrap();
+        fs::write(a.join("f"), "x").unwrap();
+        rename_new(&a, &b).unwrap();
+        assert!(!a.exists());
+        assert_eq!(fs::read_to_string(b.join("f")).unwrap(), "x");
+
+        fs::create_dir(&c).unwrap();
+        let e = rename_new(&b, &c).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+        assert!(b.join("f").is_file());
+        assert_eq!(fs::read_dir(&c).unwrap().count(), 0);
+
+        let e = rename_new(&a, &c).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
     }
 }

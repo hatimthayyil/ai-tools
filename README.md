@@ -93,7 +93,7 @@ A project's repository holds only what the project shares: `ai/`, the agents' vi
 
 A thread keeps its items, lines, session tracks, attachment changes and subagents, never a copy of a session's files: it records each file it read (its harness, its path from the harness's home, its length and git blob id) in `sources.jsonl`. The harness's own files, in `~/.ai/harness`, are the only copy, so a sync that finds a recorded file gone, or a transcript that no longer begins with the bytes the thread read, is an error naming the file and saying to restore it from the backup of `~/.ai/harness`.
 
-Events commit the project's folder of `~/ai` as one commit naming the command: creating an agent, attaching, detaching, resuming, `/ai` and other builds, a session's end (`ai agent attach dev`, `ai agent end-session`). A commit touches no other path of `~/ai`, and of its index only that folder's entries, so what you stage there yourself stays staged. A turn's sync, a view and the background summariser write without committing; the next event commits what they wrote. A command that fails still commits what it wrote.
+Events commit the project's folder of `~/ai` as one commit naming the command: creating or renaming an agent, attaching, detaching, resuming, `/ai` and other builds, a session's end (`ai agent attach dev`, `ai agent end-session`). A commit touches no other path of `~/ai`, and of its index only that folder's entries, so what you stage there yourself stays staged. A turn's sync, a view and the background summariser write without committing; the next event commits what they wrote. A command that fails still commits what it wrote.
 
 Agents an older ai kept in `.ai/local/` of the project are refused until they move. On a terminal, an `ai agent` command, `ai resume` or `ai init` offers the move: the threads and private settings go to the project's folder in `~/ai`, each copied session file becomes a record of the harness's own file, and a copy the harness no longer holds whole is restored into the harness's files first; the old store is archived whole, its git history included, in `~/.ai/archive/<project id>/`, then removed from the project.
 
@@ -101,6 +101,8 @@ Agents an older ai kept in `.ai/local/` of the project are refused until they mo
 
 ```sh
 ai agent new dev                      # create agent dev, with an empty thread
+ai agent rename dev reviewer          # rename it; its sessions stay attached, and each [agents.dev]
+                                      # table or reports-to naming dev is printed, not changed
 ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in,
                                       # else a new one, whose context is the thread's view;
                                       # --harness: claude is the only one yet

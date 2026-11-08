@@ -352,6 +352,60 @@ mod tests {
     }
 
     #[test]
+    fn a_sync_under_way_finishes_into_its_thread_before_the_thread_is_renamed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init(dir.path(), &["dev"]);
+        let store = open(dir.path());
+        let all = plain();
+        let prefix: String = all.split_inclusive('\n').take(3).collect();
+        let transcript = dir.path().join("s-1.jsonl");
+        fs::write(&transcript, &prefix).unwrap();
+        store
+            .attach("dev", "claude", "s-1", Some(&transcript))
+            .unwrap();
+        fs::write(&transcript, &all).unwrap();
+        let (paused, observed) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel::<()>();
+        let path = dir.path().to_path_buf();
+        let syncing = thread::spawn(move || {
+            open(&path).sync_with("claude", "s-1", None, |harness, session, path| {
+                let transcript = read(harness, session, path)?;
+                paused.send(()).unwrap();
+                resumed.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(transcript)
+            })
+        });
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let path = dir.path().to_path_buf();
+        let renaming = thread::spawn(move || {
+            open(&path)
+                .rename("dev", "reviewer", |_| {})
+                .map(|t| t.name().to_string())
+        });
+        thread::sleep(Duration::from_millis(200));
+        assert!(store.thread("dev").unwrap().exists().unwrap());
+        resume.send(()).unwrap();
+        let synced = syncing.join().unwrap().unwrap();
+        assert!(matches!(synced, Synced::Attached { thread, .. } if thread == "dev"));
+        assert_eq!(renaming.join().unwrap().unwrap(), "reviewer");
+
+        let fresh = tempfile::TempDir::new().unwrap();
+        init(fresh.path(), &["dev"]);
+        let whole = open(fresh.path());
+        whole
+            .attach("dev", "claude", "s-1", Some(&transcript))
+            .unwrap();
+        let expected = whole.thread("dev").unwrap().snapshot().unwrap();
+        let after = store.thread("reviewer").unwrap().snapshot().unwrap();
+        assert_eq!(after.items().unwrap(), expected.items().unwrap());
+        let again = store.sync("claude", "s-1", None).unwrap();
+        assert!(
+            matches!(&again, Synced::Attached { thread, added } if thread == "reviewer" && added.is_empty()),
+            "{again:?}"
+        );
+    }
+
+    #[test]
     fn concurrent_attachments_have_one_owner_and_detach_clears_it() {
         let dir = tempfile::TempDir::new().unwrap();
         init(dir.path(), &["one", "two"]);

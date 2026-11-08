@@ -10,6 +10,7 @@ use serde::{
     Deserialize, Deserializer,
     de::{DeserializeOwned, DeserializeSeed, Error as _, IgnoredAny, MapAccess, Visitor},
 };
+use toml::Spanned;
 
 use crate::{
     agent,
@@ -417,6 +418,37 @@ impl Settings {
         Ok(h)
     }
 
+    /// Each place a file names agent `name`, lowest file first, then by line: its
+    /// `[agents.<name>]` table, and every `reports-to` that names it. Only the agents' tables
+    /// are read, and of them only that much, so a bad key elsewhere stops nothing.
+    pub fn mentions(&self, name: &str) -> Result<Vec<Mention>> {
+        let (sources, _) = self.sources()?;
+        let mut out = Vec::new();
+        for s in &sources {
+            let agents: Option<BTreeMap<Spanned<String>, SpannedKeys>> = s.part("agents")?;
+            let mut found = Vec::new();
+            for (agent, keys) in agents.unwrap_or_default() {
+                if agent.get_ref() == name {
+                    found.push((agent.span().start, None));
+                }
+                let names_it = |v: &toml::Value| {
+                    v.as_array()
+                        .is_some_and(|a| a.iter().any(|n| n.as_str() == Some(name)))
+                };
+                if let Some(r) = keys.get("reports-to").filter(|r| names_it(r.get_ref())) {
+                    found.push((r.span().start, Some(agent.into_inner())));
+                }
+            }
+            found.sort();
+            out.extend(found.into_iter().map(|(at, by)| Mention {
+                path: s.path.clone(),
+                line: s.text[..at].matches('\n').count() + 1,
+                by,
+            }));
+        }
+        Ok(out)
+    }
+
     /// Table `key` of every file, each over those beneath it by `over`.
     fn part<T: DeserializeOwned + Default>(&self, key: &str, over: fn(T, T) -> T) -> Result<T> {
         let (sources, _) = self.sources()?;
@@ -462,6 +494,19 @@ impl Settings {
         .collect::<Result<Vec<_>>>()?;
         Ok((sources, home))
     }
+}
+
+/// An agent's table as [`Settings::mentions`] reads it: each key, with where its value is.
+type SpannedKeys = BTreeMap<String, Spanned<toml::Value>>;
+
+/// A place a settings file names an agent, as [`Settings::mentions`] finds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mention {
+    pub path: PathBuf,
+    /// Its line, from 1.
+    pub line: usize,
+    /// The agent whose `reports-to` names it; `None` for the agent's own table.
+    pub by: Option<String>,
 }
 
 /// The agents' superiors, as `reports-to` sets them: a graph with no cycle, each superior an

@@ -6,7 +6,7 @@ use std::{
 
 use ai_tools::{
     agent::Counts,
-    config::{Agent, Homes, Settings},
+    config::{Agent, Homes, Mention, Settings},
     memory::Knob,
     project::Project,
     summariser::Kind,
@@ -292,13 +292,14 @@ fn the_nearest_project_file_overrides_the_users_key_by_key() {
 }
 
 /// The parts of the settings, by name.
-const PARTS: [&str; 6] = [
+const PARTS: [&str; 7] = [
     "summariser",
     "memory",
     "chat",
     "agent",
     "agents.a",
     "hierarchy",
+    "mentions.a",
 ];
 
 /// Part `name` of `s`, read: nothing, or its error.
@@ -310,6 +311,7 @@ fn read(s: &Settings, name: &str) -> anyhow::Result<()> {
         "agent" => s.agent_table().map(drop),
         "agents.a" => s.agent("a").map(drop),
         "hierarchy" => s.hierarchy().map(drop),
+        "mentions.a" => s.mentions("a").map(drop),
         _ => unreachable!(),
     }
 }
@@ -909,4 +911,62 @@ fn an_agent_with_several_superiors_is_below_each_of_them() {
         "lead's, not engineer's"
     );
     assert!(!h.below("quran").contains("engineer"), "a sibling of quran");
+}
+
+#[test]
+fn mentions_name_each_table_and_reports_to_of_an_agent_by_file_and_line() {
+    let t = Tree::new();
+    fs::write(
+        t.user(),
+        "[chat]\nbackground = false\n\n[agents.dev]\ninstructions = \"dev.md\"\n",
+    )
+    .unwrap();
+    let project = t.inner().join("ai.toml");
+    fs::write(
+        &project,
+        "[summariser]\nmodle = \"bad, but not read\"\n\n\
+         [agents.lead]\nharness = \"bad too\"\nreports-to = [\"main\", \"dev\"]\n\n\
+         [agents.qa]\nreports-to = [\n  \"dev\",\n]\n\n\
+         [agents.ops]\nreports-to = \"dev\"\n\n\
+         [agents]\nreviewer = { reports-to = [\"dev\"] }\ndevops = { reports-to = [\"lead\"] }\n",
+    )
+    .unwrap();
+    let local = t.private(&t.inner());
+    fs::write(&local, "agents.dev.worktree = \"../dev\"\n").unwrap();
+    let at = |path: &Path, line, by: Option<&str>| Mention {
+        path: path.to_path_buf(),
+        line,
+        by: by.map(String::from),
+    };
+    let line_of = |p: &Path, needle: &str| {
+        let text = fs::read_to_string(p).unwrap();
+        text.lines().position(|l| l.contains(needle)).unwrap() + 1
+    };
+    let lines = [
+        line_of(&project, "\"main\", \"dev\""),
+        line_of(&project, "[agents.qa]") + 1,
+        line_of(&project, "reviewer = "),
+    ];
+    let project = fs::canonicalize(&project).unwrap();
+    let got: Vec<Mention> = t
+        .load()
+        .mentions("dev")
+        .unwrap()
+        .into_iter()
+        .map(|m| Mention {
+            path: fs::canonicalize(&m.path).unwrap(),
+            ..m
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            at(&fs::canonicalize(t.user()).unwrap(), 4, None),
+            at(&project, lines[0], Some("lead")),
+            at(&project, lines[1], Some("qa")),
+            at(&project, lines[2], Some("reviewer")),
+            at(&fs::canonicalize(&local).unwrap(), 1, None),
+        ]
+    );
+    assert!(t.load().mentions("nobody").unwrap().is_empty());
 }

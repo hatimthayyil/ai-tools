@@ -55,6 +55,16 @@ enum Command {
         #[arg(help = "the agent: letters, digits, '-' and '_'")]
         name: String,
     },
+    #[command(
+        about = "rename an agent; its sessions stay attached.",
+        after_help = "ai.toml files stay as they are: it prints the file and line of each [agents.<OLD>] table, and of each reports-to that names <OLD>."
+    )]
+    Rename {
+        #[arg(help = "the agent")]
+        old: String,
+        #[arg(help = "its new name: letters, digits, '-' and '_'")]
+        new: String,
+    },
     Resume(Resume),
     #[command(about = "list this project's agents and their sessions.")]
     List {
@@ -333,9 +343,9 @@ impl Cli {
     }
 
     /// Runs in `cwd`, printing to `out`; views, zooms and searches print whole on a `terminal`.
-    /// Events commit the store: creating an agent, attaching, detaching, resuming, a build but
-    /// the background summariser's, a compaction and a session's end. A turn's sync and a view
-    /// leave what they wrote for the next event's commit.
+    /// Events commit the store: creating or renaming an agent, attaching, detaching, resuming, a
+    /// build but the background summariser's, a compaction and a session's end. A turn's sync
+    /// and a view leave what they wrote for the next event's commit.
     pub fn run(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             agent: None,
@@ -343,6 +353,7 @@ impl Cli {
         });
         let msg = match &command {
             Command::New { name } => format!("ai agent new {name}"),
+            Command::Rename { old, new } => format!("ai agent rename {old} {new}"),
             Command::Attach { name, .. } => format!("ai agent attach {name}"),
             Command::Detach { .. } => "ai agent detach".into(),
             Command::Build(b) if !b.background => match &b.target.agent {
@@ -370,6 +381,7 @@ impl Command {
     fn dispatch(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         match self {
             Command::New { name } => new(cwd, out, &name),
+            Command::Rename { old, new } => rename(cwd, out, &old, &new),
             Command::Resume(r) => r.run(cwd),
             Command::List { session } => list(cwd, out, session),
             Command::View { agent, session } => view(cwd, out, agent, session, terminal),
@@ -594,6 +606,31 @@ fn new(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
         out,
         "Created agent {name}. Start it: ai agent resume {name}"
     )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Renames agent `old` to `new`, then names on stderr each place a settings file still names
+/// `old`, changing none; a file it cannot read stops only that check.
+fn rename(cwd: &Path, out: &mut dyn Write, old: &str, new: &str) -> Result<ExitCode> {
+    let store = Store::open(cwd)?;
+    store.rename(old, new, |t| {
+        eprintln!("Waiting for agent {t}'s summariser to finish.")
+    })?;
+    writeln!(out, "Renamed agent {old} to {new}.")?;
+    match store.settings().mentions(old) {
+        Ok(found) => {
+            for m in found {
+                let at = format!("{}:{}", file::pretty(&m.path), m.line);
+                match m.by {
+                    None => eprintln!(
+                        "{at}: [agents.{old}] no longer applies here: {new} reads [agents.{new}]."
+                    ),
+                    Some(by) => eprintln!("{at}: {by}'s reports-to names {old}, now {new}."),
+                }
+            }
+        }
+        Err(e) => eprintln!("Cannot check the settings for {old}: {e}"),
+    }
     Ok(ExitCode::SUCCESS)
 }
 

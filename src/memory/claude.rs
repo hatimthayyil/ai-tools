@@ -183,9 +183,14 @@ impl Record {
         )
     }
 
-    /// Creates the record of call `session` in `dir`, its first line `call`.
+    /// Creates the record of call `session` in `dir`, its first line `call`. `dir` is made if
+    /// absent, but not the directory holding it: that is a store's, and a call that outlives
+    /// its store's move must not remake it.
     pub fn start(dir: &Path, session: &str, call: &Value) -> Result<Record> {
-        fs::create_dir_all(dir).at(dir)?;
+        match fs::create_dir(dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e).at(dir),
+            _ => {}
+        }
         let path = dir.join(format!("{session}.jsonl"));
         let file = OpenOptions::new()
             .append(true)
@@ -597,6 +602,21 @@ mod tests {
         assert!(parts[2].starts_with('4'));
         assert!("89ab".contains(&parts[3][..1]));
         assert_ne!(uuid().unwrap(), u);
+    }
+
+    #[test]
+    fn a_record_makes_its_folder_but_never_the_store_holding_it() {
+        let tmp = TempDir::new().unwrap();
+        let calls = tmp.path().join(CALLS);
+        let call = json!({"type": "ai.call"});
+        Record::start(&calls, "a", &call).unwrap();
+        Record::start(&calls, "b", &call).unwrap();
+        assert!(calls.join("a.jsonl").is_file() && calls.join("b.jsonl").is_file());
+
+        let moved = tmp.path().join("threads/dev").join(CALLS);
+        let e = Record::start(&moved, "c", &call).err().unwrap();
+        assert!(e.to_string().contains("No such file or directory"), "{e}");
+        assert!(!tmp.path().join("threads").exists());
     }
 
     fn script(path: &Path, text: &str) {

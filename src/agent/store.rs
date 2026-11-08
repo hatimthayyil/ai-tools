@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fs, io,
+    fs,
+    io::{self, Write},
     ops::Range,
     path::{Path, PathBuf},
     time::Instant,
@@ -232,12 +233,18 @@ impl Store {
     }
 
     /// The thread `session` is attached to: the one whose last change of the session's
-    /// attachment attached it. An error if several did, which no command of ai records.
+    /// attachment attached it. An error if several did, which no command of ai records. The
+    /// caller holds the session's lock, which a rename of its thread holds too, so a thread
+    /// renamed away while this reads it holds no attachment of the session and is passed over.
     pub(super) fn owner(&self, harness: &str, session: &str) -> Result<Option<String>> {
         let mut owners = Vec::new();
         for t in self.threads()? {
-            let last = t
-                .snapshot()?
+            let snap = match t.snapshot() {
+                Ok(s) => s,
+                Err(_) if !t.exists()? => continue,
+                Err(e) => return Err(e),
+            };
+            let last = snap
                 .events()?
                 .into_iter()
                 .rfind(|e| e.harness == harness && e.session == session);
@@ -286,6 +293,66 @@ impl Store {
                 bail!("Agent {name} already exists in this project.")
             }
             Err(e) => Err(e).at(&t.dir),
+        }
+    }
+
+    /// Renames agent `old` to `new`, a name no agent has: its thread moves to `threads/<new>`,
+    /// this machine's compactor log after it, and its sessions stay attached, since a thread
+    /// holds its sessions' attachments. `waiting` hears the name of each compactor it waits for.
+    ///
+    /// It takes both names' compactor locks, then the locks of the sessions attached to `old`,
+    /// then both names' writer locks, each pair in name order: no summariser, sync or attach of
+    /// `old` is mid-write while it moves, and one that found `old` before fails at its next
+    /// lock. The move is one rename that never replaces, under `~/ai`'s commit lock, so a crash
+    /// leaves the thread whole under one name. `old`'s lock files stay where they are: a process
+    /// may still wait on one, and a new file in its place would let a second process hold it.
+    pub fn rename(&self, old: &str, new: &str, waiting: impl Fn(&str)) -> Result<Thread> {
+        let from = self.existing(old)?;
+        let to = self.thread(new)?;
+        if old == new {
+            bail!("Agent {old} is already called {new}.");
+        }
+        if to.exists()? {
+            bail!("Agent {new} already exists in this project.");
+        }
+        let mut pair = [&from, &to];
+        pair.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut compactors = Vec::new();
+        for t in pair {
+            let p = t.local_file(COMPACT_LOCK)?;
+            compactors.push(match file::try_lock(&p)? {
+                Some(l) => l,
+                None => {
+                    waiting(&t.name);
+                    file::lock(&p)?
+                }
+            });
+        }
+        loop {
+            let attached = from.attached()?;
+            let _sessions = attached
+                .iter()
+                .map(|(h, s)| self.session_lock(h, s))
+                .collect::<Result<Vec<_>>>()?;
+            let _writers = pair
+                .iter()
+                .map(|t| file::lock(&t.local_file(WRITE_LOCK)?))
+                .collect::<Result<Vec<_>>>()?;
+            from.here()?;
+            if from.attached()?.iter().any(|s| !attached.contains(s)) {
+                continue;
+            }
+            {
+                let _commits = repo::lock(&self.homes.repo)?;
+                match file::rename_new(&from.dir, &to.dir) {
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                        bail!("Agent {new} already exists in this project.")
+                    }
+                    r => r.at(&from.dir)?,
+                }
+            }
+            from.move_log(&to)?;
+            return Ok(to);
         }
     }
 
@@ -385,14 +452,15 @@ impl Thread {
 
     /// The thread as it is now; empty if it does not exist. A record names only items appended
     /// before it, so the records are read first and the items last: the state is whole without
-    /// the writer's lock.
+    /// the writer's lock. Files read from a thread renamed away meanwhile may be of two states,
+    /// so a snapshot that read anything from a directory gone by its end is an error.
     pub fn snapshot(&self) -> Result<Snapshot> {
         let events = segments::read(&self.dir.join(ATTACHMENTS))?;
         let tracks = segments::read(&self.dir.join(SESSIONS))?;
         let sources = segments::read(&self.dir.join(SOURCES))?;
         let lines = segments::read(&self.dir.join(LINES))?;
         let agents = segments::read(&self.dir.join(AGENTS))?;
-        Ok(Snapshot {
+        let s = Snapshot {
             name: self.name.clone(),
             dir: self.dir.clone(),
             items: segments::read(&self.dir.join(ITEMS))?,
@@ -401,12 +469,36 @@ impl Thread {
             sources,
             agents,
             events,
-        })
+        };
+        let read = [
+            &s.items, &s.lines, &s.tracks, &s.sources, &s.agents, &s.events,
+        ];
+        if read.iter().any(|b| !b.is_empty()) {
+            self.here()?;
+        }
+        Ok(s)
     }
 
-    /// The writers' lock on this thread's files.
+    /// An error once the thread's directory is gone: renamed or removed since this process
+    /// found it.
+    fn here(&self) -> Result<()> {
+        if !self.dir.is_dir() {
+            bail!("Agent {} was renamed or removed while this ran.", self.name);
+        }
+        Ok(())
+    }
+
+    /// `lock`, one of the thread's locks, taken once whoever held it let go; an error if the
+    /// thread is gone by then. A rename holds the thread's locks, so a writer that found the
+    /// thread before it moved fails here rather than remaking it at its old name.
+    fn held(&self, lock: file::Lock) -> Result<file::Lock> {
+        self.here()?;
+        Ok(lock)
+    }
+
+    /// The writers' lock on this thread's files; an error if the thread is gone.
     pub(super) fn writer(&self) -> Result<file::Lock> {
-        file::lock(&self.local_file(WRITE_LOCK)?)
+        self.held(file::lock(&self.local_file(WRITE_LOCK)?)?)
     }
 
     /// The file `name` among this machine's files for the thread, their directory made.
@@ -417,6 +509,39 @@ impl Thread {
 
     fn append<T: Serialize>(&self, file: &str, rows: &[T]) -> Result<()> {
         segments::append(&self.dir.join(file), rows)
+    }
+
+    /// The sessions attached here, by harness and session id, in order: those whose last
+    /// change of attachment to this thread attached them, as [`Store::owner`] finds them.
+    fn attached(&self) -> Result<Vec<(String, String)>> {
+        let mut last = BTreeMap::new();
+        for e in self.snapshot()?.events()? {
+            last.insert((e.harness, e.session), e.state);
+        }
+        Ok(last
+            .into_iter()
+            .filter(|(_, s)| *s == State::Attached)
+            .map(|(k, _)| k)
+            .collect())
+    }
+
+    /// Moves this machine's compactor log to `to`'s, after the lines of any log `to` has; the
+    /// caller holds both threads' compactor locks.
+    fn move_log(&self, to: &Thread) -> Result<()> {
+        let (from, dest) = (self.log_path(), to.log_path());
+        match file::rename_new(&from, &dest) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let log = fs::read(&from).at(&from)?;
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(&dest)
+                    .and_then(|mut f| f.write_all(&log))
+                    .at(&dest)?;
+                fs::remove_file(&from).at(&from)
+            }
+            r => r.at(&from),
+        }
     }
 
     /// Records a session's branch; the caller holds the writer's lock.
@@ -437,21 +562,26 @@ impl Thread {
         self.append(ATTACHMENTS, &[event])
     }
 
-    /// The compactor's lock on this thread; `None` while another process holds it.
+    /// The compactor's lock on this thread; `None` while another process holds it. An error if
+    /// the thread is gone.
     pub fn try_lock(&self) -> Result<Option<file::Lock>> {
-        file::try_lock(&self.local_file(COMPACT_LOCK)?)
+        file::try_lock(&self.local_file(COMPACT_LOCK)?)?
+            .map(|l| self.held(l))
+            .transpose()
     }
 
     /// The compactor's lock on this thread, waiting for it however long another process holds
-    /// it.
+    /// it. An error if the thread is gone.
     pub fn lock(&self) -> Result<file::Lock> {
-        file::lock(&self.local_file(COMPACT_LOCK)?)
+        self.held(file::lock(&self.local_file(COMPACT_LOCK)?)?)
     }
 
     /// The compactor's lock on this thread, waiting for it until `deadline`; `None` if another
-    /// process still holds it then.
+    /// process still holds it then. An error if the thread is gone.
     pub fn lock_before(&self, deadline: Instant) -> Result<Option<file::Lock>> {
-        file::lock_before(&self.local_file(COMPACT_LOCK)?, deadline)
+        file::lock_before(&self.local_file(COMPACT_LOCK)?, deadline)?
+            .map(|l| self.held(l))
+            .transpose()
     }
 
     /// The compactor's log, beside its lock, on this machine.
@@ -1032,6 +1162,8 @@ impl Append {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{sync::mpsc, thread, time::Duration};
+
     use crate::agent::model::turns;
 
     #[test]
@@ -1082,5 +1214,216 @@ mod tests {
                 "tip {tip}"
             );
         }
+    }
+
+    /// The agents of a project at `dir`, with `agents`, its homes in `dir`.
+    fn store(dir: &Path, agents: &[&str]) -> Store {
+        let homes = Homes::at(&dir.join("home"));
+        Project::init_in(dir, &homes).unwrap();
+        let s = Store::find_in(&homes, dir).unwrap().unwrap();
+        for a in agents {
+            s.create(a).unwrap();
+        }
+        s
+    }
+
+    /// Attaches session `session` to `name` with the plain fixture as its transcript.
+    fn attach(s: &Store, dir: &Path, name: &str, session: &str) -> PathBuf {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/plain.jsonl");
+        let p = dir.join(format!("{session}.jsonl"));
+        fs::copy(fixture, &p).unwrap();
+        s.attach(name, "claude", session, Some(&p)).unwrap();
+        p
+    }
+
+    fn names(s: &Store) -> Vec<String> {
+        s.threads()
+            .unwrap()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    }
+
+    fn err<T>(r: Result<T>) -> String {
+        r.err().expect("an error").to_string()
+    }
+
+    fn quiet(t: &str) {
+        panic!("waited for {t}'s compactor");
+    }
+
+    /// An event attaching `session` to `t`, written as attaching does, under its lock.
+    fn attach_event(t: &Thread, session: &str) {
+        let e = Event {
+            harness: "claude".into(),
+            session: session.into(),
+            at: Timestamp::now(),
+            state: State::Attached,
+        };
+        t.append(ATTACHMENTS, &[e]).unwrap();
+    }
+
+    #[test]
+    fn rename_moves_the_thread_with_its_sessions_and_log() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev", "other"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let dev = s.thread("dev").unwrap();
+        fs::write(dev.log_path(), "dev's log\n").unwrap();
+        let items = dev.snapshot().unwrap().items().unwrap();
+
+        let t = s.rename("dev", "reviewer", quiet).unwrap();
+        assert_eq!(t.name(), "reviewer");
+        assert_eq!(names(&s), ["other", "reviewer"]);
+        assert!(!dev.exists().unwrap());
+        assert_eq!(t.snapshot().unwrap().items().unwrap(), items);
+        let (owner, b) = s.attached("claude", "s-1").unwrap().unwrap();
+        assert_eq!(owner.name(), "reviewer");
+        assert!(b.is_attached());
+        assert_eq!(fs::read_to_string(t.log_path()).unwrap(), "dev's log\n");
+        assert!(!dev.log_path().exists());
+    }
+
+    #[test]
+    fn rename_refuses_a_missing_agent_a_taken_name_and_a_bad_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev", "two"]);
+        assert_eq!(
+            err(s.rename("nope", "x", quiet)),
+            "No agent nope in this project. Create it: ai agent new nope"
+        );
+        assert_eq!(
+            err(s.rename("dev", "dev", quiet)),
+            "Agent dev is already called dev."
+        );
+        assert_eq!(
+            err(s.rename("dev", "two", quiet)),
+            "Agent two already exists in this project."
+        );
+        assert_eq!(
+            err(s.rename("dev", "a b", quiet)),
+            "'a b' is not a thread name: letters, digits, '-' and '_'."
+        );
+        assert_eq!(names(&s), ["dev", "two"]);
+    }
+
+    #[test]
+    fn rename_never_replaces_an_agent_made_after_its_check() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let w = s.thread("dev").unwrap().writer().unwrap();
+        let path = dir.path().to_path_buf();
+        let renaming = thread::spawn(move || {
+            let s = Store::find_in(&Homes::at(&path.join("home")), &path)
+                .unwrap()
+                .unwrap();
+            s.rename("dev", "late", quiet).map(|t| t.name)
+        });
+        thread::sleep(Duration::from_millis(200));
+        s.create("late").unwrap();
+        drop(w);
+        assert_eq!(
+            err(renaming.join().unwrap()),
+            "Agent late already exists in this project."
+        );
+        assert_eq!(names(&s), ["dev", "late"]);
+    }
+
+    #[test]
+    fn a_thread_found_before_its_rename_is_never_written_or_remade() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let stale = s.thread("dev").unwrap();
+        s.rename("dev", "reviewer", quiet).unwrap();
+
+        let gone = "Agent dev was renamed or removed while this ran.";
+        let line = stale.put_line(
+            Key { level: 1, last: 0 },
+            LineKind::Turn,
+            &Who::default(),
+            "x",
+        );
+        assert_eq!(err(line), gone);
+        assert_eq!(err(stale.drop_lines()), gone);
+        assert_eq!(err(stale.try_lock()), gone);
+        assert_eq!(err(stale.lock()), gone);
+        assert_eq!(err(stale.lock_before(Instant::now())), gone);
+        assert_eq!(err(stale.record("claude", "s-2", State::Attached)), gone);
+        assert!(stale.snapshot().unwrap().is_empty().unwrap());
+        assert!(!stale.exists().unwrap());
+        assert_eq!(names(&s), ["reviewer"]);
+    }
+
+    #[test]
+    fn rename_waits_for_the_compactor_and_the_writer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let dev = s.thread("dev").unwrap();
+        let compacting = dev.lock().unwrap();
+        let writing = dev.writer().unwrap();
+        let (heard, waited) = mpsc::channel();
+        let path = dir.path().to_path_buf();
+        let renaming = thread::spawn(move || {
+            let s = Store::find_in(&Homes::at(&path.join("home")), &path)
+                .unwrap()
+                .unwrap();
+            s.rename("dev", "reviewer", |t| heard.send(t.to_string()).unwrap())
+                .map(|t| t.name)
+        });
+        assert_eq!(waited.recv_timeout(Duration::from_secs(5)).unwrap(), "dev");
+        drop(compacting);
+        thread::sleep(Duration::from_millis(200));
+        assert!(dev.exists().unwrap(), "it moved under the writer's lock");
+        drop(writing);
+        assert_eq!(renaming.join().unwrap().unwrap(), "reviewer");
+        assert_eq!(names(&s), ["reviewer"]);
+    }
+
+    #[test]
+    fn rename_waits_for_a_session_attached_while_it_waited() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let dev = s.thread("dev").unwrap();
+        let writing = dev.writer().unwrap();
+        let path = dir.path().to_path_buf();
+        let renaming = thread::spawn(move || {
+            let s = Store::find_in(&Homes::at(&path.join("home")), &path)
+                .unwrap()
+                .unwrap();
+            s.rename("dev", "reviewer", quiet).map(|t| t.name)
+        });
+        thread::sleep(Duration::from_millis(200));
+        let session = s.session_lock("claude", "s-2").unwrap();
+        attach_event(&dev, "s-2");
+        drop(writing);
+        thread::sleep(Duration::from_millis(200));
+        assert!(dev.exists().unwrap(), "it moved under the session's lock");
+        drop(session);
+        assert_eq!(renaming.join().unwrap().unwrap(), "reviewer");
+        assert_eq!(
+            s.owner("claude", "s-2").unwrap().as_deref(),
+            Some("reviewer")
+        );
+    }
+
+    #[test]
+    fn rename_keeps_a_log_the_new_name_has_before_the_moved_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let (dev, reviewer) = (s.thread("dev").unwrap(), s.thread("reviewer").unwrap());
+        fs::write(dev.local_file(COMPACT_LOG).unwrap(), "dev\n").unwrap();
+        fs::write(
+            reviewer.local_file(COMPACT_LOG).unwrap(),
+            "an earlier reviewer\n",
+        )
+        .unwrap();
+        s.rename("dev", "reviewer", quiet).unwrap();
+        assert_eq!(
+            fs::read_to_string(reviewer.log_path()).unwrap(),
+            "an earlier reviewer\ndev\n"
+        );
+        assert!(!dev.log_path().exists());
     }
 }
