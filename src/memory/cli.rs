@@ -740,13 +740,21 @@ fn rounds(
     ran: &mut Rounds,
 ) -> Result<()> {
     while pending(s)? {
-        let backend = (rt.backend)(&s.dir().join(CALLS))?;
-        let Some(c) = Compactor::new(s, backend, opts)? else {
+        // The lock comes first: making the backend may run a key's command, which a build that
+        // finds another at work has no use for.
+        let Some(lock) = s.try_lock()? else {
             info!("busy: another compactor holds the lock; exiting");
             ran.busy = true;
             return Ok(());
         };
-        round(c, progress, rt, spent, ran)?;
+        let backend = (rt.backend)(&s.dir().join(CALLS))?;
+        round(
+            Compactor::locked(s, backend, opts, lock)?,
+            progress,
+            rt,
+            spent,
+            ran,
+        )?;
     }
     Ok(())
 }

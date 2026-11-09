@@ -249,11 +249,12 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for Only<'_, S> {
     }
 }
 
-/// One `ai.toml` that exists: where it is, the folder its relative instructions are from, and
-/// its text, which is TOML holding only the tables its place allows.
+/// One `ai.toml` that exists: where it is, the folder its relative instructions are from, its
+/// place, and its text, which is TOML holding only the tables its place allows.
 struct Source {
     path: PathBuf,
     dir: PathBuf,
+    layer: Layer,
     text: String,
 }
 
@@ -270,6 +271,7 @@ impl Source {
         let s = Source {
             path: path.to_path_buf(),
             dir,
+            layer,
             text,
         };
         let tables: Tables = s.de(PhantomData)?;
@@ -383,9 +385,22 @@ impl Settings {
         self.part("memory", memory::Config::over)
     }
 
-    /// `[summariser]`.
+    /// `[summariser]`. Only the user's own file may set `[summariser.keys]`: a project's
+    /// settings never run commands.
     pub fn summariser(&self) -> Result<summariser::Config> {
-        self.part("summariser", summariser::Config::over)
+        self.part_checked("summariser", summariser::Config::over, |s, c| {
+            match (s.layer, c.keys_table()) {
+                (Layer::Project | Layer::Local, Some(table)) => bail!(
+                    "{}: {table} belongs in your own {}: a project's settings never run \
+                     commands.",
+                    pretty(&s.path),
+                    self.user
+                        .as_deref()
+                        .map_or_else(|| format!("~/.ai/{FILE}"), pretty)
+                ),
+                _ => Ok(()),
+            }
+        })
     }
 
     /// `[agents.<name>]`, its paths absolute, except a relative `worktree` outside a project;
@@ -472,10 +487,23 @@ impl Settings {
 
     /// Table `key` of every file, each over those beneath it by `over`.
     fn part<T: DeserializeOwned + Default>(&self, key: &str, over: fn(T, T) -> T) -> Result<T> {
+        self.part_checked(key, over, |_, _| Ok(()))
+    }
+
+    /// [`Settings::part`], each file's table first passing `check`.
+    fn part_checked<T: DeserializeOwned + Default>(
+        &self,
+        key: &str,
+        over: fn(T, T) -> T,
+        check: impl Fn(&Source, &T) -> Result<()>,
+    ) -> Result<T> {
         let (sources, _) = self.sources()?;
         sources.iter().try_fold(T::default(), |base, s| {
             Ok(match s.part(key)? {
-                Some(t) => over(t, base),
+                Some(t) => {
+                    check(s, &t)?;
+                    over(t, base)
+                }
                 None => base,
             })
         })

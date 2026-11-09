@@ -1,6 +1,8 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -11,21 +13,25 @@ use genai::{
         ChatMessage, ChatOptions, ChatRequest, ChatResponse, ContentPart, MessageContent,
         ReasoningEffort, StopReason,
     },
+    resolver::AuthData,
 };
 use serde_json::{Value, json};
 use tokio::{runtime::Runtime, sync::watch};
 
-use crate::memory::{
-    backend::{Backend, Block, Conversation, Usage},
-    claude::{CALL_TIMEOUT, Record, tail, user_message, uuid},
+use crate::{
+    command,
+    memory::{
+        backend::{Backend, Block, Conversation, Usage},
+        claude::{CALL_TIMEOUT, Record, tail, user_message, uuid},
+    },
 };
 
-/// A model behind a provider's API, through `genai`. Its `model` is `<provider>/<model>`, the
-/// provider one of genai's adapters (`deepseek`, `openai`, `anthropic`, `gemini`,
-/// `open_router`, …), whose key is read from that adapter's environment variable
-/// (`DEEPSEEK_API_KEY`, …). Its `effort` goes to the provider as genai maps it; unset, none
-/// goes, and the provider's own default holds. Each conversation keeps its [`Record`] in
-/// `calls`.
+/// A model behind a provider's API, through `genai`. Its `model` is `<provider>/<model>`
+/// ([`Provider`]), whose key the provider's command in `[summariser.keys]` prints, else is read
+/// from that adapter's environment variable (`DEEPSEEK_API_KEY`, …). Its `effort` goes to the
+/// provider as genai maps it; unset, none goes, and the provider's own default holds. Each
+/// conversation keeps its [`Record`] in `calls`; the key goes only in the requests' headers,
+/// which no record keeps.
 pub struct Api {
     shared: Arc<Shared>,
 }
@@ -45,17 +51,29 @@ struct Shared {
     calls: PathBuf,
 }
 
-impl Api {
-    /// `model`, `<provider>/<model>`, thinking at `effort` (`None`: the provider's default),
-    /// `jobs` calls at once in a build, keeping its calls in `calls`; fails without the
-    /// provider's key.
-    pub fn new(
-        model: &str,
-        effort: Option<ReasoningEffort>,
-        jobs: usize,
-        calls: &Path,
-    ) -> Result<Api> {
-        let (provider, name) = model
+/// The provider a `[summariser] model` names, one of genai's adapters (`deepseek`, `openai`,
+/// `anthropic`, `gemini`, `open_router`, …), and the model as that provider spells it.
+pub struct Provider<'m> {
+    kind: AdapterKind,
+    name: &'m str,
+    model: &'m str,
+}
+
+impl<'m> Provider<'m> {
+    /// The adapter `name` names, as the setting `within` gives it; an error if genai knows no
+    /// such provider.
+    pub fn named(name: &str, within: &str) -> Result<AdapterKind> {
+        AdapterKind::from_lower_str(name).with_context(|| {
+            format!(
+                "`{name}` in `{within}` is no provider genai knows: use one such as deepseek, \
+                 openai, anthropic, gemini or open_router."
+            )
+        })
+    }
+
+    /// The provider of `model`, `<provider>/<model>`.
+    pub fn of(model: &'m str) -> Result<Provider<'m>> {
+        let (name, spelt) = model
             .split_once('/')
             .filter(|(p, m)| !p.is_empty() && !m.is_empty())
             .with_context(|| {
@@ -64,22 +82,72 @@ impl Api {
                      it is `<provider>/<model>`, such as \"deepseek/deepseek-flash\"."
                 )
             })?;
-        let kind = AdapterKind::from_lower_str(provider).with_context(|| {
-            format!(
-                "`{provider}` in `[summariser] model` is no provider genai knows: use one such as \
-                 deepseek, openai, anthropic, gemini or open_router."
-            )
-        })?;
-        if let Some(var) = kind.default_key_env_name()
+        let kind = Provider::named(name, "[summariser] model")?;
+        Ok(Provider {
+            kind,
+            name,
+            model: spelt,
+        })
+    }
+
+    /// The command among `keys` (`[summariser.keys]`) that prints this provider's key, and no
+    /// other provider's; `None` when its environment variable holds the key instead. An error
+    /// when neither gives one.
+    pub fn key_command<'k>(&self, keys: &'k BTreeMap<String, String>) -> Result<Option<&'k str>> {
+        let name = self.name;
+        if let Some(command) = keys.get(name) {
+            return Ok(Some(command));
+        }
+        if let Some(var) = self.kind.default_key_env_name()
             && std::env::var_os(var).is_none_or(|v| v.is_empty())
         {
-            bail!("Set {var} to your {provider} API key: the summariser calls the {provider} API.");
+            bail!(
+                "Set {var} to your {name} API key, or name a command that prints it as \
+                 `[summariser.keys] {name}` in your own ai.toml: the summariser calls the {name} \
+                 API."
+            );
         }
+        Ok(None)
+    }
+}
+
+impl Api {
+    /// `model`, `<provider>/<model>`, thinking at `effort` (`None`: the provider's default),
+    /// `jobs` calls at once in a build, its key printed by its provider's command among `keys`
+    /// (none: the provider's environment variable), keeping its calls in `calls`; fails without
+    /// the provider's key.
+    pub fn new(
+        model: &str,
+        effort: Option<ReasoningEffort>,
+        jobs: usize,
+        keys: &BTreeMap<String, String>,
+        calls: &Path,
+    ) -> Result<Api> {
+        let provider = Provider::of(model)?;
+        let kind = provider.kind;
+        let client = match provider.key_command(keys)? {
+            Some(command) => {
+                let key = key(provider.name, command)?;
+                // The key is this provider's alone: a model of any other gets none of it.
+                Client::builder()
+                    .with_auth_resolver_fn(move |m: ModelIden| {
+                        Ok((m.adapter_kind == kind).then(|| AuthData::from_single(key.clone())))
+                    })
+                    .build()?
+            }
+            None => Client::new()?,
+        };
         let runtime = runtime()?;
-        let client = Client::new()?;
-        let target = runtime.block_on(client.resolve_service_target(ModelIden::new(kind, name)))?;
+        let target = runtime
+            .block_on(client.resolve_service_target(ModelIden::new(kind, provider.model)))?;
         Ok(Api::at(
-            provider, effort, jobs, runtime, client, target, calls,
+            provider.name,
+            effort,
+            jobs,
+            runtime,
+            client,
+            target,
+            calls,
         ))
     }
 
@@ -111,6 +179,34 @@ impl Api {
                 calls: calls.into(),
             }),
         }
+    }
+}
+
+/// The keys the commands of this process printed, by command.
+static KEYS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// The key `provider`'s `command` prints ([`printed`]), run once in this process however many
+/// backends ask: each round of a build makes its own. A command that failed runs again.
+fn key(provider: &str, command: &str) -> Result<String> {
+    // Held while the command runs, so two backends starting at once run it once.
+    let mut keys = KEYS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(key) = keys.get(command) {
+        return Ok(key.clone());
+    }
+    let key = printed(provider, command, command::LIMIT)?;
+    keys.insert(command.into(), key.clone());
+    Ok(key)
+}
+
+/// The key `provider`'s `command` prints within `limit` ([`command::printed`]): its first line,
+/// without the blanks around it, as `pass` keeps a secret. Its errors name the command, never
+/// what it printed: that is the key.
+fn printed(provider: &str, command: &str, limit: Duration) -> Result<String> {
+    let setting = format!("[summariser.keys] {provider}");
+    let text = command::printed(&setting, command, limit)?;
+    match text.lines().next().unwrap_or_default().trim() {
+        "" => bail!("`{setting} = {command:?}` printed no key on its first line."),
+        key => Ok(key.to_string()),
     }
 }
 
@@ -294,6 +390,8 @@ pub(crate) mod tests {
         dir: TempDir,
         /// Each request's body.
         pub(crate) sent: mpsc::Receiver<Value>,
+        /// Each request's `authorization` header.
+        auths: Arc<Mutex<Vec<String>>>,
     }
 
     /// Answers each request with the next of `replies` (status, body), the last one again once
@@ -303,13 +401,15 @@ pub(crate) mod tests {
         let listener = UnixListener::bind(dir.path().join("socket")).unwrap();
         let (tx, sent) = mpsc::channel();
         let replies = Arc::new(Mutex::new(replies));
+        let auths = Arc::new(Mutex::new(Vec::new()));
+        let heard = auths.clone();
         thread::spawn(move || {
             for conn in listener.incoming() {
-                let (tx, replies) = (tx.clone(), replies.clone());
-                thread::spawn(move || answer(conn.unwrap(), &tx, &replies));
+                let (tx, replies, heard) = (tx.clone(), replies.clone(), heard.clone());
+                thread::spawn(move || answer(conn.unwrap(), &tx, &replies, &heard));
             }
         });
-        Server { dir, sent }
+        Server { dir, sent, auths }
     }
 
     impl Server {
@@ -322,6 +422,11 @@ pub(crate) mod tests {
         /// DeepSeek's Flash through this server at `effort`, 3 calls at once, keeping its calls
         /// in `calls`.
         pub(crate) fn api_at(&self, effort: Option<ReasoningEffort>, calls: &Path) -> Api {
+            self.keyed(effort, "test-key", calls)
+        }
+
+        /// [`Server::api_at`] with `key`.
+        fn keyed(&self, effort: Option<ReasoningEffort>, key: &str, calls: &Path) -> Api {
             let http = reqwest::Client::builder()
                 .unix_socket(self.dir.path().join("socket"))
                 .build()
@@ -329,7 +434,7 @@ pub(crate) mod tests {
             let client = Client::builder().with_reqwest(http).build().unwrap();
             let target = ServiceTarget {
                 endpoint: Endpoint::from_static("http://localhost/v1/"),
-                auth: AuthData::from_single("test-key"),
+                auth: AuthData::from_single(key),
                 model: ModelIden::new(AdapterKind::DeepSeek, "deepseek-flash"),
             };
             Api::at(
@@ -344,7 +449,12 @@ pub(crate) mod tests {
         }
     }
 
-    fn answer(conn: UnixStream, tx: &mpsc::Sender<Value>, replies: &Mutex<Vec<(u16, Value)>>) {
+    fn answer(
+        conn: UnixStream,
+        tx: &mpsc::Sender<Value>,
+        replies: &Mutex<Vec<(u16, Value)>>,
+        auths: &Mutex<Vec<String>>,
+    ) {
         let mut out = conn.try_clone().unwrap();
         let mut conn = BufReader::new(conn);
         loop {
@@ -358,10 +468,12 @@ pub(crate) mod tests {
                 if line.is_empty() {
                     break;
                 }
-                if let Some((k, v)) = line.split_once(':')
-                    && k.eq_ignore_ascii_case("content-length")
-                {
-                    length = v.trim().parse().unwrap();
+                if let Some((k, v)) = line.split_once(':') {
+                    if k.eq_ignore_ascii_case("content-length") {
+                        length = v.trim().parse().unwrap();
+                    } else if k.eq_ignore_ascii_case("authorization") {
+                        auths.lock().unwrap().push(v.trim().to_string());
+                    }
                 }
             }
             let mut body = vec![0; length];
@@ -585,6 +697,180 @@ pub(crate) mod tests {
         assert!(api.open("s").is_err());
     }
 
+    /// `[summariser.keys]` with `command` for `provider`.
+    fn keys(provider: &str, command: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([(provider.to_string(), command.to_string())])
+    }
+
+    #[test]
+    fn a_key_is_the_first_line_its_command_prints() {
+        for (command, key) in [
+            ("printf '  k-1 \\n'", "k-1"),
+            ("echo noise >&2; printf k-2", "k-2"),
+            ("printf 'k-3\\nlogin: me\\nurl: example.com\\n'", "k-3"),
+        ] {
+            assert_eq!(printed("heabsy", command, command::LIMIT).unwrap(), key);
+        }
+    }
+
+    #[test]
+    fn a_key_s_command_that_fails_or_prints_no_key_is_an_error_never_showing_its_output() {
+        for (command, says) in [
+            (
+                "false",
+                "`[summariser.keys] heabsy = \"false\"` failed: exit status: 1.",
+            ),
+            ("printf 's%s' 3cret; exit 3", "failed: exit status: 3."),
+            ("printf 's%s' 3cret; kill -9 $$", "failed: signal: 9"),
+            (
+                "true",
+                "`[summariser.keys] heabsy = \"true\"` printed no key on its first line.",
+            ),
+            ("printf '  \\n'", "printed no key on its first line."),
+            (
+                "printf '\\ns%s\\n' 3cret",
+                "printed no key on its first line.",
+            ),
+            (
+                "printf 's%s\\377' 3cret",
+                "printed something that is not text",
+            ),
+        ] {
+            let err = printed("heabsy", command, command::LIMIT)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(says), "{command}: {err}");
+            assert!(!err.contains("s3cret"), "{command}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_key_s_command_that_hangs_is_stopped() {
+        let began = std::time::Instant::now();
+        let err = printed("heabsy", "sleep 30", Duration::from_millis(200))
+            .unwrap_err()
+            .to_string();
+        assert!(began.elapsed() < Duration::from_secs(5));
+        assert!(
+            err.contains("`[summariser.keys] heabsy = \"sleep 30\"` did not end within"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_key_s_command_runs_once_however_many_backends_start() {
+        let tmp = TempDir::new().unwrap();
+        let runs = tmp.path().join("runs");
+        let command = format!("echo run >> '{}'; printf k-once", runs.display());
+        for _ in 0..3 {
+            let api = Api::new(
+                "heabsy/qwen38",
+                None,
+                1,
+                &keys("heabsy", &command),
+                tmp.path(),
+            )
+            .unwrap();
+            assert_eq!(api.shared.target.auth.single_key_value().unwrap(), "k-once");
+        }
+        assert_eq!(fs::read_to_string(&runs).unwrap(), "run\n");
+
+        let failing = format!("echo run >> '{}'; exit 2", runs.display());
+        for _ in 0..2 {
+            let err = Api::new(
+                "heabsy/qwen38",
+                None,
+                1,
+                &keys("heabsy", &failing),
+                tmp.path(),
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(err.contains("failed: exit status: 2."), "{err}");
+        }
+        assert_eq!(fs::read_to_string(&runs).unwrap(), "run\nrun\nrun\n");
+    }
+
+    #[test]
+    fn a_key_goes_to_the_provider_it_is_set_for_and_no_other() {
+        let tmp = TempDir::new().unwrap();
+        let ran = tmp.path().join("ran");
+        let command = format!("touch '{}'; printf k-deepseek", ran.display());
+        let set = keys("deepseek", &command);
+        if std::env::var_os("HEABSY_API_KEY").is_none() {
+            let err = Api::new("heabsy/qwen38", None, 1, &set, tmp.path())
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                err.contains("Set HEABSY_API_KEY to your heabsy API key"),
+                "{err}"
+            );
+            assert!(err.contains("`[summariser.keys] heabsy`"), "{err}");
+            assert!(!ran.exists(), "another provider's command ran");
+        }
+
+        let api = Api::new("deepseek/deepseek-flash", None, 1, &set, tmp.path()).unwrap();
+        assert_eq!(
+            api.shared.target.auth.single_key_value().unwrap(),
+            "k-deepseek"
+        );
+        let s = &api.shared;
+        let other = ModelIden::new(AdapterKind::OpenAI, "gpt-5");
+        let auth = s
+            .runtime
+            .block_on(s.client.resolve_service_target(other))
+            .map(|t| t.auth.single_key_value().ok());
+        assert_ne!(
+            auth.ok().flatten().as_deref(),
+            Some("k-deepseek"),
+            "the client gave deepseek's key to another provider"
+        );
+    }
+
+    #[test]
+    fn a_key_s_command_gives_the_provider_s_key_whatever_the_environment_holds() {
+        let tmp = TempDir::new().unwrap();
+        let api = Api::new(
+            "heabsy/qwen38",
+            None,
+            1,
+            &keys("heabsy", "printf 'k-from-command\\n'"),
+            tmp.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            api.shared.target.auth.single_key_value().unwrap(),
+            "k-from-command"
+        );
+    }
+
+    #[test]
+    fn the_key_goes_in_each_request_s_header_and_in_no_record() {
+        let server = serve(vec![
+            (
+                401,
+                json!({"error": {"message": "Authentication Fails", "type": "authentication_error"}}),
+            ),
+            (
+                200,
+                completion("fine", json!({"prompt_tokens": 1, "completion_tokens": 1})),
+            ),
+        ]);
+        let tmp = TempDir::new().unwrap();
+        let api = server.keyed(None, "k-9f3a-secret", tmp.path());
+        let mut conv = api.open("s").unwrap();
+        let err = conv.say(&[Block::new("m")]).unwrap_err().to_string();
+        assert!(!err.contains("k-9f3a"), "{err}");
+        conv.say(&[Block::new("m")]).unwrap();
+        assert_eq!(*server.auths.lock().unwrap(), ["Bearer k-9f3a-secret"; 2]);
+        let record =
+            fs::read_to_string(tmp.path().join(format!("{}.jsonl", conv.session()))).unwrap();
+        assert!(record.contains("Authentication Fails"), "{record}");
+        assert!(!record.contains("k-9f3a"), "{record}");
+    }
+
     #[test]
     fn a_model_must_name_a_known_provider() {
         let tmp = TempDir::new().unwrap();
@@ -601,7 +887,7 @@ pub(crate) mod tests {
             if model.starts_with("heabsy") && std::env::var_os("HEABSY_API_KEY").is_some() {
                 continue;
             }
-            let err = Api::new(model, None, 1, tmp.path())
+            let err = Api::new(model, None, 1, &BTreeMap::new(), tmp.path())
                 .err()
                 .unwrap()
                 .to_string();

@@ -838,6 +838,40 @@ fn a_note_is_summarised_in_the_background() {
     );
 }
 
+#[test]
+fn a_build_that_finds_another_at_work_runs_no_key_s_command() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    for i in 0..2 {
+        s.ai(&["note", &format!("note {i} {}", "z".repeat(250))]);
+    }
+    let ran = s.path().join("ran");
+    s.user_toml(&format!(
+        "[summariser]\nbackend = \"api\"\nmodel = \"heabsy/qwen38\"\n\n[summariser.keys]\nheabsy = \"touch '{}'; exit 1\"\n",
+        ran.display()
+    ));
+    let lock = Store::open(&s.store()).unwrap().try_lock().unwrap();
+    assert!(lock.is_some());
+    let r = s.ai(&["build"]);
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    assert!(
+        text(&r.stdout).contains("A compactor is already running"),
+        "{}",
+        text(&r.stdout)
+    );
+    assert!(!ran.exists(), "the key's command ran behind another build");
+    drop(lock);
+
+    let r = s.ai(&["build"]);
+    assert!(!r.status.success());
+    assert!(
+        text(&r.stderr).contains("` failed: exit status: 1."),
+        "{}",
+        text(&r.stderr)
+    );
+    assert!(ran.exists());
+}
+
 /// A fake `claude` as a summariser (Sonnet) and its witness (Opus): the witness finds a fault in
 /// the first summary of a conversation, and none in the next.
 const FAKE_WITNESSED: &str = "prev=; model=

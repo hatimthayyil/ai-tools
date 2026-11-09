@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod backup;
+pub mod command;
 pub mod config;
 pub mod file;
 pub mod git;

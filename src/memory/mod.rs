@@ -20,9 +20,9 @@ mod view;
 mod witness;
 mod zoom;
 
-pub use api::Api;
 #[cfg(test)]
 pub(crate) use api::tests as fake_api;
+pub use api::{Api, Provider};
 pub use backend::{Backend, Block, Conversation, MakeBackend, Usage};
 pub use claude::{CALLS, ClaudeCode};
 pub use cli::{AWAKE, Cli, Runtime, broken_pipe, default_dir, plural, spawn_summariser, store_dir};

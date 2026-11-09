@@ -15,7 +15,6 @@
 //! leaves what it did in `~/.ai/backup.json`, so `ai backup status` tells of a failed run that
 //! had no terminal to say so on: one `ai backup watch` made, or one a session's end started.
 
-pub mod command;
 pub mod config;
 pub mod db;
 pub mod harness;
@@ -47,6 +46,7 @@ use self::{
     restic::{Password, Repo},
 };
 use crate::{
+    command::{self, LIMIT},
     config::Homes,
     file::{self, AtPath, human, pretty},
 };
@@ -211,7 +211,7 @@ pub fn host() -> Result<String> {
 /// The password the command of the setting `key` prints: what it printed, without the blanks
 /// around it, as restic reads one.
 fn password(key: &str, command: &str) -> Result<Password> {
-    let printed = command::printed(key, command, command::LIMIT)?;
+    let printed = command::printed(key, command, LIMIT)?;
     match printed.trim() {
         "" => bail!("`{key} = {command:?}` printed no password."),
         p => Ok(Password::Given(p.to_owned())),
@@ -250,7 +250,7 @@ fn remote(r: &Remote) -> Result<Repo> {
 fn variables(command: &str) -> Result<Vec<(String, String)>> {
     const KEY: &str = "[backup.remote] env-command";
     let says = || format!("`{KEY} = {command:?}`");
-    let text = command::printed(KEY, command, command::LIMIT)?;
+    let text = command::printed(KEY, command, LIMIT)?;
     let mut vars = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();

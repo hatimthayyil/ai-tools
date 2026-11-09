@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use genai::chat::ReasoningEffort;
@@ -6,11 +6,14 @@ use serde::{Deserialize, Deserializer, de::Error};
 
 use crate::{
     config::positive,
-    memory::{Api, Backend, ClaudeCode, JOBS, MakeBackend, Witnessed, claude},
+    memory::{Api, Backend, ClaudeCode, JOBS, MakeBackend, Provider, Witnessed, claude},
 };
 
 /// How long `build --rebuild` waits for a running summariser.
 pub const WAIT: Duration = Duration::from_secs(60);
+
+/// What an error of the witness's own settings is told under.
+const WITNESS: &str = "Cannot start the witness of `[summariser.witness]`";
 
 /// `[summariser]` in `ai.toml`: what writes every summary, for agents, memory and notes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -27,8 +30,16 @@ pub struct Config {
     /// Calls a build runs at once; default [`JOBS`].
     #[serde(deserialize_with = "positive")]
     pub jobs: Option<usize>,
+    /// `[summariser.keys]`: for [`Kind::Api`], the shell command that prints each provider's
+    /// key, by the provider's name in `model`. A key goes only to the provider it is set for; a
+    /// provider with none takes its key from its environment variable. Only the user's own
+    /// `ai.toml` may set it, as [`Settings::summariser`](crate::config::Settings::summariser)
+    /// checks.
+    #[serde(deserialize_with = "keys")]
+    pub keys: BTreeMap<String, String>,
     /// `[summariser.witness]`: the model that checks every summary ([`Witnessed`]), set by
-    /// `backend`, `model` and `effort`, whose defaults are those above; unset, no witness.
+    /// `backend`, `model` and `effort`, whose defaults are those above, its key the one
+    /// `[summariser.keys]` sets for its provider; unset, no witness.
     pub witness: Option<Box<Config>>,
 }
 
@@ -105,6 +116,20 @@ fn model<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     }
 }
 
+fn keys<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+    let mut keys = BTreeMap::<String, String>::deserialize(d)?;
+    for (provider, command) in &mut keys {
+        Provider::named(provider, "[summariser.keys]").map_err(D::Error::custom)?;
+        *command = command.trim().to_string();
+        if command.is_empty() {
+            return Err(D::Error::custom(format!(
+                "`{provider}` is empty: give a command that prints the key, or leave it out"
+            )));
+        }
+    }
+    Ok(keys)
+}
+
 impl Config {
     pub fn kind(&self) -> Kind {
         self.backend.unwrap_or(Kind::Claude)
@@ -125,6 +150,7 @@ impl Config {
             model: self.model.or(base.model),
             effort: self.effort.or(base.effort),
             jobs: self.jobs.or(base.jobs),
+            keys: base.keys.into_iter().chain(self.keys).collect(),
             witness: match (self.witness, base.witness) {
                 (Some(w), Some(b)) => Some(Box::new(w.over(*b))),
                 (w, b) => w.or(b),
@@ -132,37 +158,73 @@ impl Config {
         }
     }
 
-    /// `[summariser.witness]`, if set; an error if it sets `jobs` or a witness of its own.
+    /// The first table of these settings that names a key's command, as a file names it:
+    /// `[summariser.keys]`, else `[summariser.witness.keys]`.
+    pub fn keys_table(&self) -> Option<&'static str> {
+        match (self.keys.is_empty(), self.witness.as_deref()) {
+            (false, _) => Some("[summariser.keys]"),
+            (true, Some(w)) if !w.keys.is_empty() => Some("[summariser.witness.keys]"),
+            _ => None,
+        }
+    }
+
+    /// `[summariser.witness]`, if set; an error if it sets `jobs`, keys or a witness of its own.
     pub fn witness(&self) -> Result<Option<&Config>> {
         let Some(w) = self.witness.as_deref() else {
             return Ok(None);
         };
-        if w.jobs.is_some() || w.witness.is_some() {
+        if w.jobs.is_some() || w.witness.is_some() || !w.keys.is_empty() {
             bail!(
                 "`[summariser.witness]` takes `backend`, `model` and `effort` alone: the witness \
-                 checks within each summariser call, so it has no `jobs`, and no witness of its own."
+                 checks within each summariser call, so it has no `jobs`, and no witness of its \
+                 own, and its key is the one `[summariser.keys]` sets for its provider."
             );
         }
         Ok(Some(w))
     }
 
+    /// What stops these settings making their backend, as far as shows without running a
+    /// command or a model: a witness table with a key it can't take, an effort or a model the
+    /// backend can't take, a provider with no key set.
+    pub fn check(&self) -> Result<()> {
+        self.checked(&self.keys)?;
+        match self.witness()? {
+            Some(w) => w.checked(&self.keys).context(WITNESS),
+            None => Ok(()),
+        }
+    }
+
+    /// [`Config::check`] for the model these settings name, alone, its key among `keys`.
+    fn checked(&self, keys: &BTreeMap<String, String>) -> Result<()> {
+        match self.kind() {
+            Kind::Claude => self
+                .effort
+                .as_ref()
+                .map_or(Ok(()), |e| e.claude().map(drop)),
+            Kind::Api => Provider::of(&self.model())?.key_command(keys).map(drop),
+        }
+    }
+
     /// The backend, with `model` over the configured one, keeping its calls in `calls`; with
     /// `[summariser.witness]`, the [`Witnessed`] pair, the witness keeping its calls there too.
     pub fn backend(&self, model: Option<&str>, calls: &Path) -> Result<Arc<dyn Backend>> {
-        let writer = self.writer(model, calls)?;
+        let writer = self.writer(model, &self.keys, calls)?;
         Ok(match self.witness()? {
             None => writer,
             Some(w) => {
-                let witness = w
-                    .writer(None, calls)
-                    .context("Cannot start the witness of `[summariser.witness]`")?;
+                let witness = w.writer(None, &self.keys, calls).context(WITNESS)?;
                 Arc::new(Witnessed::new(writer, witness))
             }
         })
     }
 
-    /// The model these settings name, alone.
-    fn writer(&self, model: Option<&str>, calls: &Path) -> Result<Arc<dyn Backend>> {
+    /// The model these settings name, alone, its key among `keys`.
+    fn writer(
+        &self,
+        model: Option<&str>,
+        keys: &BTreeMap<String, String>,
+        calls: &Path,
+    ) -> Result<Arc<dyn Backend>> {
         let model = model.map_or_else(|| self.model(), str::to_string);
         let jobs = self.jobs();
         Ok(match self.kind() {
@@ -176,7 +238,7 @@ impl Config {
             }
             Kind::Api => {
                 let effort = self.effort.as_ref().map(Effort::reasoning);
-                Arc::new(Api::new(&model, effort, jobs, calls)?)
+                Arc::new(Api::new(&model, effort, jobs, keys, calls)?)
             }
         })
     }

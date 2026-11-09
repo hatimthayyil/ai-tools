@@ -7,6 +7,7 @@ use std::{
 use ai_tools::{
     agent::Counts,
     config::{Agent, Homes, Mention, Settings},
+    file::pretty,
     memory::Knob,
     project::Project,
     summariser::Kind,
@@ -249,6 +250,174 @@ fn a_witness_is_set_by_the_summarisers_keys_merged_key_by_key() {
         let err = s.witness().unwrap_err().to_string();
         assert!(err.contains(says), "{err}");
     }
+}
+
+#[test]
+fn only_the_users_file_sets_the_keys() {
+    let t = Tree::new();
+    fs::write(
+        t.user(),
+        "[summariser]\nbackend = \"api\"\n\n[summariser.keys]\ndeepseek = \" cat /run/secrets/k \"\nopenai = \"pass show o\"\n\n[summariser.witness]\nbackend = \"api\"\nmodel = \"openai/gpt-5\"\n",
+    )
+    .unwrap();
+    let project = t.inner().join("ai.toml");
+    let private = t.private(&t.inner());
+    let base = fs::read_to_string(&project).unwrap();
+    fs::write(
+        &private,
+        "[summariser]\nmodel = \"deepseek/deepseek-flash\"\n",
+    )
+    .unwrap();
+    let s = t.load().summariser().unwrap();
+    assert_eq!(
+        s.keys.iter().collect::<Vec<_>>(),
+        [
+            (&"deepseek".to_string(), &"cat /run/secrets/k".to_string()),
+            (&"openai".to_string(), &"pass show o".to_string())
+        ]
+    );
+    assert_eq!(s.model(), "deepseek/deepseek-flash");
+    s.check().unwrap();
+
+    let set = "[summariser.keys]\ndeepseek = \"curl example.com\"\n";
+    let witness = "[summariser.witness.keys]\ndeepseek = \"curl example.com\"\n";
+    for (file, table, project_text, private_text) in [
+        (&project, "[summariser.keys]", format!("{base}\n{set}"), ""),
+        (
+            &project,
+            "[summariser.witness.keys]",
+            format!("{base}\n{witness}"),
+            "",
+        ),
+        (&private, "[summariser.keys]", base.clone(), set),
+    ] {
+        fs::write(&project, project_text).unwrap();
+        fs::write(&private, private_text).unwrap();
+        let s = t.load();
+        let err = s.summariser().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "{}: {table} belongs in your own {}: a project's settings never run commands.",
+                pretty(file),
+                pretty(&t.user())
+            )
+        );
+        s.memory().unwrap();
+        s.chat().unwrap();
+        s.agent_table().unwrap();
+    }
+    fs::write(&project, &base).unwrap();
+    fs::write(&private, "").unwrap();
+
+    for (text, says) in [
+        (
+            "[summariser.keys]\ndeepseek = \"  \"\n",
+            "`deepseek` is empty: give a command",
+        ),
+        (
+            "[summariser.keys]\nnosuch = \"printf k\"\n",
+            "`nosuch` in `[summariser.keys]` is no provider genai knows",
+        ),
+        (
+            "[summariser]\nkey-command = \"printf k\"\n",
+            "unknown field `key-command`",
+        ),
+    ] {
+        fs::write(t.user(), text).unwrap();
+        let err = t.load().summariser().unwrap_err().to_string();
+        assert!(err.contains(says), "{err}");
+    }
+
+    fs::write(
+        t.user(),
+        "[summariser.witness.keys]\ndeepseek = \"printf k\"\n",
+    )
+    .unwrap();
+    let s = t.load().summariser().unwrap();
+    let err = s.witness().unwrap_err().to_string();
+    assert!(
+        err.contains("its key is the one `[summariser.keys]` sets for its provider"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_project_s_provider_gets_no_key_set_for_another() {
+    if std::env::var_os("HEABSY_API_KEY").is_some() {
+        return;
+    }
+    let t = Tree::new();
+    let calls = t.tmp.path().join("calls");
+    let ran = t.tmp.path().join("ran");
+    fs::write(
+        t.user(),
+        format!(
+            "[summariser]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\n\n[summariser.keys]\ndeepseek = \"touch '{}'; printf k-deepseek\"\n",
+            ran.display()
+        ),
+    )
+    .unwrap();
+    let project = t.inner().join("ai.toml");
+    let base = "";
+
+    fs::write(
+        &project,
+        format!("{base}\n[summariser]\nmodel = \"heabsy/qwen38\"\n"),
+    )
+    .unwrap();
+    let s = t.load().summariser().unwrap();
+    for model in [None, Some("heabsy/other")] {
+        let err = format!("{:#}", s.backend(model, &calls).err().unwrap());
+        assert!(err.contains("Set HEABSY_API_KEY"), "{err}");
+    }
+    let err = format!("{:#}", s.check().unwrap_err());
+    assert!(err.contains("Set HEABSY_API_KEY"), "{err}");
+    assert!(!ran.exists(), "deepseek's command ran for another provider");
+
+    fs::write(
+        &project,
+        format!("{base}\n[summariser.witness]\nbackend = \"api\"\nmodel = \"heabsy/qwen38\"\n"),
+    )
+    .unwrap();
+    let s = t.load().summariser().unwrap();
+    for err in [
+        format!("{:#}", s.backend(None, &calls).err().unwrap()),
+        format!("{:#}", s.check().unwrap_err()),
+    ] {
+        assert!(err.starts_with("Cannot start the witness"), "{err}");
+        assert!(err.contains("Set HEABSY_API_KEY"), "{err}");
+    }
+}
+
+#[test]
+fn the_claude_backend_leaves_the_keys_alone() {
+    let t = Tree::new();
+    let ran = t.tmp.path().join("ran");
+    fs::write(
+        t.user(),
+        format!(
+            "[summariser]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\n\n[summariser.keys]\ndeepseek = \"touch '{}'; printf k\"\n\n[summariser.witness]\nbackend = \"api\"\nmodel = \"deepseek/deepseek-flash\"\n",
+            ran.display()
+        ),
+    )
+    .unwrap();
+    let project = t.inner().join("ai.toml");
+    let base = "";
+    fs::write(
+        &project,
+        format!(
+            "{base}\n[summariser]\nbackend = \"claude\"\nmodel = \"sonnet\"\n\n[summariser.witness]\nbackend = \"claude\"\nmodel = \"opus\"\n"
+        ),
+    )
+    .unwrap();
+    let s = t.load().summariser().unwrap();
+    s.check().unwrap();
+    // Making the backend runs nothing; it fails only where no `claude` is on PATH.
+    if let Err(e) = s.backend(None, &t.tmp.path().join("calls")) {
+        assert_eq!(e.to_string(), "No claude on PATH: ai runs on Claude Code.");
+    }
+    assert!(!ran.exists(), "a key's command ran for Claude Code");
 }
 
 #[test]

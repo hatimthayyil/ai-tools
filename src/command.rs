@@ -1,6 +1,6 @@
-//! The commands `[backup]` names, which print a secret: each run by `sh -c` with no input, and
-//! ended if it prints for too long, so a command that waits for someone to answer it can't hold
-//! up every run after it.
+//! The commands a setting names to print a secret, a password or an API key: each run by
+//! `sh -c` with no input, and ended if it takes too long, so a command that waits for someone to
+//! answer it can't hold up everything after it.
 
 use std::{
     io::Read,
