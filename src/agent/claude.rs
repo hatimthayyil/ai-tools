@@ -3,9 +3,10 @@ use std::{
     fs,
     io::{self, BufRead},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use jiff::Timestamp;
 use serde_json::Value;
 
@@ -44,6 +45,37 @@ pub fn config_dir(var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     var("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| Some(PathBuf::from(var("HOME")?).join(".claude")))
+}
+
+/// The sessions Claude Code runs on this machine, by session id, each with its name if it has
+/// one: those `claude agents --json` lists, every live session and each background session
+/// still working or blocked.
+pub fn running() -> Result<BTreeMap<String, Option<String>>> {
+    let o = Command::new("claude")
+        .args(["agents", "--json"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| anyhow!("cannot run claude agents --json: {e}"))?;
+    if !o.status.success() {
+        bail!(
+            "claude agents --json failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        );
+    }
+    parse_running(&o.stdout)
+}
+
+/// The sessions in `claude agents --json`'s output `bytes`, as [`running`] gives them.
+fn parse_running(bytes: &[u8]) -> Result<BTreeMap<String, Option<String>>> {
+    let sessions: Vec<Value> = serde_json::from_slice(bytes)
+        .map_err(|e| anyhow!("claude agents --json printed what ai cannot read: {e}"))?;
+    Ok(sessions
+        .iter()
+        .filter_map(|s| {
+            let id = s["sessionId"].as_str()?;
+            Some((id.to_string(), s["name"].as_str().map(String::from)))
+        })
+        .collect())
 }
 
 /// The name of the project directory that holds the sessions started in `cwd`.
@@ -504,6 +536,30 @@ mod tests {
         record::Key,
         rollup,
     };
+
+    #[test]
+    fn running_sessions_read_from_claude_agents_json() {
+        let json = br#"[
+            {"cwd": "/r", "kind": "interactive", "startedAt": 1, "pid": 7, "status": "idle",
+             "sessionId": "s-1", "name": "repo.dev"},
+            {"cwd": "/r", "kind": "background", "startedAt": 2, "id": "bg1", "state": "working",
+             "sessionId": "s-2"},
+            {"cwd": "/r", "kind": "interactive", "startedAt": 3, "pid": 9, "status": "busy"}
+        ]"#;
+        assert_eq!(
+            parse_running(json).unwrap(),
+            BTreeMap::from([
+                ("s-1".to_string(), Some("repo.dev".to_string())),
+                ("s-2".to_string(), None),
+            ])
+        );
+        assert!(parse_running(b"[]").unwrap().is_empty());
+        let e = parse_running(b"").unwrap_err().to_string();
+        assert!(
+            e.starts_with("claude agents --json printed what ai cannot read: "),
+            "{e}"
+        );
+    }
 
     const SESSION: &str = "s-1";
 

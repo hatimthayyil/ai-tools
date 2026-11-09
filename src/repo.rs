@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs, io,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
@@ -356,6 +356,43 @@ pub fn commit(dir: &Path, me: &str, msg: &str) -> Result<()> {
         repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
     }
     Ok(())
+}
+
+/// HEAD's commit of the repository at `dir` when its tree holds `rel`, relative to `dir`; `None`
+/// when it does not, or there is no commit.
+pub fn head_holding(dir: &Path, rel: &Path) -> Result<Option<ObjectId>> {
+    let repo = gix::open(dir)?;
+    let Some(id) = repo.head()?.id() else {
+        return Ok(None);
+    };
+    let rel = rel
+        .to_str()
+        .with_context(|| format!("{} is not UTF-8.", pretty(rel)))?;
+    let tree = repo.find_commit(id)?.tree()?;
+    Ok(tree.lookup_entry_by_path(rel)?.map(|_| id.detach()))
+}
+
+/// Every path under `rel`, relative to the repository at `dir`, that no commit would hold: what
+/// its ignore files leave out, and what is neither a file nor a directory.
+pub fn left_out(dir: &Path, rel: &Path) -> Result<Vec<PathBuf>> {
+    let kept: HashSet<PathBuf> = files_under(dir, rel)?
+        .into_iter()
+        .map(|(_, abs)| abs)
+        .collect();
+    let root = dir.join(rel);
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for e in WalkBuilder::new(&root).standard_filters(false).build() {
+        let e = e?;
+        if e.file_type().is_some_and(|t| t.is_dir()) || kept.contains(e.path()) {
+            continue;
+        }
+        out.push(e.path().to_path_buf());
+    }
+    out.sort();
+    Ok(out)
 }
 
 fn path_str(p: &BStr) -> String {
@@ -724,5 +761,43 @@ mod tests {
         let repo = gix::open(&dir).unwrap();
         let tree = repo.head_commit().unwrap().tree().unwrap();
         assert!(tree.lookup_entry_by_path("a.lock").unwrap().is_none());
+    }
+
+    #[test]
+    fn head_holding_names_the_commit_only_while_its_tree_holds_the_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        let t = Path::new("t");
+        assert_eq!(head_holding(&dir, t).unwrap(), None);
+        fs::create_dir_all(dir.join("t")).unwrap();
+        fs::write(dir.join("t/a"), "1\n").unwrap();
+        commit_paths(&dir, &[t], "ai", "one").unwrap();
+        let one = gix::open(&dir).unwrap().head_id().unwrap().detach();
+        assert_eq!(head_holding(&dir, t).unwrap(), Some(one));
+        assert_eq!(head_holding(&dir, Path::new("u")).unwrap(), None);
+        fs::remove_dir_all(dir.join("t")).unwrap();
+        commit_paths(&dir, &[t], "ai", "two").unwrap();
+        assert_eq!(head_holding(&dir, t).unwrap(), None);
+    }
+
+    #[test]
+    fn left_out_names_what_ignore_files_drop_and_what_is_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        fs::write(dir.join(".gitignore"), "*.tmp\n").unwrap();
+        let t = dir.join("t");
+        fs::create_dir_all(t.join("sub")).unwrap();
+        fs::write(t.join("a"), "").unwrap();
+        fs::write(t.join(".hidden"), "").unwrap();
+        assert!(left_out(&dir, Path::new("t")).unwrap().is_empty());
+        fs::write(t.join("sub/b.tmp"), "").unwrap();
+        std::os::unix::fs::symlink(t.join("a"), t.join("link")).unwrap();
+        assert_eq!(
+            left_out(&dir, Path::new("t")).unwrap(),
+            [t.join("link"), t.join("sub/b.tmp")]
+        );
+        assert!(left_out(&dir, Path::new("none")).unwrap().is_empty());
     }
 }

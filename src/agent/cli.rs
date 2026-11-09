@@ -68,6 +68,14 @@ enum Command {
         #[arg(help = "its new name: letters, digits, '-' and '_'")]
         new: String,
     },
+    #[command(
+        about = "remove an agent: its thread leaves the project, and ~/ai's history keeps it.",
+        after_help = "It refuses while a Claude Code session attached to the agent runs on this machine, and prints the git command that restores the thread. ai.toml files stay as they are: it prints the file and line of each [agents.<NAME>] table, and of each reports-to that names <NAME>. Transcripts stay as they are, in the harness's own folder and in the backup."
+    )]
+    Remove {
+        #[arg(help = "the agent")]
+        name: String,
+    },
     Resume(Resume),
     #[command(about = "list this project's agents and their sessions.")]
     List {
@@ -355,9 +363,9 @@ impl Cli {
     }
 
     /// Runs in `cwd`, printing to `out`; views, zooms and searches print whole on a `terminal`.
-    /// Events commit the store: creating or renaming an agent, attaching, detaching, resuming, a
-    /// build but the background summariser's, a compaction and a session's end. A turn's sync
-    /// and a view leave what they wrote for the next event's commit.
+    /// Events commit the store: creating, renaming or removing an agent, attaching, detaching,
+    /// resuming, a build but the background summariser's, a compaction and a session's end. A
+    /// turn's sync and a view leave what they wrote for the next event's commit.
     pub fn run(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             agent: None,
@@ -366,6 +374,7 @@ impl Cli {
         let msg = match &command {
             Command::New { name } => format!("ai agent new {name}"),
             Command::Rename { old, new } => format!("ai agent rename {old} {new}"),
+            Command::Remove { name } => format!("ai agent remove {name}"),
             Command::Attach { name, .. } => format!("ai agent attach {name}"),
             Command::Detach { .. } => "ai agent detach".into(),
             Command::Build(b) if !b.background => match &b.target.agent {
@@ -395,6 +404,7 @@ impl Command {
         match self {
             Command::New { name } => new(cwd, out, &name),
             Command::Rename { old, new } => rename(cwd, out, &old, &new),
+            Command::Remove { name } => remove(cwd, out, &name),
             Command::Resume(r) => r.run(cwd),
             Command::List { session } => list(cwd, out, session),
             Command::View { agent, session } => view(cwd, out, agent, session, terminal),
@@ -630,21 +640,96 @@ fn rename(cwd: &Path, out: &mut dyn Write, old: &str, new: &str) -> Result<ExitC
         eprintln!("Waiting for agent {t}'s summariser to finish.")
     })?;
     writeln!(out, "Renamed agent {old} to {new}.")?;
-    match store.settings().mentions(old) {
+    mentions(&store, old, |by| match by {
+        None => format!("[agents.{old}] no longer applies here: {new} reads [agents.{new}]."),
+        Some(by) => format!("{by}'s reports-to names {old}, now {new}."),
+    });
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Removes agent `name` unless a session attached to it runs, prints how to restore its thread,
+/// then names on stderr each place a settings file still names it, changing none.
+fn remove(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
+    let store = Store::open(cwd)?;
+    let removed = store.remove(
+        name,
+        |t| eprintln!("Waiting for agent {t}'s summariser to finish."),
+        |sessions| refuse_running(name, sessions),
+    )?;
+    match &removed.commit {
+        Some(c) => writeln!(
+            out,
+            "Removed agent {name}. Restore it: git -C {} restore --source={c} -- {}",
+            shell_path(&store.homes().repo),
+            word(&removed.path.to_string_lossy())
+        )?,
+        None => writeln!(
+            out,
+            "Removed agent {name}, which held nothing. Make it again: ai agent new {name}"
+        )?,
+    }
+    mentions(&store, name, |by| match by {
+        None => format!("[agents.{name}] applies to no agent now."),
+        Some(by) => format!("{by}'s reports-to names {name}, which was removed."),
+    });
+    removed.delete()?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// An error naming each of `sessions` of agent `name` that runs on this machine. Only Claude
+/// Code sessions are checked: ai attaches no other harness's.
+fn refuse_running(name: &str, sessions: &[(String, String)]) -> Result<()> {
+    let ours: Vec<&str> = sessions
+        .iter()
+        .filter(|(h, _)| h == claude::HARNESS)
+        .map(|(_, s)| s.as_str())
+        .collect();
+    if ours.is_empty() {
+        return Ok(());
+    }
+    let live = claude::running()
+        .map_err(|e| anyhow!("Cannot tell whether agent {name}'s sessions are running: {e}."))?;
+    let running: Vec<String> = ours
+        .into_iter()
+        .filter_map(|s| {
+            live.get(s).map(|title| match title {
+                Some(title) => format!("{} {s} ({title})", claude::HARNESS),
+                None => format!("{} {s}", claude::HARNESS),
+            })
+        })
+        .collect();
+    match running.as_slice() {
+        [] => Ok(()),
+        [one] => bail!("Agent {name}'s session {one} is running. End it, then try again."),
+        many => bail!(
+            "Agent {name}'s sessions {} are running. End them, then try again.",
+            many.join(", ")
+        ),
+    }
+}
+
+/// `p` as one shell word, a path under the home directory as `~/…`.
+fn shell_path(p: &Path) -> String {
+    let p = file::pretty(p);
+    match p.strip_prefix("~/") {
+        Some(rest) => format!("~/{}", word(rest)),
+        None => word(&p),
+    }
+}
+
+/// Names on stderr each place a settings file names agent `name`: its file and line, then what
+/// `say` makes of the agent whose reports-to names it, `None` for `name`'s own table. A file it
+/// cannot read stops only this check.
+fn mentions(store: &Store, name: &str, say: impl Fn(Option<&str>) -> String) {
+    match store.settings().mentions(name) {
         Ok(found) => {
             for m in found {
                 let at = format!("{}:{}", file::pretty(&m.path), m.line);
-                match m.by {
-                    None => eprintln!(
-                        "{at}: [agents.{old}] no longer applies here: {new} reads [agents.{new}]."
-                    ),
-                    Some(by) => eprintln!("{at}: {by}'s reports-to names {old}, now {new}."),
-                }
+                eprintln!("{at}: {}", say(m.by.as_deref()));
             }
         }
-        Err(e) => eprintln!("Cannot check the settings for {old}: {e}"),
+        Err(e) => eprintln!("Cannot check the settings for {name}: {e}"),
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 /// Agent `name`'s `[agents.<name>]` instructions, read now and joined by blank lines in the

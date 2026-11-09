@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use jiff::Timestamp;
 use serde::Serialize;
 
@@ -418,6 +418,73 @@ impl Store {
         }
     }
 
+    /// Removes agent `name`: its thread leaves the store and `~/ai`'s history keeps it.
+    /// `waiting` hears the name of the compactor it waits for; `refuse` gets the sessions
+    /// attached to the thread, by harness and session id, and stops the removal with its error.
+    ///
+    /// It takes the locks [`Store::rename`] takes, so nothing writes the thread meanwhile, then
+    /// commits the project's folder: that commit holds every turn the thread has. A file under the
+    /// thread that git leaves out stops it first. This machine's compactor log moves aside, so an
+    /// agent made later under the name starts a log of its own; the lock files stay, as a rename
+    /// leaves them. The thread then moves into `~/ai`'s git directory in one rename, under the
+    /// commit lock, so no lookup and no commit sees it half gone; [`Removed::delete`] deletes it
+    /// there.
+    pub fn remove(
+        &self,
+        name: &str,
+        waiting: impl Fn(&str),
+        refuse: impl Fn(&[(String, String)]) -> Result<()>,
+    ) -> Result<Removed> {
+        let t = self.existing(name)?;
+        let p = t.local_file(COMPACT_LOCK)?;
+        let _compactor = match file::try_lock(&p)? {
+            Some(l) => l,
+            None => {
+                waiting(&t.name);
+                file::lock(&p)?
+            }
+        };
+        loop {
+            let attached = t.attached()?;
+            let _sessions = attached
+                .iter()
+                .map(|(h, s)| self.session_lock(h, s))
+                .collect::<Result<Vec<_>>>()?;
+            let _writer = file::lock(&t.local_file(WRITE_LOCK)?)?;
+            t.here()?;
+            if t.attached()?.iter().any(|s| !attached.contains(s)) {
+                continue;
+            }
+            refuse(&attached)?;
+            let path = t
+                .dir
+                .strip_prefix(&self.homes.repo)
+                .expect("a thread is in the user's repository")
+                .to_path_buf();
+            if let Some(f) = repo::left_out(&self.homes.repo, &path)?.first() {
+                bail!(
+                    "Cannot remove agent {name}: git leaves out {}, so ~/ai's history could not \
+                     keep it. Move it out of the thread, then try again.",
+                    pretty(f)
+                );
+            }
+            self.commit(&format!("ai agent remove {name}: its last state"))?;
+            t.retire_log()?;
+            let _commits = repo::lock(&self.homes.repo)?;
+            let commit = repo::head_holding(&self.homes.repo, &path)?;
+            let copy = tempfile::Builder::new()
+                .prefix("ai-remove-")
+                .tempdir_in(repo::git_dir(&self.homes.repo))
+                .context("Cannot make a directory to remove the thread in.")?;
+            file::rename_new(&t.dir, &copy.path().join(name)).at(&t.dir)?;
+            return Ok(Removed {
+                commit: commit.map(|c| c.to_string()),
+                path,
+                copy,
+            });
+        }
+    }
+
     /// Commits the project's folder of `~/ai` as one commit `msg`, leaving the rest of the
     /// repository as it is; nothing if the folder did not change or does not exist.
     pub fn commit(&self, msg: &str) -> Result<()> {
@@ -495,6 +562,30 @@ impl Store {
     /// clone of it.
     pub fn holds(&self, dir: &Path) -> bool {
         Project::find(dir).is_ok_and(|p| p.is_some_and(|p| p.id == self.project.id))
+    }
+}
+
+/// A thread [`Store::remove`] took out of the store, waiting in `~/ai`'s git directory to be
+/// [deleted](Removed::delete); dropped, it is deleted quietly.
+pub struct Removed {
+    /// The commit of `~/ai` that holds the thread's last state; `None` when git never recorded
+    /// it, as it held no file.
+    pub commit: Option<String>,
+    /// The thread's path in `~/ai`.
+    pub path: PathBuf,
+    copy: tempfile::TempDir,
+}
+
+impl Removed {
+    /// Deletes the thread's files from `~/ai`'s git directory.
+    pub fn delete(self) -> Result<()> {
+        let at = self.copy.path().to_path_buf();
+        self.copy.close().map_err(|e| {
+            anyhow!(
+                "Cannot delete the removed thread's files in {}: {e}. Delete them yourself.",
+                pretty(&at)
+            )
+        })
     }
 }
 
@@ -607,6 +698,29 @@ impl Thread {
             }
             r => r.at(&from),
         }
+    }
+
+    /// Moves this machine's compactor log aside, to `compact.removed-<time>.log` beside it,
+    /// numbered `-2`, … after the time when that name is taken; the caller holds the compactor's
+    /// lock.
+    fn retire_log(&self) -> Result<()> {
+        let from = self.log_path();
+        let stamp = Timestamp::now().strftime("%Y%m%dT%H%M%S").to_string();
+        for n in 1.. {
+            let suffix = match n {
+                1 => String::new(),
+                n => format!("-{n}"),
+            };
+            let to = self
+                .local
+                .join(format!("compact.removed-{stamp}{suffix}.log"));
+            match file::rename_new(&from, &to) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                r => return r.at(&from),
+            }
+        }
+        unreachable!("a free name comes before the numbers run out")
     }
 
     /// Records a session's branch; the caller holds the writer's lock.
@@ -1478,6 +1592,236 @@ mod tests {
             s.owner("claude", "s-2").unwrap().as_deref(),
             Some("reviewer")
         );
+    }
+
+    fn no(_: &[(String, String)]) -> Result<()> {
+        Ok(())
+    }
+
+    /// The files under `path` in commit `commit` of the repository at `dir`, with their bytes.
+    fn committed(dir: &Path, commit: &str, path: &Path) -> BTreeMap<String, Vec<u8>> {
+        let repo = gix::open(dir).unwrap();
+        let id = gix::ObjectId::from_hex(commit.as_bytes()).unwrap();
+        let tree = repo.find_commit(id).unwrap().tree().unwrap();
+        let mut out = BTreeMap::new();
+        for e in tree.traverse().breadthfirst.files().unwrap() {
+            let p = e.filepath.to_string();
+            if e.mode.is_blob() && p.starts_with(path.to_str().unwrap()) {
+                out.insert(p, repo.find_blob(e.oid).unwrap().take_data());
+            }
+        }
+        out
+    }
+
+    /// The files under `dir`, by their path relative to `repo`, with their bytes.
+    fn on_disk(repo: &Path, dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        for e in ignore::WalkBuilder::new(dir)
+            .standard_filters(false)
+            .build()
+        {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_file() {
+                let rel = e.path().strip_prefix(repo).unwrap();
+                out.insert(rel.to_str().unwrap().into(), fs::read(e.path()).unwrap());
+            }
+        }
+        out
+    }
+
+    /// The removed logs of `t` on this machine, by their contents.
+    fn retired(t: &Thread) -> Vec<String> {
+        let mut logs: Vec<String> = fs::read_dir(&t.local)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("compact.removed-")
+            })
+            .map(|p| fs::read_to_string(p).unwrap())
+            .collect();
+        logs.sort();
+        logs
+    }
+
+    #[test]
+    fn remove_takes_the_thread_out_and_a_commit_keeps_its_last_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev", "other"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let dev = s.thread("dev").unwrap();
+        fs::write(dev.log_path(), "dev's log\n").unwrap();
+        let repo = s.homes().repo.clone();
+        let before = on_disk(&repo, &dev.dir);
+        assert!(!before.is_empty());
+        let seen = std::cell::RefCell::new(Vec::new());
+
+        let removed = s
+            .remove("dev", quiet, |sessions| {
+                seen.borrow_mut().extend_from_slice(sessions);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(*seen.borrow(), [("claude".to_string(), "s-1".to_string())]);
+        assert_eq!(names(&s), ["other"]);
+        assert!(!dev.exists().unwrap());
+        assert_eq!(s.owner("claude", "s-1").unwrap(), None);
+        assert_eq!(
+            repo.join(&removed.path),
+            Store::root(s.homes(), s.project())
+                .unwrap()
+                .join("threads/dev")
+        );
+        let commit = removed.commit.clone().unwrap();
+        assert_eq!(committed(&repo, &commit, &removed.path), before);
+        assert!(!dev.log_path().exists());
+        assert_eq!(retired(&dev), ["dev's log\n"]);
+
+        let copies = || {
+            fs::read_dir(repo::git_dir(&repo))
+                .unwrap()
+                .filter(|e| {
+                    let e = e.as_ref().unwrap();
+                    e.file_name().to_str().unwrap().starts_with("ai-remove-")
+                })
+                .count()
+        };
+        assert_eq!(copies(), 1);
+        removed.delete().unwrap();
+        assert_eq!(copies(), 0);
+        s.create("dev").unwrap();
+        assert!(dev.snapshot().unwrap().is_empty().unwrap());
+    }
+
+    #[test]
+    fn remove_stops_at_a_refusal_and_changes_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let dev = s.thread("dev").unwrap();
+        fs::write(dev.log_path(), "dev's log\n").unwrap();
+        let repo = s.homes().repo.clone();
+        let head = || gix::open(&repo).unwrap().head_id().ok().map(|i| i.detach());
+        let was = head();
+
+        let r = s.remove("dev", quiet, |_| bail!("It runs."));
+        assert_eq!(err(r), "It runs.");
+        assert_eq!(names(&s), ["dev"]);
+        assert_eq!(head(), was);
+        assert_eq!(fs::read_to_string(dev.log_path()).unwrap(), "dev's log\n");
+        assert_eq!(s.owner("claude", "s-1").unwrap().as_deref(), Some("dev"));
+        assert_eq!(
+            err(s.remove("nope", quiet, no)),
+            "No agent nope in this project. Create it: ai agent new nope"
+        );
+    }
+
+    #[test]
+    fn remove_of_a_thread_that_holds_no_file_names_no_commit() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let removed = s.remove("dev", quiet, no).unwrap();
+        assert_eq!(removed.commit, None);
+        assert!(names(&s).is_empty());
+    }
+
+    #[test]
+    fn remove_refuses_a_thread_holding_a_file_git_leaves_out() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let dev = s.thread("dev").unwrap();
+        fs::write(s.homes().repo.join(".gitignore"), "*.tmp\n").unwrap();
+        let kept = dev.dir.join("notes.tmp");
+        fs::write(&kept, "mine\n").unwrap();
+        let e = err(s.remove("dev", quiet, no));
+        assert!(
+            e.starts_with("Cannot remove agent dev: git leaves out ")
+                && e.contains("notes.tmp")
+                && e.ends_with("Move it out of the thread, then try again."),
+            "{e}"
+        );
+        assert_eq!(fs::read_to_string(kept).unwrap(), "mine\n");
+        assert_eq!(names(&s), ["dev"]);
+    }
+
+    #[test]
+    fn a_thread_found_before_its_removal_is_never_written_or_remade() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let stale = s.thread("dev").unwrap();
+        s.remove("dev", quiet, no).unwrap().delete().unwrap();
+
+        let gone = "Agent dev was renamed or removed while this ran.";
+        let line = stale.put_line(
+            Key { level: 1, last: 0 },
+            LineKind::Turn,
+            &Who::default(),
+            "x",
+        );
+        assert_eq!(err(line), gone);
+        assert_eq!(err(stale.lock()), gone);
+        assert_eq!(err(stale.record("claude", "s-2", State::Attached)), gone);
+        assert!(!stale.exists().unwrap());
+        assert!(names(&s).is_empty());
+    }
+
+    #[test]
+    fn remove_waits_for_the_compactor_and_hears_a_session_attached_meanwhile() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let dev = s.thread("dev").unwrap();
+        let compacting = dev.lock().unwrap();
+        let writing = dev.writer().unwrap();
+        let (heard, waited) = mpsc::channel();
+        let (told, sessions) = mpsc::channel();
+        let path = dir.path().to_path_buf();
+        let removing = thread::spawn(move || {
+            let s = Store::find_in(&Homes::at(&path.join("home")), &path)
+                .unwrap()
+                .unwrap();
+            s.remove(
+                "dev",
+                |t| heard.send(t.to_string()).unwrap(),
+                |a| {
+                    told.send(a.to_vec()).unwrap();
+                    Ok(())
+                },
+            )
+            .map(|r| r.commit)
+        });
+        assert_eq!(waited.recv_timeout(Duration::from_secs(5)).unwrap(), "dev");
+        drop(compacting);
+        thread::sleep(Duration::from_millis(200));
+        let session = s.session_lock("claude", "s-2").unwrap();
+        attach_event(&dev, "s-2");
+        drop(writing);
+        thread::sleep(Duration::from_millis(200));
+        assert!(dev.exists().unwrap(), "it went under the session's lock");
+        drop(session);
+        assert!(removing.join().unwrap().unwrap().is_some());
+        assert_eq!(
+            sessions.recv().unwrap(),
+            [("claude".to_string(), "s-2".to_string())]
+        );
+        assert!(names(&s).is_empty());
+    }
+
+    #[test]
+    fn each_removal_keeps_its_own_log() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let dev = s.thread("dev").unwrap();
+        fs::write(dev.local_file(COMPACT_LOG).unwrap(), "first\n").unwrap();
+        s.remove("dev", quiet, no).unwrap().delete().unwrap();
+        s.create("dev").unwrap();
+        fs::write(dev.local_file(COMPACT_LOG).unwrap(), "second\n").unwrap();
+        s.remove("dev", quiet, no).unwrap().delete().unwrap();
+        assert_eq!(retired(&dev), ["first\n", "second\n"]);
     }
 
     #[test]

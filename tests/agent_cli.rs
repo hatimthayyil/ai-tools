@@ -92,7 +92,7 @@ impl Sandbox {
     }
 
     /// A `claude` that records its arguments, one per line, in `out/argv`, and its working
-    /// directory in `out/cwd`.
+    /// directory in `out/cwd`; as `claude agents`, it answers as [`AGENTS`] says.
     fn fake_claude(&self) {
         let path = std::env::var("PATH").unwrap();
         let bash = std::env::split_paths(&path)
@@ -102,8 +102,9 @@ impl Sandbox {
         let src = self.root.join("claude.sh");
         let out = self.root.join("out");
         let body = format!(
-            "#!{}\nprintf '%s\\n' \"$@\" > {}\npwd > {}\n",
+            "#!{}\n{}\nprintf '%s\\n' \"$@\" > {}\npwd > {}\n",
             bash.display(),
+            agents(&out),
             out.join("argv").display(),
             out.join("cwd").display()
         );
@@ -134,6 +135,7 @@ impl Sandbox {
         let out = self.root.join("out");
         let body = format!(
             r#"#!{bash}
+{agents}
 if [ "$1" != "-p" ]; then
   printf '%s\n' "$@" > {argv}
   pwd > {cwd}
@@ -163,6 +165,7 @@ while IFS= read -r l; do
 done
 "#,
             bash = bash.display(),
+            agents = agents(&out),
             out = out.display(),
             argv = out.join("argv").display(),
             cwd = out.join("cwd").display(),
@@ -312,6 +315,19 @@ done
         let code = child.wait().unwrap().code().unwrap();
         (code, String::from_utf8_lossy(&shown).into())
     }
+}
+
+/// How the fake `claude` answers `claude agents --json`, the sessions it runs: the contents of
+/// `out/agents.json`, else none; failing, with `boom` on stderr, while `out/agents.fail` exists.
+const AGENTS: &str = r#"if [ "$1" = agents ]; then
+  if [ -e {out}/agents.fail ]; then echo boom >&2; exit 1; fi
+  cat {out}/agents.json 2>/dev/null || echo '[]'
+  exit 0
+fi"#;
+
+/// [`AGENTS`] for the sandbox's `out` directory.
+fn agents(out: &Path) -> String {
+    AGENTS.replace("{out}", &out.display().to_string())
 }
 
 /// A pseudo-terminal of 24 rows by 80 columns: its master and slave ends.
@@ -2686,6 +2702,180 @@ fn rename_goes_ahead_when_a_settings_file_cannot_be_read() {
         "{err}"
     );
     assert!(s.store().thread("reviewer").unwrap().exists().unwrap());
+}
+
+/// The restore command `ai agent remove` printed in `o`, run in a shell with the sandbox's home.
+fn restore(s: &Sandbox, o: &Output) {
+    let out = stdout(o);
+    let cmd = out.trim_end().split_once("Restore it: ").unwrap().1;
+    let r = Command::new("bash")
+        .args(["-c", cmd])
+        .env("HOME", s.root.join("home"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{cmd}: {}", stderr(&r));
+}
+
+#[test]
+fn remove_takes_an_agent_out_and_its_restore_command_brings_it_back() {
+    let s = Sandbox::new();
+    for name in ["dev", "two"] {
+        ok(
+            s.ai(&["new", name]),
+            &format!("Created agent {name}. Start it: ai agent resume {name}\n"),
+        );
+    }
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let transcript = s.transcript("s-1", &talk(3, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    assert_eq!(turn_ends(&s, "dev").len(), 3);
+    let bytes = fs::read(&transcript).unwrap();
+
+    let o = s.ai(&["remove", "dev"]);
+    assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
+    let ai = s.homes().repo;
+    let kept = git(&ai, &["rev-parse", "HEAD~1"]);
+    assert_eq!(
+        stdout(&o),
+        format!(
+            "Removed agent dev. Restore it: git -C ~/ai restore --source={} -- \
+             projects/repo/agents/threads/dev\n",
+            kept.trim_end()
+        )
+    );
+    assert_eq!(
+        git(&ai, &["log", "-2", "--format=%s"]),
+        "ai agent remove dev\nai agent remove dev: its last state\n"
+    );
+    let tree = git(&ai, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(!tree.contains("/threads/dev/"), "{tree}");
+    ok(s.ai(&["list"]), "two  0 turns  -\n");
+    unattached(s.ai_in("s-1", &["sync-session"]));
+    assert_eq!(
+        fs::read(&transcript).unwrap(),
+        bytes,
+        "the transcript stays"
+    );
+
+    restore(&s, &o);
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    assert_eq!(turn_ends(&s, "dev").len(), 3);
+    let list = stdout(&s.ai_in("s-1", &["list"]));
+    assert!(
+        list.starts_with("dev  3 turns  2026-10-14 10:00\n")
+            && list.contains("claude  s-1  attached  2026-10-14 10:00  this session"),
+        "{list}"
+    );
+}
+
+#[test]
+fn remove_refuses_while_an_attached_session_runs() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    s.transcript("s-2", &talk(1, |k| format!("ask {k}")));
+    ok(s.ai_in("s-2", &["attach", "dev"]), "Attached to dev.\n");
+    let ai = s.homes().repo;
+    let before = git(&ai, &["log", "--format=%H"]);
+    let agents = s.root.join("out/agents.json");
+
+    fs::write(
+        &agents,
+        r#"[{"cwd":"/r","kind":"interactive","startedAt":1,"pid":1,"status":"idle","sessionId":"s-1","name":"repo.dev"},
+            {"cwd":"/r","kind":"interactive","startedAt":2,"pid":2,"status":"busy","sessionId":"s-9"}]"#,
+    )
+    .unwrap();
+    fails(
+        s.ai(&["remove", "dev"]),
+        "Agent dev's session claude s-1 (repo.dev) is running. End it, then try again.\n",
+    );
+    fs::write(
+        &agents,
+        r#"[{"kind":"background","state":"working","sessionId":"s-1"},
+            {"kind":"interactive","pid":3,"sessionId":"s-2"}]"#,
+    )
+    .unwrap();
+    fails(
+        s.ai(&["remove", "dev"]),
+        "Agent dev's sessions claude s-1, claude s-2 are running. End them, then try again.\n",
+    );
+    fs::write(s.root.join("out/agents.fail"), "").unwrap();
+    fails(
+        s.ai(&["remove", "dev"]),
+        "Cannot tell whether agent dev's sessions are running: claude agents --json failed: \
+         boom.\n",
+    );
+    assert_eq!(git(&ai, &["log", "--format=%H"]), before);
+    assert!(stdout(&s.ai(&["list"])).starts_with("dev  "));
+
+    fs::remove_file(s.root.join("out/agents.fail")).unwrap();
+    ok(s.ai_in("s-2", &["detach"]), "Detached from dev.\n");
+    fs::write(&agents, r#"[{"sessionId":"s-2"}]"#).unwrap();
+    let o = s.ai(&["remove", "dev"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stdout(&o).starts_with("Removed agent dev. Restore it: "));
+}
+
+#[test]
+fn remove_of_an_agent_that_holds_nothing_says_how_to_make_it_again() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(
+        s.ai(&["remove", "dev"]),
+        "Removed agent dev, which held nothing. Make it again: ai agent new dev\n",
+    );
+    fails(
+        s.ai(&["remove", "dev"]),
+        "No agent dev in this project. Create it: ai agent new dev\n",
+    );
+    let o = s.outside(&["remove", "dev"]);
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).starts_with("Not in a project"), "{}", stderr(&o));
+}
+
+#[test]
+fn remove_names_each_setting_that_still_names_the_agent_and_changes_none() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let project = s.repo().join("ai.toml");
+    let mut f = fs::OpenOptions::new().append(true).open(&project).unwrap();
+    f.write_all(
+        b"\n[agents.dev]\nworktree = \"../dev\"\n\n[agents.lead]\nreports-to = [\"dev\"]\n",
+    )
+    .unwrap();
+    let text = fs::read_to_string(&project).unwrap();
+    let line_of = |needle: &str| text.lines().position(|l| l.contains(needle)).unwrap() + 1;
+
+    let o = s.ai(&["remove", "dev"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "Removed agent dev, which held nothing. Make it again: ai agent new dev\n"
+    );
+    let at = project.display();
+    assert_eq!(
+        stderr(&o),
+        format!(
+            "{at}:{}: [agents.dev] applies to no agent now.\n\
+             {at}:{}: lead's reports-to names dev, which was removed.\n",
+            line_of("[agents.dev]"),
+            line_of("reports-to"),
+        )
+    );
+    assert_eq!(fs::read_to_string(&project).unwrap(), text);
 }
 
 #[test]
