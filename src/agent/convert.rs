@@ -1,8 +1,9 @@
 //! Moving a project's agents and private settings from where an older ai kept them, `.ai/local`
-//! in the project's home (agent store format 4), to the project's folder in `~/ai`. A thread's
-//! copies of its sessions' files become records of the harness's own files; a copy the harness
-//! no longer holds whole is restored into the harness's files, where its records point. The old
-//! store is archived whole in `~/.ai` and never enters `~/ai`.
+//! in the project's home (agent store format 4), to the project's folder in `~/ai`. Each file kept
+//! as a directory of segments becomes one file of the same bytes. A thread's copies of its
+//! sessions' files become records of the harness's own files; a copy the harness no longer holds
+//! whole is restored into the harness's files, where its records point. The old store is archived
+//! whole in `~/.ai` and never enters `~/ai`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -22,14 +23,15 @@ use crate::{
         record::{Event, Pointer, State, Track},
         source,
         store::{
-            AGENTS, ATTACHMENTS, DIR, FORMAT, ITEMS, LINES, SESSIONS, SOURCES, THREADS, check_name,
+            self, AGENTS, ATTACHMENTS, DIR, FORMAT, ITEMS, LINES, SESSIONS, SOURCES, THREADS,
+            check_name,
         },
     },
-    config::{FILE, Homes},
+    config::{FILE, Homes, Settings},
     file::{self, AtPath, pretty},
     jsonl,
     project::{OLD_STORE, Project},
-    repo, segments,
+    repo,
 };
 
 /// The agent store format a move takes.
@@ -208,6 +210,7 @@ pub fn convert(project: &Project, homes: &Homes) -> Result<Moved> {
         "ai",
         &format!("ai: move {}'s agents from {OLD_STORE}", project.name),
     )?;
+    store::gc(homes, &Settings::find_in(homes, &project.home));
     Ok(moved)
 }
 
@@ -344,7 +347,7 @@ fn build(agents: &Path, to: &Path, moved: &mut Moved) -> Result<()> {
     file::ensure_format(to, FORMAT)?;
     let mut events: BTreeMap<String, Vec<Event>> = BTreeMap::new();
     let mut owner: BTreeMap<(String, String), String> = BTreeMap::new();
-    let all = segments::read(&agents.join(SESSIONS))?;
+    let all = complete(joined(&agents.join(SESSIONS))?);
     for (i, l) in jsonl::lines(&all).enumerate() {
         let e: OldEvent = jsonl::decode(l).with_context(|| {
             format!(
@@ -380,7 +383,7 @@ fn build(agents: &Path, to: &Path, moved: &mut Moved) -> Result<()> {
     for name in names(&threads)? {
         let dst = to.join(THREADS).join(&name);
         thread(&threads.join(&name), &dst, moved)?;
-        segments::append(
+        jsonl::append(
             &dst.join(ATTACHMENTS),
             events.get(&name).map_or(&[][..], Vec::as_slice),
         )?;
@@ -394,9 +397,11 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
     let mut tracks = Vec::new();
     for (name, from, _) in entries(src)? {
         match name.as_str() {
-            ITEMS | LINES | AGENTS | "agents" | "calls" => copy_tree(&from, &dst.join(&name))?,
+            ITEMS | LINES | AGENTS => join(&from, &dst.join(&name))?,
+            "agents" => join_subagents(&from, &dst.join(&name))?,
+            "calls" => copy_tree(&from, &dst.join(&name))?,
             SESSIONS => {
-                let b = segments::read(&from)?;
+                let b = complete(joined(&from)?);
                 for (i, l) in jsonl::lines(&b).enumerate() {
                     let t: Track = jsonl::decode(l).with_context(|| {
                         format!("{}: record {} is corrupt", pretty(&from), i + 1)
@@ -431,7 +436,7 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
             let companion = transcript.with_extension("");
             let home = source::home_here(&harness);
             for (rel, copy) in copies(&dir)? {
-                let bytes = segments::read_all(&copy)?;
+                let bytes = joined(&copy)?;
                 let raw = base.join(&rel);
                 let at = match holds(&raw, &bytes)? {
                     true => {
@@ -461,8 +466,8 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
             .take()
             .map(|p| source::point(home.as_deref(), &p));
     }
-    segments::append(&dst.join(SESSIONS), &tracks)?;
-    segments::append(&dst.join(SOURCES), &pointers)?;
+    jsonl::append(&dst.join(SESSIONS), &tracks)?;
+    jsonl::append(&dst.join(SOURCES), &pointers)?;
     Ok(())
 }
 
@@ -470,14 +475,15 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
 fn copies(dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
     fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
         for (_, p, kind) in entries(dir)? {
-            if segments::is_segmented(&p) {
+            if is_segmented(&p) {
                 let rel = p.strip_prefix(root).expect("under the walk's root");
                 out.push((rel.to_path_buf(), p));
             } else if kind.is_dir() {
                 walk(root, &p, out)?;
             } else {
                 bail!(
-                    "Cannot move {}: a copied file is a directory of segments.",
+                    "Cannot move {}: a format-{FROM} store keeps each copied file as a directory \
+                     of segments.",
                     pretty(&p)
                 );
             }
@@ -487,6 +493,76 @@ fn copies(dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut out = Vec::new();
     walk(dir, dir, &mut out)?;
     Ok(out)
+}
+
+/// Whether `p` is a file as a format-4 store keeps one: a directory of segments, files
+/// numbered from `000000`, each but the last ending a line.
+fn is_segmented(p: &Path) -> bool {
+    fs::read_dir(p).is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.path().is_file())))
+}
+
+/// Every byte of the segmented file `p`, its segments joined in order; empty if `p` does not
+/// exist.
+fn joined(p: &Path) -> Result<Vec<u8>> {
+    if !p.exists() {
+        return Ok(Vec::new());
+    }
+    if !p.is_dir() {
+        bail!(
+            "Cannot move {}: a format-{FROM} store keeps it as a directory of segments.",
+            pretty(p)
+        );
+    }
+    let segments = entries(p)?;
+    let mut out = Vec::new();
+    for (i, (name, seg, kind)) in segments.iter().enumerate() {
+        let want = match p.extension() {
+            Some(ext) => format!("{i:06}.{}", ext.to_string_lossy()),
+            None => format!("{i:06}"),
+        };
+        if *name != want || !kind.is_file() {
+            bail!(
+                "Cannot move {}: its segments are not numbered from 0.",
+                pretty(p)
+            );
+        }
+        let b = fs::read(seg).at(seg)?;
+        if i + 1 < segments.len() && b.last() != Some(&b'\n') {
+            bail!("Cannot move {}: segment {i} ends inside a line.", pretty(p));
+        }
+        out.extend(b);
+    }
+    Ok(out)
+}
+
+/// `b`'s complete lines, as [`jsonl::read`] gives a file's.
+fn complete(mut b: Vec<u8>) -> Vec<u8> {
+    b.truncate(jsonl::complete(&b));
+    b
+}
+
+/// Writes the segmented file `from` at `to` as one file of the same bytes.
+fn join(from: &Path, to: &Path) -> Result<()> {
+    fs::write(to, joined(from)?).at(to)
+}
+
+/// Writes the subagents' files under `from`, `<harness>/<agent>.jsonl` each segmented, under
+/// `to` as one file each.
+fn join_subagents(from: &Path, to: &Path) -> Result<()> {
+    for (harness, dir, kind) in entries(from)? {
+        if !kind.is_dir() {
+            bail!(
+                "Cannot move {}: it is not part of a format-{FROM} thread.",
+                pretty(&dir)
+            );
+        }
+        let out = to.join(&harness);
+        fs::create_dir_all(&out).at(&out)?;
+        for (name, file, _) in entries(&dir)? {
+            join(&file, &out.join(name))?;
+        }
+    }
+    Ok(())
 }
 
 /// Whether the file at `raw` begins with `bytes`.

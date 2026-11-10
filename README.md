@@ -120,7 +120,7 @@ A session is attached to one agent at a time. Detach it explicitly before attach
 
 Each turn's work, the agent's steps between your message and its final reply, is summarised first; the turn's line is then written from your message, that summary and the final reply. A summary line is asked for 50 to 200 words, more where the AI wrote more and ran more tools, and holds at most 512 characters per 50 words. A command you run, `/ai` included, writes the lines it needs, however long they take, and stops at the first that fails, naming each failed line with its error: `/ai` then compacts nothing, and `ai agent resume` starts no new session. Press Esc while `/ai` runs to cancel it: its model calls stop, nothing is compacted, the lines it wrote stay, and the next `/ai` goes on from them. The background summariser, started after each turn, builds what it can and only logs, to `<thread>.log` beside the threads.
 
-A thread is JSON Lines files: append-only records and summaries, beside byte-for-byte copies of the original transcripts and companion session files. Each file is a directory of 1 MiB segments, so a commit of a growing thread stores only the newest segment. A store of another format is refused. Re-attaching a session rebuilds its thread from the transcript.
+A thread is JSON Lines files: append-only records and summaries. `ai` commits them to `~/ai` through gix, which stores each version of a file whole, so once more than `[agent] gc-after-mib` of loose objects have been written to `~/ai` since the last one, a commit starts `git gc` in the background, which packs each file's versions against each other. This needs `git` on `PATH` (the Nix package brings its own); without it, `ai` warns once per command and the commit still stands. A store of another format is refused. Re-attaching a session rebuilds its thread from the transcript.
 
 This needs the [Claude Code plugin](#claude-code-plugin).
 
@@ -159,6 +159,9 @@ name = "widget"    # its name; default the directory's
 
 [chat]
 background = true  # summarise in the background after each turn
+
+[agent]
+gc-after-mib = 32  # MiB of loose objects written to ~/ai since the last git gc, past which a commit starts the next
 
 [agent.view]       # how many entries `ai agent view` shows; a turn or a line is one
 total = 64         # entries in all

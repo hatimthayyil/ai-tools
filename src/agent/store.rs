@@ -4,6 +4,7 @@ use std::{
     io::{self, Write},
     ops::Range,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
 
@@ -22,12 +23,12 @@ use crate::{
         },
         source,
     },
-    config::Homes,
+    config::{Homes, Settings},
     file::{self, AtPath, pretty},
     jsonl,
     memory::{CALLS, Who},
     project::Project,
-    repo, segments,
+    repo,
 };
 
 /// The agent store format this ai reads and writes.
@@ -61,6 +62,33 @@ pub fn check_name(name: &str) -> Result<&str> {
         bail!("'{name}' is not a thread name: letters, digits, '-' and '_'.");
     }
     Ok(name)
+}
+
+/// After a commit to `~/ai`, starts `git gc` on it once the loose objects written since the last
+/// one pass `[agent] gc-after-mib` as `settings` read it. The commit stands whatever happens here,
+/// so a problem is only told: a bad `[agent]` table each time, a missing `git` once per process.
+pub(super) fn gc(homes: &Homes, settings: &Settings) {
+    static NO_GIT: AtomicBool = AtomicBool::new(false);
+    let limit = match settings.agent_table() {
+        Ok(t) => t.gc_after(),
+        Err(e) => {
+            eprintln!("Cannot pack {}: {e:#}", pretty(&homes.repo));
+            return;
+        }
+    };
+    match repo::gc(&homes.repo, limit) {
+        Ok(repo::Gc::Within | repo::Gc::Started) => {}
+        Ok(repo::Gc::NoGit) => {
+            if !NO_GIT.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "Cannot pack {}: no git program on PATH. Install git: ai runs git gc on it \
+                     once it holds more than [agent] gc-after-mib of loose objects.",
+                    pretty(&homes.repo)
+                );
+            }
+        }
+        Err(e) => eprintln!("Cannot pack {}: {e:#}", pretty(&homes.repo)),
+    }
 }
 
 /// The items nothing follows, in order.
@@ -392,7 +420,9 @@ impl Store {
             .strip_prefix(&self.homes.repo)
             .expect("a project's folder is in the user's repository");
         repo::commit_paths(&self.homes.repo, &[rel], "ai", msg)
-            .with_context(|| format!("Cannot commit {}", pretty(&folder)))
+            .with_context(|| format!("Cannot commit {}", pretty(&folder)))?;
+        gc(&self.homes, &self.settings());
+        Ok(())
     }
 
     /// Every thread, by name.
@@ -480,15 +510,15 @@ impl Thread {
     /// the writer's lock. Files read from a thread renamed away meanwhile may be of two states,
     /// so a snapshot that read anything from a directory gone by its end is an error.
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let events = segments::read(&self.dir.join(ATTACHMENTS))?;
-        let tracks = segments::read(&self.dir.join(SESSIONS))?;
-        let sources = segments::read(&self.dir.join(SOURCES))?;
-        let lines = segments::read(&self.dir.join(LINES))?;
-        let agents = segments::read(&self.dir.join(AGENTS))?;
+        let events = jsonl::read(&self.dir.join(ATTACHMENTS))?;
+        let tracks = jsonl::read(&self.dir.join(SESSIONS))?;
+        let sources = jsonl::read(&self.dir.join(SOURCES))?;
+        let lines = jsonl::read(&self.dir.join(LINES))?;
+        let agents = jsonl::read(&self.dir.join(AGENTS))?;
         let s = Snapshot {
             name: self.name.clone(),
             dir: self.dir.clone(),
-            items: segments::read(&self.dir.join(ITEMS))?,
+            items: jsonl::read(&self.dir.join(ITEMS))?,
             lines,
             tracks,
             sources,
@@ -533,7 +563,7 @@ impl Thread {
     }
 
     fn append<T: Serialize>(&self, file: &str, rows: &[T]) -> Result<()> {
-        segments::append(&self.dir.join(file), rows)
+        jsonl::append(&self.dir.join(file), rows)
     }
 
     /// The sessions attached here, by harness and session id, in order: those whose last
@@ -954,7 +984,7 @@ impl Snapshot {
 
     /// A subagent's items, in order; its roots follow its [`Agent::call`].
     pub fn agent_items(&self, harness: &str, agent: &str) -> Result<Vec<Item>> {
-        let b = segments::read(&self.agent_path(harness, agent)?)?;
+        let b = jsonl::read(&self.agent_path(harness, agent)?)?;
         items(&self.name, &format!("agent {agent} item"), &b)
     }
 
@@ -1101,7 +1131,7 @@ impl Snapshot {
                 .and_then(|i| main.seq(&i.id));
             let path = self.agent_path(&b.harness, &sub.agent)?;
             let what = format!("agent {} item", sub.agent);
-            let mut items = Append::new(heads(&self.name, &what, &segments::read(&path)?)?);
+            let mut items = Append::new(heads(&self.name, &what, &jsonl::read(&path)?)?);
             for item in &sub.items {
                 if items.seq(&item.id).is_none() {
                     let parent = item.parent.as_ref().and_then(|p| items.seq(p));
@@ -1109,7 +1139,12 @@ impl Snapshot {
                 }
             }
             agent_items += items.rows.len() as u64;
-            segments::append(&path, &items.rows)?;
+            if !items.rows.is_empty()
+                && let Some(dir) = path.parent()
+            {
+                fs::create_dir_all(dir).at(dir)?;
+            }
+            jsonl::append(&path, &items.rows)?;
             let i = agents
                 .iter()
                 .position(|a| a.harness == b.harness && a.agent == sub.agent);

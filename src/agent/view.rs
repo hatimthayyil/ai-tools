@@ -38,17 +38,31 @@ const LISTING: Cut = Cut {
 
 /// `[agent]` in `ai.toml`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Table {
     pub view: View,
+    /// The MiB of loose objects written to `~/ai` since the last `git gc` before a commit starts the
+    /// next.
+    pub gc_after_mib: Option<u64>,
 }
+
+/// [`Table::gc_after_mib`] unset.
+const GC_AFTER_MIB: u64 = 32;
 
 impl Table {
     /// These settings, then `base`'s for those unset here.
     pub fn over(self, base: Table) -> Table {
         Table {
             view: self.view.over(base.view),
+            gc_after_mib: self.gc_after_mib.or(base.gc_after_mib),
         }
+    }
+
+    /// The bytes of loose objects `~/ai` holds before a commit starts `git gc` on it.
+    pub fn gc_after(&self) -> u64 {
+        self.gc_after_mib
+            .unwrap_or(GC_AFTER_MIB)
+            .saturating_mul(1 << 20)
     }
 }
 

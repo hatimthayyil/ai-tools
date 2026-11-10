@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     fs, io,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
@@ -17,6 +20,9 @@ use crate::file::{self, AtPath, pretty};
 
 const GIT: &str = ".git";
 const LOCK: &str = "ai-commit.lock";
+/// In the git directory: the newest modification time among the loose objects [`gc`] counted when
+/// it last started `git gc`, in nanoseconds since the epoch.
+const GC_MARK: &str = "ai-gc";
 
 pub fn exists(dir: &Path) -> bool {
     git_dir(dir).is_dir()
@@ -70,6 +76,153 @@ pub fn ensure(dir: &Path) -> Result<()> {
         Err(e) => return Err(e).at(dir),
     }
     create(dir)
+}
+
+/// What [`gc`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Gc {
+    /// The loose objects were within the limit, so nothing started.
+    Within,
+    /// `git gc` started.
+    Started,
+    /// No `git` program could be started.
+    NoGit,
+}
+
+/// The variables that would point git at objects or an index other than the repository's own.
+const GIT_ENV: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+/// Starts `git gc` on the repository at `dir` once the loose objects written since it last
+/// started one pass `limit` bytes, and returns without waiting for it. gix writes each object
+/// whole and never packs, so a file that grows is stored whole again by every commit until
+/// `git gc` packs it against its earlier versions. git's own `gc --auto` counts loose objects,
+/// not their bytes, so it would wait for hundreds of commits. The gc keeps git's default grace
+/// before pruning, so objects a commit writes while it runs stay; git's `gc.pid` keeps a second
+/// gc from starting meanwhile.
+///
+/// Objects a gc leaves loose (unreferenced ones a git without cruft packs keeps until they age
+/// out, or all of them when it was killed) are older than its start, so they count for nothing
+/// and cannot start one gc after another; the next gc takes them with it.
+pub fn gc(dir: &Path, limit: u64) -> Result<Gc> {
+    let loose = loose(dir, gc_mark(dir)?)?;
+    if loose.bytes <= limit {
+        return Ok(Gc::Within);
+    }
+    let mut c = Command::new("git");
+    for k in GIT_ENV {
+        c.env_remove(k);
+    }
+    let child = c
+        .arg("--git-dir")
+        .arg(git_dir(dir))
+        .args(["gc", "--quiet"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn();
+    match child {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+            if let Some(newest) = loose.newest {
+                set_gc_mark(dir, newest)?;
+            }
+            Ok(Gc::Started)
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Gc::NoGit),
+        Err(e) => Err(e).context("Cannot start git gc."),
+    }
+}
+
+/// The bytes the repository at `dir` holds in loose objects. A gc running meanwhile may remove
+/// what this counts; what it removed counts as nothing.
+pub fn loose_bytes(dir: &Path) -> Result<u64> {
+    Ok(loose(dir, None)?.bytes)
+}
+
+/// What [`loose`] found.
+struct Loose {
+    /// The bytes of the loose objects modified after the given time, of all of them without one.
+    bytes: u64,
+    /// The newest modification time among all the loose objects.
+    newest: Option<SystemTime>,
+}
+
+/// The loose objects of the repository at `dir`, counting those modified after `since`.
+fn loose(dir: &Path, since: Option<SystemTime>) -> Result<Loose> {
+    let objects = git_dir(dir).join("objects");
+    let mut found = Loose {
+        bytes: 0,
+        newest: None,
+    };
+    for e in read_dir_if(&objects)? {
+        let e = e.at(&objects)?;
+        let hex = e
+            .file_name()
+            .to_str()
+            .is_some_and(|s| s.len() == 2 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !hex {
+            continue;
+        }
+        let sub = e.path();
+        for o in read_dir_if(&sub)? {
+            let o = o.at(&sub)?;
+            let m = match o.metadata() {
+                Ok(m) => m,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).at(&o.path()),
+            };
+            let at = m.modified().at(&o.path())?;
+            if since.is_none_or(|s| at > s) {
+                found.bytes += m.len();
+            }
+            found.newest = found.newest.max(Some(at));
+        }
+    }
+    Ok(found)
+}
+
+/// The time [`gc`] last recorded for the repository at `dir`. None when it recorded none, and
+/// when the record cannot be a time it wrote (not a number, or later than now, as after the
+/// clock was set back): every loose object then counts, and the next gc records anew.
+fn gc_mark(dir: &Path) -> Result<Option<SystemTime>> {
+    let path = git_dir(dir).join(GC_MARK);
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => return Ok(None),
+        Err(e) => return Err(e).at(&path),
+    };
+    Ok(text
+        .trim()
+        .parse()
+        .ok()
+        .and_then(|n| UNIX_EPOCH.checked_add(Duration::from_nanos(n)))
+        .filter(|t| *t <= SystemTime::now()))
+}
+
+/// Records `newest` as the time [`gc_mark`] returns for the repository at `dir`.
+fn set_gc_mark(dir: &Path, newest: SystemTime) -> Result<()> {
+    let path = git_dir(dir).join(GC_MARK);
+    let nanos = newest
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    fs::write(&path, format!("{nanos}\n")).at(&path)
+}
+
+/// The entries of `dir`; none if it does not exist.
+fn read_dir_if(dir: &Path) -> Result<Vec<io::Result<fs::DirEntry>>> {
+    match fs::read_dir(dir) {
+        Ok(d) => Ok(d.collect()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).at(dir),
+    }
 }
 
 /// Commits what is under each of `paths`, relative to the repository at `dir`, as one commit
@@ -309,6 +462,211 @@ mod tests {
             .object_id();
         let blob = repo.find_blob(id).unwrap().take_data();
         (msg, String::from_utf8(blob).unwrap())
+    }
+
+    /// `git args` in the repository at `dir`, which must succeed; its output.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("--git-dir")
+            .arg(git_dir(dir))
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// Waits until the repository at `dir` holds a pack, up to a minute.
+    fn packed(dir: &Path) {
+        let pack = git_dir(dir).join("objects/pack");
+        for _ in 0..600 {
+            let found = fs::read_dir(&pack).is_ok_and(|d| {
+                d.flatten()
+                    .any(|e| e.path().extension().is_some_and(|x| x == "pack"))
+            });
+            if found {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("no pack in {}", pack.display());
+    }
+
+    /// Appends `n` bytes of one line to `p`.
+    fn grow(p: &Path, n: usize, tag: usize) {
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .unwrap();
+        writeln!(f, "{tag} {}", "x".repeat(n)).unwrap();
+    }
+
+    #[test]
+    fn gc_starts_only_once_the_loose_objects_pass_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        assert_eq!(loose_bytes(&dir).unwrap(), 0);
+        grow(&dir.join("a.jsonl"), 1000, 0);
+        commit(&dir, "ai", "one").unwrap();
+        let loose = loose_bytes(&dir).unwrap();
+        assert!(loose > 0);
+        assert_eq!(gc(&dir, loose).unwrap(), Gc::Within);
+        assert_eq!(gc(&dir, loose - 1).unwrap(), Gc::Started);
+        packed(&dir);
+    }
+
+    /// `n` bytes zlib cannot shrink, differing by `seed`.
+    fn noise(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 32) as u8
+            })
+            .collect()
+    }
+
+    /// A repository whose gc has run and left loose objects of more than `limit` bytes that no
+    /// commit holds, as a git without cruft packs leaves them: the folder to drop, the
+    /// repository, and those bytes.
+    fn with_leftovers(limit: u64) -> (tempfile::TempDir, PathBuf, u64) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        git(&dir, &["config", "gc.cruftPacks", "false"]);
+        grow(&dir.join("a.jsonl"), 1000, 0);
+        commit(&dir, "ai", "one").unwrap();
+        let held = loose_bytes(&dir).unwrap();
+        let stray = tmp.path().join("stray");
+        fs::write(&stray, noise(2 * limit as usize, 1)).unwrap();
+        git(&dir, &["hash-object", "-w", stray.to_str().unwrap()]);
+        let left = loose_bytes(&dir).unwrap() - held;
+        assert!(left > limit);
+
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Started);
+        settled(&dir, left);
+        (tmp, dir, left)
+    }
+
+    /// Waits until a gc has left the repository at `dir` exactly `left` loose bytes and has ended,
+    /// so its `gc.pid` turns no later gc away, up to a minute.
+    fn settled(dir: &Path, left: u64) {
+        for _ in 0..600 {
+            if loose_bytes(dir).unwrap() == left && !git_dir(dir).join("gc.pid").exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the gc left {} loose bytes", loose_bytes(dir).unwrap());
+    }
+
+    /// Commits `n` new bytes zlib cannot shrink to the repository at `dir`, late enough that
+    /// their objects are newer than any before them.
+    fn commit_noise(dir: &Path, n: usize, seed: u64) {
+        std::thread::sleep(Duration::from_millis(50));
+        fs::write(dir.join(format!("n{seed}")), noise(n, seed)).unwrap();
+        commit(dir, "ai", &format!("n{seed}")).unwrap();
+    }
+
+    #[test]
+    fn loose_objects_a_gc_left_start_no_second_gc() {
+        let limit = 50_000;
+        let (_tmp, dir, left) = with_leftovers(limit);
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Within);
+        for seed in 2..5 {
+            commit_noise(&dir, 1000, seed);
+            assert!(loose_bytes(&dir).unwrap() > left);
+            assert_eq!(gc(&dir, limit).unwrap(), Gc::Within);
+        }
+    }
+
+    #[test]
+    fn loose_objects_written_since_the_last_gc_start_the_next_past_the_limit() {
+        let limit = 50_000;
+        let (_tmp, dir, left) = with_leftovers(limit);
+        commit_noise(&dir, limit as usize / 2, 2);
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Within);
+        commit_noise(&dir, limit as usize, 3);
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Started);
+        settled(&dir, left);
+        git(&dir, &["fsck", "--strict", "--no-dangling"]);
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Within);
+    }
+
+    #[test]
+    fn without_a_usable_record_of_the_last_gc_every_loose_object_counts() {
+        let limit = 50_000;
+        let (_tmp, dir, left) = with_leftovers(limit);
+        let mark = git_dir(&dir).join(GC_MARK);
+        let recorded = fs::read_to_string(&mark).unwrap();
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Within);
+
+        let later = SystemTime::now() + Duration::from_secs(3600);
+        let later = later.duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        for bad in ["", "soon\n", &format!("{later}\n")] {
+            fs::write(&mark, bad).unwrap();
+            assert_eq!(gc_mark(&dir).unwrap(), None, "{bad:?}");
+        }
+        fs::write(&mark, &recorded).unwrap();
+        assert!(gc_mark(&dir).unwrap().is_some());
+
+        commit_noise(&dir, 1000, 2);
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Within);
+        fs::remove_file(&mark).unwrap();
+        assert_eq!(gc(&dir, limit).unwrap(), Gc::Started);
+        assert_ne!(fs::read_to_string(&mark).unwrap(), recorded);
+        settled(&dir, left);
+    }
+
+    #[test]
+    fn commits_made_while_gc_runs_keep_every_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        let file = dir.join("t/items.jsonl");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let t = Path::new("t");
+        for i in 0..40 {
+            grow(&file, 20_000, i);
+            commit_paths(&dir, &[t], "ai", &format!("c{i}")).unwrap();
+        }
+        let started = Command::new("git")
+            .arg("--git-dir")
+            .arg(git_dir(&dir))
+            .args(["gc", "--quiet"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .spawn()
+            .unwrap();
+        let mut gc = started;
+        let mut i = 40;
+        loop {
+            grow(&file, 20_000, i);
+            commit_paths(&dir, &[t], "ai", &format!("c{i}")).unwrap();
+            i += 1;
+            if gc.try_wait().unwrap().is_some() && i >= 50 {
+                break;
+            }
+        }
+        assert!(gc.wait().unwrap().success());
+        git(&dir, &["fsck", "--strict", "--no-dangling"]);
+        assert_eq!(
+            git(&dir, &["rev-list", "--count", "HEAD"]).trim(),
+            i.to_string()
+        );
+        let (msg, text) = head(&dir, "t/items.jsonl");
+        assert_eq!(msg, format!("c{}", i - 1));
+        assert_eq!(text, fs::read_to_string(&file).unwrap());
     }
 
     #[test]

@@ -7,7 +7,6 @@ use ai_tools::{
     agent::{Store, Synced, convert},
     config::Homes,
     project::Project,
-    segments,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -50,8 +49,38 @@ fn files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     out
 }
 
+/// Writes `bytes` at `p` as a format-4 store kept a file: a directory of segments, each cut at the
+/// first line's end past `cap` bytes.
+fn segmented(p: &Path, bytes: &[u8], cap: usize) {
+    fs::create_dir_all(p).unwrap();
+    let ext = p
+        .extension()
+        .map_or(String::new(), |e| format!(".{}", e.to_string_lossy()));
+    let mut parts = vec![Vec::new()];
+    for line in bytes.split_inclusive(|&b| b == b'\n') {
+        let last = parts.last_mut().unwrap();
+        if last.len() > cap {
+            parts.push(Vec::new());
+        }
+        parts.last_mut().unwrap().extend_from_slice(line);
+    }
+    for (i, part) in parts.iter().enumerate() {
+        fs::write(p.join(format!("{i:06}{ext}")), part).unwrap();
+    }
+}
+
+/// The segments of the format-4 file `p`, joined.
+fn joined(p: &Path) -> Vec<u8> {
+    let mut names: Vec<PathBuf> = fs::read_dir(p)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    names.sort();
+    names.iter().flat_map(|s| fs::read(s).unwrap()).collect()
+}
+
 fn rows(p: &Path) -> Vec<Value> {
-    String::from_utf8(segments::read_all(p).unwrap())
+    String::from_utf8(fs::read(p).unwrap())
         .unwrap()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
@@ -114,7 +143,7 @@ impl Old {
         for name in ["dev", "other"] {
             let (from, to) = (threads.join(name), agents.join("threads").join(name));
             for f in ["items.jsonl", "sessions.jsonl"] {
-                copy_dir(&from.join(f), &to.join(f));
+                segmented(&to.join(f), &fs::read(from.join(f)).unwrap(), 512);
             }
             for mut e in rows(&from.join("attachments.jsonl")) {
                 if e["state"] == "attached" {
@@ -129,11 +158,16 @@ impl Old {
                     .join("sources/claude")
                     .join(p["session"].as_str().unwrap())
                     .join(rel);
-                segments::write(&copy, &fs::read(raw).unwrap()).unwrap();
+                segmented(&copy, &fs::read(raw).unwrap(), 512);
             }
         }
         events.sort_by_key(|e| e["at"].as_str().unwrap().to_string());
-        segments::append(&agents.join("sessions.jsonl"), &events).unwrap();
+        let mut all = Vec::new();
+        for e in &events {
+            serde_json::to_writer(&mut all, e).unwrap();
+            all.push(b'\n');
+        }
+        segmented(&agents.join("sessions.jsonl"), &all, 512);
         o
     }
 
@@ -193,9 +227,7 @@ fn an_older_ais_store_is_refused_until_it_moves() {
 #[test]
 fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
     let o = Old::new();
-    let old_items = |t: &str| {
-        segments::read_all(&o.local().join("agents/threads").join(t).join("items.jsonl")).unwrap()
-    };
+    let old_items = |t: &str| joined(&o.local().join("agents/threads").join(t).join("items.jsonl"));
     let (dev_items, other_items) = (old_items("dev"), old_items("other"));
     let old = files(&o.local());
     let s2 = fs::read(o.s2()).unwrap();
@@ -272,9 +304,8 @@ fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
 
     let store = o.store();
     let thread = |t: &str| store.thread(t).unwrap().snapshot().unwrap();
-    let new_items = |t: &str| {
-        segments::read_all(&folder.join("agents/threads").join(t).join("items.jsonl")).unwrap()
-    };
+    let new_items =
+        |t: &str| fs::read(folder.join("agents/threads").join(t).join("items.jsonl")).unwrap();
     assert_eq!(
         (new_items("dev"), new_items("other")),
         (dev_items, other_items)
@@ -331,6 +362,56 @@ fn a_store_of_another_format_is_not_moved() {
         e.to_string()
             .contains("its agents are format 5; this ai moves format 4"),
         "{e}"
+    );
+    assert!(o.local().join("agents/threads/dev").exists());
+}
+
+#[test]
+fn a_move_joins_each_segmented_file_into_one_of_the_same_bytes() {
+    let o = Old::new();
+    let dev = o.local().join("agents/threads/dev");
+    let mut lines = Vec::new();
+    for i in 0..40 {
+        lines.extend_from_slice(format!("{{\"op\":\"clear\",\"n\":{i}}}\n").as_bytes());
+    }
+    lines.extend_from_slice(b"{\"torn");
+    segmented(&dev.join("lines.jsonl"), &lines, 100);
+    segmented(&dev.join("agents.jsonl"), &lines[..lines.len() - 6], 100);
+    segmented(
+        &dev.join("agents/claude/a1.jsonl"),
+        &lines[..lines.len() - 6],
+        64,
+    );
+    let mut old = Vec::new();
+    for f in [
+        "items.jsonl",
+        "lines.jsonl",
+        "agents.jsonl",
+        "agents/claude/a1.jsonl",
+    ] {
+        let p = dev.join(f);
+        assert!(fs::read_dir(&p).unwrap().count() > 1, "{f} has one segment");
+        old.push((f, joined(&p)));
+    }
+
+    convert::convert(&o.project(), &o.homes()).unwrap();
+
+    let new = o.homes().repo.join("projects/repo/agents/threads/dev");
+    for (f, bytes) in old {
+        assert!(new.join(f).is_file(), "{f} is one file");
+        assert_eq!(fs::read(new.join(f)).unwrap(), bytes, "{f}");
+    }
+}
+
+#[test]
+fn a_segment_out_of_order_stops_the_move() {
+    let o = Old::new();
+    let items = o.local().join("agents/threads/dev/items.jsonl");
+    fs::remove_file(items.join("000000.jsonl")).unwrap();
+    let e = convert::convert(&o.project(), &o.homes()).unwrap_err();
+    assert!(
+        format!("{e:#}").contains("its segments are not numbered from 0"),
+        "{e:#}"
     );
     assert!(o.local().join("agents/threads/dev").exists());
 }

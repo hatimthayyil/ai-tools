@@ -14,6 +14,7 @@ use ai_tools::{
     config::Homes,
     memory::Who,
     project::Project,
+    repo,
 };
 use regex::Regex;
 use serde_json::{Value, json};
@@ -2283,10 +2284,10 @@ fn the_users_repository_holds_the_threads_committed_on_events() {
     );
     let files = git(&ai, &["ls-tree", "-r", "--name-only", "HEAD"]);
     assert!(
-        files.contains("\nprojects/repo/agents/threads/dev/items.jsonl/000000.jsonl\n"),
+        files.contains("\nprojects/repo/agents/threads/dev/items.jsonl\n"),
         "{files}"
     );
-    let sources = fs::read_to_string(threads.join("dev/sources.jsonl/000000.jsonl")).unwrap();
+    let sources = fs::read_to_string(threads.join("dev/sources.jsonl")).unwrap();
     assert!(
         sources.contains("\"path\":\"projects/"),
         "a transcript under Claude Code's home is recorded from the home: {sources}"
@@ -2463,39 +2464,79 @@ fn an_older_ais_store_is_refused_off_a_terminal() {
     assert!(!s.homes().repo.join("projects/repo/agents").exists());
 }
 
+/// Sets `[agent] gc-after-mib` in the user's `ai.toml`; `None` leaves it unset.
+fn gc_after(s: &Sandbox, mib: Option<u64>) {
+    let key = mib.map_or(String::new(), |m| {
+        format!("\n[agent]\ngc-after-mib = {m}\n")
+    });
+    fs::write(
+        s.root.join("home/.ai/ai.toml"),
+        format!("[chat]\nbackground = false\n{key}"),
+    )
+    .unwrap();
+}
+
+/// `ai agent args` in the repository with no `git` on `PATH`.
+fn without_git(s: &Sandbox, args: &[&str]) -> Output {
+    s.cmd(&s.repo())
+        .env("PATH", s.root.join("bin"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
 #[test]
-fn a_commit_after_a_small_append_stores_only_the_open_segments() {
+fn a_commit_past_gc_after_mib_starts_git_gc_on_the_repository() {
     let s = Sandbox::new();
+    gc_after(&s, Some(0));
     ok(
         s.ai(&["new", "dev"]),
         "Created agent dev. Start it: ai agent resume dev\n",
     );
-    let big = "x".repeat(200_000);
-    let ask = |k: usize| match k {
-        6 => "small".to_string(),
-        _ => format!("{k} {big}"),
+    let git_dir = s.homes().repo.join(".git");
+    let packed = || {
+        fs::read_dir(git_dir.join("objects/pack")).is_ok_and(|d| {
+            d.flatten()
+                .any(|e| e.path().extension().is_some_and(|x| x == "pack"))
+        }) && !git_dir.join("gc.pid").exists()
     };
-    s.transcript("s-1", &talk(6, ask));
-    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
-    let ai = s.homes().repo;
-    let thread = ai.join("projects/repo/agents/threads/dev");
-    let n = fs::read_dir(thread.join("items.jsonl")).unwrap().count();
-    assert!(n > 1, "items.jsonl holds {n} segments");
-
-    s.transcript("s-1", &talk(7, ask));
-    ok(s.ai_in("s-1", &["end-session"]), "");
-    let changed = git(&ai, &["diff", "--name-only", "HEAD~1", "HEAD"]);
-    assert!(changed.contains("/items.jsonl/"), "{changed}");
-    assert!(changed.contains("/sources.jsonl/"), "{changed}");
-    for path in changed.lines() {
-        let p = ai.join(path);
-        let newest = fs::read_dir(p.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .max()
-            .unwrap();
-        assert_eq!(p.file_name().unwrap(), newest, "{path} is a closed segment");
+    let mut waited = 0;
+    while !packed() {
+        assert!(waited < 600, "git gc packed nothing in a minute");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        waited += 1;
     }
+    assert_eq!(repo::loose_bytes(&s.homes().repo).unwrap(), 0);
+    git(&s.homes().repo, &["fsck", "--strict"]);
+}
+
+#[test]
+fn gc_after_mib_decides_whether_a_commit_needs_git() {
+    let s = Sandbox::new();
+    gc_after(&s, None);
+    ok(
+        without_git(&s, &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    gc_after(&s, Some(1));
+    ok(
+        without_git(&s, &["new", "other"]),
+        "Created agent other. Start it: ai agent resume other\n",
+    );
+    gc_after(&s, Some(0));
+    let o = without_git(&s, &["new", "third"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "Created agent third. Start it: ai agent resume third\n"
+    );
+    assert_eq!(
+        stderr(&o),
+        "Cannot pack ~/ai: no git program on PATH. Install git: ai runs git gc on it once it \
+         holds more than [agent] gc-after-mib of loose objects.\n"
+    );
+    let status = git(&s.homes().repo, &["status", "--porcelain"]);
+    assert_eq!(status, "", "the commit stands");
 }
 
 #[test]
@@ -2527,7 +2568,8 @@ fn rename_moves_an_agent_and_keeps_its_sessions_attached() {
     );
     let tree = git(&ai, &["ls-tree", "-r", "--name-only", "HEAD"]);
     assert!(
-        tree.contains("projects/repo/agents/threads/reviewer/items.jsonl/"),
+        tree.lines()
+            .any(|l| l == "projects/repo/agents/threads/reviewer/items.jsonl"),
         "{tree}"
     );
     assert!(!tree.contains("/threads/dev/"), "{tree}");

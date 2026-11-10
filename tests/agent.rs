@@ -11,7 +11,6 @@ use ai_tools::{
     config::Homes,
     memory::Who,
     project::Project,
-    segments,
 };
 use tempfile::TempDir;
 
@@ -186,9 +185,9 @@ fn added(s: Synced) -> std::ops::Range<u64> {
     }
 }
 
-/// The segmented file `p` as text.
+/// The file `p` as text.
 fn text(p: &Path) -> String {
-    String::from_utf8(segments::read_all(p).unwrap()).unwrap()
+    fs::read_to_string(p).unwrap()
 }
 
 /// The newest record of `file` in thread `thread`'s sources: its length and hash.
@@ -858,10 +857,10 @@ fn a_commit_takes_the_projects_folder_and_leaves_the_rest_of_the_repository() {
         "projects/repo/id",
         "projects/repo/ai.toml",
         "projects/repo/agents/format",
-        "projects/repo/agents/threads/dev/attachments.jsonl/000000.jsonl",
-        "projects/repo/agents/threads/dev/items.jsonl/000000.jsonl",
-        "projects/repo/agents/threads/dev/sessions.jsonl/000000.jsonl",
-        "projects/repo/agents/threads/dev/sources.jsonl/000000.jsonl",
+        "projects/repo/agents/threads/dev/attachments.jsonl",
+        "projects/repo/agents/threads/dev/items.jsonl",
+        "projects/repo/agents/threads/dev/sessions.jsonl",
+        "projects/repo/agents/threads/dev/sources.jsonl",
     ] {
         assert!(files.lines().any(|l| l == f), "{f} in {files}");
     }
@@ -907,9 +906,9 @@ fn a_session_attached_to_two_threads_is_an_error() {
     store.attach("dev", "claude", "s-1", Some(&p)).unwrap();
     store.create("other").unwrap();
     let events = r.store_dir().join("threads/dev/attachments.jsonl");
-    segments::write(
-        &r.store_dir().join("threads/other/attachments.jsonl"),
-        &segments::read_all(&events).unwrap(),
+    fs::copy(
+        &events,
+        r.store_dir().join("threads/other/attachments.jsonl"),
     )
     .unwrap();
     let e = sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap_err();
@@ -994,7 +993,12 @@ fn rows_keep_source_ids_exact() {
 /// Appends `line` to the file `name` of thread `dev`.
 fn corrupt(r: &Repo, name: &str, line: serde_json::Value) {
     let p = r.store_dir().join("threads/dev").join(name);
-    segments::extend(&p, format!("{line}\n").as_bytes()).unwrap();
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+        .unwrap();
+    writeln!(f, "{line}").unwrap();
 }
 
 #[test]
