@@ -90,17 +90,19 @@ pub fn commit(dir: &Path, me: &str, msg: &str) -> Result<()> {
     if same && !stale {
         return Ok(());
     }
-    if !same {
-        let me = repo.committer().context("No committer.")??;
-        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
-    }
     let mut index = repo.index_from_tree(&tree)?;
     for (e, path) in index.entries_mut_with_paths() {
         if let Some(s) = stats.get(&path_str(path)) {
             e.stat = *s;
         }
     }
+    // Before HEAD moves: whoever reads between the two sees the files staged, never a HEAD the
+    // index lags behind.
     index.write(Default::default())?;
+    if !same {
+        let me = repo.committer().context("No committer.")??;
+        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
+    }
     Ok(())
 }
 
@@ -137,6 +139,35 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn a_commit_writes_the_index_before_head_moves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        fs::write(dir.join("a"), "1\n").unwrap();
+        commit(&dir, "ai", "one").unwrap();
+        let staged = || {
+            let index = gix::open(&dir).unwrap().index_or_empty().unwrap();
+            let paths = index.entries().iter().map(|e| e.path(&index).to_string());
+            paths.collect::<Vec<_>>()
+        };
+        assert_eq!(staged(), ["a"]);
+
+        // A held lock on HEAD's branch keeps HEAD where it is.
+        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
+        let held = git_dir(&dir).join(format!("{}.lock", branch.as_bstr()));
+        fs::write(&held, "").unwrap();
+        fs::write(dir.join("b"), "2\n").unwrap();
+        assert!(commit(&dir, "ai", "two").is_err());
+        assert_eq!(head(&dir, "a").0, "one");
+        assert_eq!(staged(), ["a", "b"]);
+
+        fs::remove_file(&held).unwrap();
+        commit(&dir, "ai", "two").unwrap();
+        assert_eq!(head(&dir, "b"), ("two".into(), "2\n".into()));
+        assert_eq!(staged(), ["a", "b"]);
+    }
 
     /// HEAD's subject and the blob at `path` in its tree.
     fn head(dir: &Path, path: &str) -> (String, String) {
