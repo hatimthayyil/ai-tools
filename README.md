@@ -102,10 +102,13 @@ Agents an older ai kept in `.ai/local/` of the project are refused until they mo
 ```sh
 ai agent new dev                      # create agent dev, with an empty thread
 ai agent rename dev reviewer          # rename it; its sessions stay attached, and each [agents.dev]
-                                      # table or reports-to naming dev is printed, not changed
+                                      # table or reports-to naming dev is printed, not changed, as
+                                      # is the /rename for each session of it that runs
 ai agent remove dev                   # take it out: commit its last state, then remove it, and print
-                                      # the git command that restores it; refused while a Claude Code
+                                      # the command that restores it; refused while a Claude Code
                                       # session attached to it runs; transcripts stay untouched
+ai agent restore dev --commit <id>    # bring a removed agent back as that commit of ~/ai holds it;
+                                      # refused while an agent has the name
 ai agent resume dev [-- claude args]  # continue dev's newest session, in the directory it ran in,
                                       # else a new one, whose context is the thread's view; either
                                       # way named <project>.dev; --harness: claude is the only one yet

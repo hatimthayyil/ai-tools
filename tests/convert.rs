@@ -142,9 +142,15 @@ impl Old {
         let threads = built.repo.join("projects/build/agents/threads");
         for name in ["dev", "other"] {
             let (from, to) = (threads.join(name), agents.join("threads").join(name));
-            for f in ["items.jsonl", "sessions.jsonl"] {
-                segmented(&to.join(f), &fs::read(from.join(f)).unwrap(), 512);
+            let items = fs::read(from.join("items.jsonl")).unwrap();
+            segmented(&to.join("items.jsonl"), &items, 512);
+            let mut tracks = Vec::new();
+            for mut t in rows(&from.join("sessions.jsonl")) {
+                t.as_object_mut().unwrap().remove("config");
+                serde_json::to_writer(&mut tracks, &t).unwrap();
+                tracks.push(b'\n');
             }
+            segmented(&to.join("sessions.jsonl"), &tracks, 512);
             for mut e in rows(&from.join("attachments.jsonl")) {
                 if e["state"] == "attached" {
                     e["thread"] = json!(name);
@@ -328,6 +334,15 @@ fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
         ]
     );
     assert_eq!(state("other"), [("s-2".into(), true, Some(o.s2()))]);
+    let config = |t: &str, s: &str| thread(t).binding("claude", s).unwrap().unwrap().config;
+    assert_eq!(
+        (config("dev", "s-1"), config("other", "s-2")),
+        (
+            Some(o.dir.path().join("claude")),
+            Some(o.dir.path().join("claude"))
+        ),
+        "each session's configuration directory is its transcript's"
+    );
 
     for s in ["s-1", "s-2"] {
         assert!(matches!(
@@ -414,4 +429,43 @@ fn a_segment_out_of_order_stops_the_move() {
         "{e:#}"
     );
     assert!(o.local().join("agents/threads/dev").exists());
+}
+
+#[test]
+fn a_session_the_old_store_attached_twice_ends_attached_to_the_later_thread() {
+    let o = Old::new();
+    let all = o.local().join("agents/sessions.jsonl");
+    let mut kept = Vec::new();
+    for line in joined(&all).split_inclusive(|&b| b == b'\n') {
+        let e: Value = serde_json::from_slice(line).unwrap();
+        if e["state"] != "detached" {
+            kept.extend_from_slice(line);
+        }
+    }
+    fs::remove_dir_all(&all).unwrap();
+    segmented(&all, &kept, 512);
+
+    convert::convert(&o.project(), &o.homes()).unwrap();
+
+    let store = o.store();
+    let attached = |t: &str| {
+        let snap = store.thread(t).unwrap().snapshot().unwrap();
+        let mut b: Vec<(String, bool)> = snap
+            .bindings()
+            .unwrap()
+            .into_iter()
+            .map(|b| (b.session.clone(), b.is_attached()))
+            .collect();
+        b.sort();
+        b
+    };
+    assert_eq!(
+        attached("dev"),
+        [("s-1".into(), true), ("s-2".into(), false)]
+    );
+    assert_eq!(attached("other"), [("s-2".into(), true)]);
+    assert!(matches!(
+        store.sync("claude", "s-2", None).unwrap(),
+        Synced::Attached { thread, .. } if thread == "other"
+    ));
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     io::{self, BufRead},
     path::{Path, PathBuf},
@@ -15,6 +15,9 @@ use crate::agent::model::{Item, Kind, Marker, SourceId};
 pub const HARNESS: &str = "claude";
 
 const INTERRUPT: &str = "[Request interrupted by user";
+
+/// The variable that names Claude Code's configuration directory.
+const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
 /// The most characters Claude Code keeps of a session's name, from `--name` or `/rename`.
 const NAME_MAX: usize = 200;
@@ -42,18 +45,56 @@ pub fn session_id() -> Option<String> {
 /// Claude Code's configuration directory: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
 pub fn config_dir(var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let var = |k: &str| var(k).filter(|v| !v.is_empty());
-    var("CLAUDE_CONFIG_DIR")
+    var(CONFIG_DIR)
         .map(PathBuf::from)
         .or_else(|| Some(PathBuf::from(var("HOME")?).join(".claude")))
 }
 
+/// The configuration directory that keeps the session transcript `transcript`, which Claude
+/// Code writes at `<directory>/projects/<project>/<session>.jsonl`; `None` for a path of
+/// another shape.
+pub fn config_of(transcript: &Path) -> Option<PathBuf> {
+    let projects = transcript.parent()?.parent()?;
+    (projects.file_name()? == "projects")
+        .then(|| projects.parent().map(Path::to_path_buf))
+        .flatten()
+}
+
 /// The sessions Claude Code runs on this machine, by session id, each with its name if it has
 /// one: those `claude agents --json` lists, every live session and each background session
-/// still working or blocked.
-pub fn running() -> Result<BTreeMap<String, Option<String>>> {
-    let o = Command::new("claude")
-        .args(["agents", "--json"])
-        .stdin(Stdio::null())
+/// still working or blocked. Claude Code lists the sessions of one configuration directory, so
+/// it is asked under ai's own environment, and under each of `configs` that exists, the
+/// directories other sessions were started under.
+pub fn running(
+    configs: impl IntoIterator<Item = PathBuf>,
+) -> Result<BTreeMap<String, Option<String>>> {
+    let var = |k: &str| std::env::var(k).ok();
+    let usual = config_dir(|k| var(k).filter(|_| k != CONFIG_DIR));
+    let mut asked: BTreeSet<Option<PathBuf>> =
+        [var(CONFIG_DIR).filter(|v| !v.is_empty()).map(PathBuf::from)].into();
+    asked.extend(
+        configs
+            .into_iter()
+            .filter(|c| c.is_dir())
+            .map(|c| (Some(&c) != usual.as_ref()).then_some(c)),
+    );
+    let mut all = BTreeMap::new();
+    for config in asked {
+        all.extend(running_under(config.as_deref())?);
+    }
+    Ok(all)
+}
+
+/// The sessions `claude agents --json` lists under the configuration directory `config`, the
+/// usual one when `None`.
+fn running_under(config: Option<&Path>) -> Result<BTreeMap<String, Option<String>>> {
+    let mut claude = Command::new("claude");
+    claude.args(["agents", "--json"]).stdin(Stdio::null());
+    match config {
+        Some(dir) => claude.env(CONFIG_DIR, dir),
+        None => claude.env_remove(CONFIG_DIR),
+    };
+    let o = claude
         .output()
         .map_err(|e| anyhow!("cannot run claude agents --json: {e}"))?;
     if !o.status.success() {

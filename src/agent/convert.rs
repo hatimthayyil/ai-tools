@@ -341,6 +341,16 @@ struct OldEvent {
     thread: Option<String>,
 }
 
+/// A session's branch in one thread as the old store kept it.
+#[derive(Deserialize)]
+struct OldTrack {
+    harness: String,
+    session: String,
+    transcript: Option<PathBuf>,
+    graft: Option<u64>,
+    tip: Option<u64>,
+}
+
 /// Builds at `to` the store of format [`FORMAT`] from the old store `agents`: each thread's own
 /// files copied, its attachment changes taken from the store-wide file, its session tracks and
 /// sources pointed at the harnesses' files.
@@ -360,7 +370,14 @@ fn build(agents: &Path, to: &Path, moved: &mut Moved) -> Result<()> {
         let key = (e.harness.clone(), e.session.clone());
         let thread = match (e.state, e.thread) {
             (State::Attached, Some(t)) => {
-                owner.insert(key, t.clone());
+                if let Some(was) = owner.insert(key, t.clone()).filter(|was| *was != t) {
+                    events.entry(was).or_default().push(Event {
+                        harness: e.harness.clone(),
+                        session: e.session.clone(),
+                        at: e.at,
+                        state: State::Detached,
+                    });
+                }
                 t
             }
             (State::Attached, None) => bail!(
@@ -404,7 +421,7 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
             SESSIONS => {
                 let b = complete(joined(&from)?);
                 for (i, l) in jsonl::lines(&b).enumerate() {
-                    let t: Track = jsonl::decode(l).with_context(|| {
+                    let t: OldTrack = jsonl::decode(l).with_context(|| {
                         format!("{}: record {} is corrupt", pretty(&from), i + 1)
                     })?;
                     tracks.push(t);
@@ -464,9 +481,20 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
             }
         }
     }
-    for t in &mut tracks {
-        t.transcript = t.transcript.take().map(|p| source::real(&p));
-    }
+    let tracks: Vec<Track> = tracks
+        .into_iter()
+        .map(|t| Track {
+            config: t
+                .transcript
+                .as_deref()
+                .and_then(|p| source::config(&t.harness, p)),
+            transcript: t.transcript.map(|p| source::real(&p)),
+            harness: t.harness,
+            session: t.session,
+            graft: t.graft,
+            tip: t.tip,
+        })
+        .collect();
     jsonl::append(&dst.join(SESSIONS), &tracks)?;
     jsonl::append(&dst.join(SOURCES), &pointers)?;
     Ok(())

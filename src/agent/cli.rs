@@ -60,7 +60,7 @@ enum Command {
     },
     #[command(
         about = "rename an agent; its sessions stay attached.",
-        after_help = "ai.toml files stay as they are: it prints the file and line of each [agents.<OLD>] table, and of each reports-to that names <OLD>."
+        after_help = "A session of it that runs keeps the name it has in Claude Code: it prints the /rename to run in each. ai.toml files stay as they are: it prints the file and line of each [agents.<OLD>] table, and of each reports-to that names <OLD>."
     )]
     Rename {
         #[arg(help = "the agent")]
@@ -70,11 +70,24 @@ enum Command {
     },
     #[command(
         about = "remove an agent: its thread leaves the project, and ~/ai's history keeps it.",
-        after_help = "It refuses while a Claude Code session attached to the agent runs on this machine, and prints the git command that restores the thread. ai.toml files stay as they are: it prints the file and line of each [agents.<NAME>] table, and of each reports-to that names <NAME>. Transcripts stay as they are, in the harness's own folder and in the backup."
+        after_help = "It refuses while a Claude Code session attached to the agent runs on this machine, and prints the command that restores the agent. ai.toml files stay as they are: it prints the file and line of each [agents.<NAME>] table, and of each reports-to that names <NAME>. Transcripts stay as they are, in the harness's own folder and in the backup."
     )]
     Remove {
         #[arg(help = "the agent")]
         name: String,
+    },
+    #[command(
+        about = "restore a removed agent: its thread as a commit of ~/ai holds it.",
+        after_help = "It refuses while an agent has the name. A session the thread held attached that is attached to another agent now stays with that one."
+    )]
+    Restore {
+        #[arg(help = "the agent")]
+        name: String,
+        #[arg(
+            long,
+            help = "the commit of ~/ai that holds the agent: the id ai agent remove printed"
+        )]
+        commit: String,
     },
     Resume(Resume),
     #[command(about = "list this project's agents and their sessions.")]
@@ -390,6 +403,7 @@ impl Cli {
             Command::New { name } => format!("ai agent new {name}"),
             Command::Rename { old, new } => format!("ai agent rename {old} {new}"),
             Command::Remove { name } => format!("ai agent remove {name}"),
+            Command::Restore { name, .. } => format!("ai agent restore {name}"),
             Command::Attach { name, .. } => format!("ai agent attach {name}"),
             Command::Detach { .. } => "ai agent detach".into(),
             Command::Build(b) if !b.background => match &b.target.agent {
@@ -421,6 +435,7 @@ impl Command {
             Command::New { name } => new(cwd, out, &name),
             Command::Rename { old, new } => rename(cwd, out, &old, &new),
             Command::Remove { name } => remove(cwd, out, &name),
+            Command::Restore { name, commit } => restore(cwd, out, &name, &commit),
             Command::Resume(r) => r.run(cwd),
             Command::List { session } => list(cwd, out, session),
             Command::View { agent, session } => view(cwd, out, agent, session, terminal),
@@ -649,14 +664,42 @@ fn new(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Renames agent `old` to `new`, then names on stderr each place a settings file still names
-/// `old`, changing none; a file it cannot read stops only that check.
+/// Renames agent `old` to `new`, then tells on stderr what still goes by the old name, changing
+/// none of it: each session of the agent that runs, with the `/rename` that names it again, and
+/// each place a settings file names `old`. A check that fails stops only itself.
 fn rename(cwd: &Path, out: &mut dyn Write, old: &str, new: &str) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
-    store.rename(old, new, |t| {
+    let thread = store.rename(old, new, |t| {
         eprintln!("Waiting for agent {t}'s summariser to finish.")
     })?;
     writeln!(out, "Renamed agent {old} to {new}.")?;
+    match store.address(new) {
+        Ok(address) => {
+            let named = format!("Name it again there: /rename {address}");
+            match attached(&thread).and_then(|s| running(&thread, &s)) {
+                Ok(live) => {
+                    for (session, title) in live {
+                        match title {
+                            Some(t) if t == address => {}
+                            Some(t) => eprintln!(
+                                "Session {} {session} still runs as {t}. {named}",
+                                claude::HARNESS
+                            ),
+                            None => eprintln!(
+                                "Session {} {session} runs without a name. {named}",
+                                claude::HARNESS
+                            ),
+                        }
+                    }
+                }
+                Err(e) => eprintln!(
+                    "Cannot tell whether agent {new}'s sessions are running: {e:#}. One that \
+                     runs keeps its old name. {named}"
+                ),
+            }
+        }
+        Err(e) => eprintln!("{e:#}"),
+    }
     mentions(&store, old, |by| match by {
         None => format!("[agents.{old}] no longer applies here: {new} reads [agents.{new}]."),
         Some(by) => format!("{by}'s reports-to names {old}, now {new}."),
@@ -664,21 +707,19 @@ fn rename(cwd: &Path, out: &mut dyn Write, old: &str, new: &str) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-/// Removes agent `name` unless a session attached to it runs, prints how to restore its thread,
-/// then names on stderr each place a settings file still names it, changing none.
+/// Removes agent `name` unless a session attached to it runs, prints how to restore it, then
+/// names on stderr each place a settings file still names it, changing none.
 fn remove(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
     let removed = store.remove(
         name,
         |t| eprintln!("Waiting for agent {t}'s summariser to finish."),
-        |sessions| refuse_running(name, sessions),
+        |sessions| refuse_running(&store, name, sessions),
     )?;
     match &removed.commit {
         Some(c) => writeln!(
             out,
-            "Removed agent {name}. Restore it: git -C {} restore --source={c} -- {}",
-            shell_path(&store.homes().repo),
-            word(&removed.path.to_string_lossy())
+            "Removed agent {name}. Restore it: ai agent restore {name} --commit {c}"
         )?,
         None => writeln!(
             out,
@@ -693,26 +734,68 @@ fn remove(cwd: &Path, out: &mut dyn Write, name: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// An error naming each of `sessions` of agent `name` that runs on this machine. Only Claude
-/// Code sessions are checked: ai attaches no other harness's.
-fn refuse_running(name: &str, sessions: &[(String, String)]) -> Result<()> {
+/// Restores agent `name` from `commit` of `~/ai`, then names on stderr each session it no longer
+/// holds attached.
+fn restore(cwd: &Path, out: &mut dyn Write, name: &str, commit: &str) -> Result<ExitCode> {
+    let restored = Store::open(cwd)?.restore(name, commit)?;
+    writeln!(out, "Restored agent {name}.")?;
+    for (harness, session, owner) in restored.detached {
+        eprintln!(
+            "Session {harness} {session} is attached to {owner} now, so {name} holds it detached."
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The sessions attached to `thread`, by harness and session id.
+fn attached(thread: &Thread) -> Result<Vec<(String, String)>> {
+    Ok(thread
+        .snapshot()?
+        .bindings()?
+        .into_iter()
+        .filter(Binding::is_attached)
+        .map(|b| (b.harness, b.session))
+        .collect())
+}
+
+/// Those of `sessions` of `thread` that run on this machine, each with its name in its harness
+/// if it has one. Only Claude Code sessions are checked: ai attaches no other harness's. Claude
+/// Code is asked under each configuration directory the thread's sessions were started under.
+fn running(
+    thread: &Thread,
+    sessions: &[(String, String)],
+) -> Result<Vec<(String, Option<String>)>> {
     let ours: Vec<&str> = sessions
         .iter()
         .filter(|(h, _)| h == claude::HARNESS)
         .map(|(_, s)| s.as_str())
         .collect();
     if ours.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let live = claude::running()
-        .map_err(|e| anyhow!("Cannot tell whether agent {name}'s sessions are running: {e}."))?;
-    let running: Vec<String> = ours
+    let configs = thread
+        .snapshot()?
+        .bindings()?
         .into_iter()
-        .filter_map(|s| {
-            live.get(s).map(|title| match title {
-                Some(title) => format!("{} {s} ({title})", claude::HARNESS),
-                None => format!("{} {s}", claude::HARNESS),
-            })
+        .filter(|b| b.harness == claude::HARNESS && ours.contains(&b.session.as_str()))
+        .filter_map(|b| b.config);
+    let mut live = claude::running(configs)?;
+    Ok(ours
+        .into_iter()
+        .filter_map(|s| live.remove(s).map(|title| (s.to_string(), title)))
+        .collect())
+}
+
+/// An error naming each of `sessions` of agent `name` that runs on this machine.
+fn refuse_running(store: &Store, name: &str, sessions: &[(String, String)]) -> Result<()> {
+    let running: Vec<String> = store
+        .thread(name)
+        .and_then(|t| running(&t, sessions))
+        .map_err(|e| anyhow!("Cannot tell whether agent {name}'s sessions are running: {e:#}."))?
+        .into_iter()
+        .map(|(s, title)| match title {
+            Some(title) => format!("{} {s} ({title})", claude::HARNESS),
+            None => format!("{} {s}", claude::HARNESS),
         })
         .collect();
     match running.as_slice() {
@@ -722,15 +805,6 @@ fn refuse_running(name: &str, sessions: &[(String, String)]) -> Result<()> {
             "Agent {name}'s sessions {} are running. End them, then try again.",
             many.join(", ")
         ),
-    }
-}
-
-/// `p` as one shell word, a path under the home directory as `~/…`.
-fn shell_path(p: &Path) -> String {
-    let p = file::pretty(p);
-    match p.strip_prefix("~/") {
-        Some(rest) => format!("~/{}", word(rest)),
-        None => word(&p),
     }
 }
 
@@ -1024,10 +1098,11 @@ fn detach(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
     let Some(c) = s.current() else {
         bail!("No session: run this inside an agent session, or pass --session.");
     };
-    match Store::open(cwd)?.detach(&c.harness, &c.session)? {
-        Some(t) => writeln!(out, "Detached from {t}.")?,
-        None => bail!("This session is not attached to an agent."),
+    let threads = Store::open(cwd)?.detach(&c.harness, &c.session)?;
+    if threads.is_empty() {
+        bail!("This session is not attached to an agent.");
     }
+    writeln!(out, "Detached from {}.", threads.join(" and "))?;
     Ok(ExitCode::SUCCESS)
 }
 

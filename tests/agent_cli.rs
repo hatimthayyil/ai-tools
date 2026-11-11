@@ -318,10 +318,13 @@ done
 }
 
 /// How the fake `claude` answers `claude agents --json`, the sessions it runs: the contents of
-/// `out/agents.json`, else none; failing, with `boom` on stderr, while `out/agents.fail` exists.
+/// `out/agents-<name>.json` for the configuration directory `<name>` it is asked under (`usual`
+/// when the environment names none), else of `out/agents.json`, else none; failing, with `boom`
+/// on stderr, while `out/agents.fail` exists.
 const AGENTS: &str = r#"if [ "$1" = agents ]; then
   if [ -e {out}/agents.fail ]; then echo boom >&2; exit 1; fi
-  cat {out}/agents.json 2>/dev/null || echo '[]'
+  cat "{out}/agents-$(basename "${CLAUDE_CONFIG_DIR:-usual}").json" 2>/dev/null \
+    || cat {out}/agents.json 2>/dev/null || echo '[]'
   exit 0
 fi"#;
 
@@ -2900,18 +2903,15 @@ fn rename_goes_ahead_when_a_settings_file_cannot_be_read() {
     assert!(s.store().thread("reviewer").unwrap().exists().unwrap());
 }
 
-/// The restore command `ai agent remove` printed in `o`, run in a shell with the sandbox's home.
-fn restore(s: &Sandbox, o: &Output) {
+/// Runs the restore command `ai agent remove` printed in `o`.
+fn restore(s: &Sandbox, o: &Output) -> Output {
     let out = stdout(o);
-    let cmd = out.trim_end().split_once("Restore it: ").unwrap().1;
-    let r = Command::new("bash")
-        .args(["-c", cmd])
-        .env("HOME", s.root.join("home"))
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap();
-    assert!(r.status.success(), "{cmd}: {}", stderr(&r));
+    let cmd = out
+        .trim_end()
+        .split_once("Restore it: ai agent ")
+        .unwrap()
+        .1;
+    s.ai(&cmd.split(' ').collect::<Vec<_>>())
 }
 
 #[test]
@@ -2937,8 +2937,7 @@ fn remove_takes_an_agent_out_and_its_restore_command_brings_it_back() {
     assert_eq!(
         stdout(&o),
         format!(
-            "Removed agent dev. Restore it: git -C ~/ai restore --source={} -- \
-             projects/repo/agents/threads/dev\n",
+            "Removed agent dev. Restore it: ai agent restore dev --commit {}\n",
             kept.trim_end()
         )
     );
@@ -2956,7 +2955,11 @@ fn remove_takes_an_agent_out_and_its_restore_command_brings_it_back() {
         "the transcript stays"
     );
 
-    restore(&s, &o);
+    ok(restore(&s, &o), "Restored agent dev.\n");
+    assert_eq!(
+        git(&ai, &["log", "-1", "--format=%s"]),
+        "ai agent restore dev\n"
+    );
     ok(s.ai_in("s-1", &["sync-session"]), "");
     assert_eq!(turn_ends(&s, "dev").len(), 3);
     let list = stdout(&s.ai_in("s-1", &["list"]));
@@ -3237,4 +3240,181 @@ fn resume_brings_a_transcript_that_is_gone_back_from_the_backup() {
         "{e}"
     );
     assert_eq!(s.argv()[0], "--session-id");
+}
+
+#[test]
+fn restore_refuses_while_an_agent_has_the_name_and_keeps_that_agent_whole() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let removed = s.ai(&["remove", "dev"]);
+    assert_eq!(code(&removed), 0, "{}", stderr(&removed));
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    s.transcript("s-2", &talk(5, |k| format!("later {k}")));
+    ok(s.ai_in("s-2", &["attach", "dev"]), "Attached to dev.\n");
+    let ai = s.homes().repo;
+    let before = git(&ai, &["log", "--format=%H"]);
+
+    fails(
+        restore(&s, &removed),
+        "Agent dev exists in this project, and restoring would replace it. Rename it first: ai \
+         agent rename dev <new name>\n",
+    );
+    assert_eq!(turn_ends(&s, "dev").len(), 5);
+    assert_eq!(git(&ai, &["log", "--format=%H"]), before);
+    s.transcript("s-2", &talk(6, |k| format!("later {k}")));
+    ok(s.ai_in("s-2", &["sync-session"]), "");
+    assert_eq!(turn_ends(&s, "dev").len(), 6);
+
+    ok(
+        s.ai(&["rename", "dev", "newer"]),
+        "Renamed agent dev to newer.\n",
+    );
+    ok(restore(&s, &removed), "Restored agent dev.\n");
+    assert_eq!(turn_ends(&s, "dev").len(), 2);
+    assert_eq!(turn_ends(&s, "newer").len(), 6);
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    ok(s.ai_in("s-2", &["sync-session"]), "");
+}
+
+#[test]
+fn restore_leaves_a_session_attached_elsewhere_where_it_is() {
+    let s = Sandbox::new();
+    for name in ["dev", "two"] {
+        ok(
+            s.ai(&["new", name]),
+            &format!("Created agent {name}. Start it: ai agent resume {name}\n"),
+        );
+    }
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let removed = s.ai(&["remove", "dev"]);
+    assert_eq!(code(&removed), 0, "{}", stderr(&removed));
+    ok(s.ai_in("s-1", &["attach", "two"]), "Attached to two.\n");
+
+    let o = restore(&s, &removed);
+    assert_eq!(
+        (code(&o), stdout(&o).as_str(), stderr(&o).as_str()),
+        (
+            0,
+            "Restored agent dev.\n",
+            "Session claude s-1 is attached to two now, so dev holds it detached.\n"
+        )
+    );
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    ok(s.ai_in("s-1", &["detach"]), "Detached from two.\n");
+}
+
+#[test]
+fn detach_clears_a_session_that_two_agents_hold_attached() {
+    let s = Sandbox::new();
+    for name in ["dev", "two"] {
+        ok(
+            s.ai(&["new", name]),
+            &format!("Created agent {name}. Start it: ai agent resume {name}\n"),
+        );
+    }
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let threads = s.homes().repo.join("projects/repo/agents/threads");
+    fs::copy(
+        threads.join("dev/attachments.jsonl"),
+        threads.join("two/attachments.jsonl"),
+    )
+    .unwrap();
+
+    fails(
+        s.ai_in("s-1", &["sync-session"]),
+        "Session claude s-1 is attached to dev and two. Detach it, which detaches it from each \
+         (ai agent detach --harness claude --session s-1), then attach it to one.\n",
+    );
+    ok(s.ai_in("s-1", &["detach"]), "Detached from dev and two.\n");
+    unattached(s.ai_in("s-1", &["sync-session"]));
+    ok(s.ai_in("s-1", &["attach", "two"]), "Attached to two.\n");
+}
+
+#[test]
+fn remove_sees_a_session_that_runs_under_another_configuration_directory() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let work = s.root.join("work/projects/-repo");
+    fs::create_dir_all(&work).unwrap();
+    let transcript = work.join("s-1.jsonl");
+    fs::write(&transcript, talk(2, |k| format!("ask {k}"))).unwrap();
+    let attached = s
+        .cmd(&s.repo())
+        .env("CLAUDE_CONFIG_DIR", s.root.join("work"))
+        .env("CLAUDE_CODE_SESSION_ID", "s-1")
+        .args(["attach", "dev", "--transcript"])
+        .arg(&transcript)
+        .output()
+        .unwrap();
+    ok(attached, "Attached to dev.\n");
+    fs::write(
+        s.root.join("out/agents-work.json"),
+        r#"[{"kind":"interactive","pid":1,"sessionId":"s-1","name":"repo.dev"}]"#,
+    )
+    .unwrap();
+
+    fails(
+        s.ai(&["remove", "dev"]),
+        "Agent dev's session claude s-1 (repo.dev) is running. End it, then try again.\n",
+    );
+    fs::remove_file(s.root.join("out/agents-work.json")).unwrap();
+    let o = s.ai(&["remove", "dev"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+}
+
+#[test]
+fn rename_names_each_running_session_that_keeps_its_old_name() {
+    let s = Sandbox::new();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    for session in ["s-1", "s-2", "s-3", "s-4"] {
+        s.transcript(session, &talk(1, |k| format!("ask {k}")));
+        ok(s.ai_in(session, &["attach", "dev"]), "Attached to dev.\n");
+    }
+    fs::write(
+        s.root.join("out/agents.json"),
+        r#"[{"sessionId":"s-1","name":"repo.dev"},
+            {"sessionId":"s-2"},
+            {"sessionId":"s-3","name":"repo.reviewer"},
+            {"sessionId":"s-9","name":"repo.dev"}]"#,
+    )
+    .unwrap();
+    let o = s.ai(&["rename", "dev", "reviewer"]);
+    assert_eq!(
+        (code(&o), stdout(&o).as_str(), stderr(&o).as_str()),
+        (
+            0,
+            "Renamed agent dev to reviewer.\n",
+            "Session claude s-1 still runs as repo.dev. Name it again there: /rename \
+             repo.reviewer\n\
+             Session claude s-2 runs without a name. Name it again there: /rename repo.reviewer\n"
+        )
+    );
+
+    fs::write(s.root.join("out/agents.fail"), "").unwrap();
+    let o = s.ai(&["rename", "reviewer", "dev"]);
+    assert_eq!(
+        (code(&o), stdout(&o).as_str(), stderr(&o).as_str()),
+        (
+            0,
+            "Renamed agent reviewer to dev.\n",
+            "Cannot tell whether agent dev's sessions are running: claude agents --json failed: \
+             boom. One that runs keeps its old name. Name it again there: /rename repo.dev\n"
+        )
+    );
 }

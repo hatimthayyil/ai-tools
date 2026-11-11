@@ -148,6 +148,7 @@ impl Store {
                 harness: harness.into(),
                 session: session.into(),
                 transcript: None,
+                config: None,
                 graft: None,
                 tip: None,
             });
@@ -157,6 +158,9 @@ impl Store {
         let t = read(harness, session, path.as_deref())?;
         let mut b = Track {
             transcript: path,
+            config: transcript
+                .and_then(|p| source::config(harness, p))
+                .or_else(|| old.config.clone()),
             ..old.clone()
         };
         let _w = thread.writer()?;
@@ -193,7 +197,9 @@ impl Store {
     }
 
     /// Attaches as [`Store::attach`] does; a new binding grafts onto the newest item of session
-    /// `after`'s branch when one is given, the session it goes on from.
+    /// `after`'s branch when one is given, the session it goes on from. The attachment is
+    /// recorded under the writer's lock that the session's entries are written under, so a
+    /// rename or removal of the thread, which waits for that lock, finds the session attached.
     fn attach_after(
         &self,
         name: &str,
@@ -218,18 +224,20 @@ impl Store {
             .map(source::real)
             .or_else(|| bound.as_ref().and_then(|b| b.transcript.clone()));
         let t = read(harness, session, path.as_deref())?;
-        let w = target.writer()?;
+        let config = transcript.and_then(|p| source::config(harness, p));
+        let _w = target.writer()?;
         let snap = target.snapshot()?;
-        let pointer = path;
         let mut b = match bound.clone() {
             Some(b) => Track {
-                transcript: pointer.or(b.transcript),
+                transcript: path.or(b.transcript),
+                config: config.or(b.config),
                 ..b
             },
             None => Track {
                 harness: harness.into(),
                 session: session.into(),
-                transcript: pointer,
+                transcript: path,
+                config,
                 graft: match after {
                     Some(s) => snap.track(harness, s)?.and_then(|t| t.tip.or(t.graft)),
                     None => snap.graft()?,
@@ -242,9 +250,8 @@ impl Store {
         if bound.as_ref() != Some(&b) {
             target.put_track(&b)?;
         }
-        drop(w);
         if owner.is_none() {
-            target.record(harness, session, State::Attached)?;
+            target.put_event(harness, session, State::Attached)?;
         }
         Ok(Attached {
             thread: name.into(),
@@ -252,10 +259,12 @@ impl Store {
         })
     }
 
-    /// Detaches a session from its thread after ingesting its new entries, so nothing written
-    /// since the last sync is left out; returns the thread, none if it was not attached. A
-    /// failed catch-up still detaches, then reports the failure.
-    pub fn detach(&self, harness: &str, session: &str) -> Result<Option<String>> {
+    /// Detaches a session from each thread it is attached to, after ingesting its new entries
+    /// there, so nothing written since the last sync is left out; returns the threads, none if
+    /// it was attached to none. A session is attached to one thread, and to several only where
+    /// a merge of `~/ai` left it so: detaching is what clears that. A failed catch-up still
+    /// detaches, then reports the failure.
+    pub fn detach(&self, harness: &str, session: &str) -> Result<Vec<String>> {
         self.detach_with(harness, session, read)
     }
 
@@ -263,19 +272,25 @@ impl Store {
         &self,
         harness: &str,
         session: &str,
-        read: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
-    ) -> Result<Option<String>> {
+        read: impl Fn(&str, &str, Option<&Path>) -> Result<Transcript>,
+    ) -> Result<Vec<String>> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let _lock = self.session_lock(harness, session)?;
-        let Some(name) = self.owner(harness, session)? else {
-            return Ok(None);
-        };
-        let caught = self.catch_up(&name, harness, session, None, read);
-        self.thread(&name)?
-            .record(harness, session, State::Detached)?;
-        caught.with_context(|| format!("Detached from {name} without its newest entries"))?;
-        Ok(Some(name))
+        let names = self.owners(harness, session)?;
+        let mut failed = Ok(());
+        for name in &names {
+            let caught = self.catch_up(name, harness, session, None, &read);
+            self.thread(name)?
+                .record(harness, session, State::Detached)?;
+            failed = failed.and(
+                caught
+                    .map(drop)
+                    .with_context(|| format!("Detached from {name} without its newest entries")),
+            );
+        }
+        failed?;
+        Ok(names)
     }
 
     /// Attaches session `to` to the thread session `from` is attached to, after ingesting
@@ -487,12 +502,9 @@ mod tests {
         let store = open(dir.path());
         let (owner, binding) = store.attached("claude", "s-1").unwrap().unwrap();
         assert!(binding.is_attached());
-        assert_eq!(
-            store.detach("claude", "s-1").unwrap().as_deref(),
-            Some(owner.name())
-        );
+        assert_eq!(store.detach("claude", "s-1").unwrap(), [owner.name()]);
         assert!(store.attached("claude", "s-1").unwrap().is_none());
-        assert_eq!(store.detach("claude", "s-1").unwrap(), None);
+        assert!(store.detach("claude", "s-1").unwrap().is_empty());
         let b = owner.snapshot().unwrap().binding("claude", "s-1").unwrap();
         assert!(b.is_some_and(|b| !b.is_attached()));
     }
@@ -555,10 +567,7 @@ mod tests {
         let len = |c: &Store| c.thread("dev").unwrap().snapshot().unwrap().len().unwrap();
         let before = len(&store);
         fs::write(&transcript, &all).unwrap();
-        assert_eq!(
-            store.detach("claude", "s-1").unwrap().as_deref(),
-            Some("dev")
-        );
+        assert_eq!(store.detach("claude", "s-1").unwrap(), ["dev"]);
         assert!(len(&store) > before);
         assert!(store.attached("claude", "s-1").unwrap().is_none());
     }
@@ -627,5 +636,161 @@ mod tests {
         assert_eq!(tip("s-2"), Some((from, None)));
         assert_eq!(store.carry("claude", "s-9", "s-3", None).unwrap(), None);
         assert_eq!(tip("s-3"), None);
+    }
+
+    /// Starts an attach of `s-1` to `dev` and `other`, a rename or removal of `dev`, so both wait
+    /// for `dev`'s writer's lock, then lets them go; returns the attach's outcome.
+    fn attach_beside(dir: &Path, other: impl FnOnce(Store) + Send + 'static) -> Result<Attached> {
+        let store = open(dir);
+        let transcript = dir.join("s-1.jsonl");
+        fs::write(&transcript, plain()).unwrap();
+        let writing = store.thread("dev").unwrap().writer().unwrap();
+        let (read_done, observed) = mpsc::channel();
+        let path = dir.to_path_buf();
+        let attaching = thread::spawn(move || {
+            open(&path).attach_with("dev", "claude", "s-1", Some(&transcript), |h, s, p| {
+                let t = read(h, s, p)?;
+                read_done.send(()).unwrap();
+                Ok(t)
+            })
+        });
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let path = dir.to_path_buf();
+        let moving = thread::spawn(move || other(open(&path)));
+        thread::sleep(Duration::from_millis(100));
+        drop(writing);
+        let attached = attaching.join().unwrap();
+        moving.join().unwrap();
+        attached
+    }
+
+    #[test]
+    fn an_attach_beside_a_rename_ends_attached_to_the_renamed_thread_or_writes_nothing() {
+        for _ in 0..10 {
+            let dir = tempfile::TempDir::new().unwrap();
+            init(dir.path(), &["dev"]);
+            let attached = attach_beside(dir.path(), |s| {
+                s.rename("dev", "reviewer", |_| {}).unwrap();
+            });
+            let store = open(dir.path());
+            let owner = store.owner("claude", "s-1").unwrap();
+            let snap = store.thread("reviewer").unwrap().snapshot().unwrap();
+            match attached {
+                Ok(a) => {
+                    assert_eq!(a.thread, "dev");
+                    assert_eq!(owner.as_deref(), Some("reviewer"));
+                    assert!(snap.len().unwrap() > 0);
+                }
+                Err(e) => {
+                    assert!(e.to_string().contains("renamed or removed"), "{e:#}");
+                    assert_eq!(owner, None);
+                    assert_eq!(snap.track("claude", "s-1").unwrap(), None);
+                    assert_eq!(snap.len().unwrap(), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_attach_beside_a_removal_is_heard_by_it_or_writes_nothing() {
+        for _ in 0..10 {
+            let dir = tempfile::TempDir::new().unwrap();
+            init(dir.path(), &["dev"]);
+            let (heard, hearing) = mpsc::channel();
+            let attached = attach_beside(dir.path(), move |s| {
+                let removed = s.remove(
+                    "dev",
+                    |_| {},
+                    |sessions| match sessions {
+                        [] => Ok(()),
+                        _ => bail!("attached"),
+                    },
+                );
+                heard.send(removed.map(|r| r.commit).ok()).unwrap();
+            });
+            let removed = hearing.recv().unwrap();
+            let store = open(dir.path());
+            match attached {
+                Ok(_) => {
+                    assert_eq!(removed, None, "the removal missed the attached session");
+                    assert_eq!(
+                        store.owner("claude", "s-1").unwrap().as_deref(),
+                        Some("dev")
+                    );
+                }
+                Err(e) => {
+                    assert!(e.to_string().contains("renamed or removed"), "{e:#}");
+                    assert_eq!(removed, Some(None), "the removed thread held something");
+                    assert!(!store.thread("dev").unwrap().exists().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn detach_clears_a_session_attached_to_two_threads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init(dir.path(), &["one", "two"]);
+        let store = open(dir.path());
+        let transcript = dir.path().join("s-1.jsonl");
+        fs::write(&transcript, plain()).unwrap();
+        store
+            .attach("one", "claude", "s-1", Some(&transcript))
+            .unwrap();
+        let two = store.thread("two").unwrap();
+        two.put_event("claude", "s-1", State::Attached).unwrap();
+
+        let told = "Session claude s-1 is attached to one and two. Detach it, which detaches it \
+                    from each (ai agent detach --harness claude --session s-1), then attach it \
+                    to one.";
+        assert_eq!(
+            store.sync("claude", "s-1", None).unwrap_err().to_string(),
+            told
+        );
+        let e = store.attach("two", "claude", "s-1", None).unwrap_err();
+        assert_eq!(e.to_string(), told);
+
+        assert_eq!(store.detach("claude", "s-1").unwrap(), ["one", "two"]);
+        assert!(store.attached("claude", "s-1").unwrap().is_none());
+        assert_eq!(
+            store.sync("claude", "s-1", None).unwrap(),
+            Synced::NotAttached
+        );
+        store.attach("two", "claude", "s-1", None).unwrap();
+        let (owner, _) = store.attached("claude", "s-1").unwrap().unwrap();
+        assert_eq!(owner.name(), "two");
+    }
+
+    #[test]
+    fn a_session_keeps_the_configuration_directory_its_transcript_names() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init(dir.path(), &["dev"]);
+        let store = open(dir.path());
+        let config = |s: &str| {
+            let snap = store.thread("dev").unwrap().snapshot().unwrap();
+            snap.binding("claude", s).unwrap().unwrap().config
+        };
+        let work = dir.path().join("work");
+        let project = work.join("projects/-repo");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("s-1.jsonl"), plain()).unwrap();
+        store
+            .attach("dev", "claude", "s-1", Some(&project.join("s-1.jsonl")))
+            .unwrap();
+        assert_eq!(config("s-1"), Some(work.clone()));
+        store.sync("claude", "s-1", None).unwrap();
+        assert_eq!(config("s-1"), Some(work.clone()));
+
+        let loose = dir.path().join("s-2.jsonl");
+        fs::write(&loose, plain()).unwrap();
+        store.attach("dev", "claude", "s-2", Some(&loose)).unwrap();
+        assert_eq!(config("s-2"), None);
+        let moved = dir.path().join("other/projects/-repo");
+        fs::create_dir_all(&moved).unwrap();
+        fs::copy(&loose, moved.join("s-2.jsonl")).unwrap();
+        store
+            .sync("claude", "s-2", Some(&moved.join("s-2.jsonl")))
+            .unwrap();
+        assert_eq!(config("s-2"), Some(dir.path().join("other")));
     }
 }

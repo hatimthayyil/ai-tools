@@ -284,8 +284,8 @@ fn an_unattached_session_is_not_attached() {
         sync(&r.homes(), &r.path(), "claude", "s-2", None).unwrap(),
         Synced::NotAttached
     );
-    assert_eq!(store.detach("claude", "s-1").unwrap(), Some("dev".into()));
-    assert_eq!(store.detach("claude", "s-1").unwrap(), None);
+    assert_eq!(store.detach("claude", "s-1").unwrap(), ["dev"]);
+    assert_eq!(store.detach("claude", "s-1").unwrap(), [""; 0]);
     let head = r.state("dev");
     assert_eq!(
         sync(&r.homes(), &r.path(), "claude", "s-1", Some(&path)).unwrap(),
@@ -436,7 +436,7 @@ fn a_session_can_attach_to_another_thread_after_explicit_detach() {
         .unwrap()
         .items()
         .unwrap();
-    assert_eq!(store.detach("claude", "s-1").unwrap(), Some("one".into()));
+    assert_eq!(store.detach("claude", "s-1").unwrap(), ["one"]);
     let a = store.attach("two", "claude", "s-1", Some(&p)).unwrap();
     assert_eq!(
         a.added.items,
@@ -1039,7 +1039,7 @@ fn a_commit_takes_the_projects_folder_and_leaves_the_rest_of_the_repository() {
 }
 
 #[test]
-fn a_session_attached_to_two_threads_is_an_error() {
+fn a_session_attached_to_two_threads_is_an_error_until_it_is_detached() {
     let r = Repo::new();
     let store = r.store();
     let p = r.transcript("s-1", &lines("plain.jsonl"));
@@ -1054,7 +1054,13 @@ fn a_session_attached_to_two_threads_is_an_error() {
     let e = sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "Session claude s-1 is attached to dev and other. Detach it from all but one."
+        "Session claude s-1 is attached to dev and other. Detach it, which detaches it from \
+         each (ai agent detach --harness claude --session s-1), then attach it to one."
+    );
+    assert_eq!(store.detach("claude", "s-1").unwrap(), ["dev", "other"]);
+    assert_eq!(
+        sync(&r.homes(), &r.path(), "claude", "s-1", None).unwrap(),
+        Synced::NotAttached
     );
 }
 
@@ -1143,7 +1149,7 @@ fn corrupt(r: &Repo, name: &str, line: serde_json::Value) {
 
 #[test]
 fn corrupt_records_are_errors_naming_thread_and_record() {
-    let track = |tip: u64, graft: Option<u64>| serde_json::json!({"harness": "claude", "session": "s-1", "transcript": null, "graft": graft, "tip": tip});
+    let track = |tip: u64, graft: Option<u64>| serde_json::json!({"harness": "claude", "session": "s-1", "transcript": null, "config": null, "graft": graft, "tip": tip});
     let cases = [
         ("sessions.jsonl", track(9999, None), "tip 9999"),
         ("sessions.jsonl", track(0, Some(9999)), "graft 9999"),
@@ -1200,7 +1206,7 @@ fn a_corrupt_thread_leaves_other_sessions_working() {
         store.sync("claude", "s-b", None).unwrap(),
         Synced::Attached { thread, .. } if thread == "other"
     ));
-    assert_eq!(store.detach("claude", "s-b").unwrap(), Some("other".into()));
+    assert_eq!(store.detach("claude", "s-b").unwrap(), ["other"]);
     let e = store.detach("claude", "s-a").unwrap_err().to_string();
     assert_eq!(e, "Detached from dev without its newest entries");
     store.attach("other", "claude", "s-a", Some(&pa)).unwrap();

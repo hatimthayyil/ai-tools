@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fs,
-    io::{self, Write},
+    fs, io,
     ops::Range,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -270,33 +269,40 @@ impl Store {
     }
 
     /// The thread `session` is attached to: the one whose last change of the session's
-    /// attachment attached it. An error if several did, which no command of ai records. The
-    /// caller holds the session's lock, which a rename of its thread holds too, so a thread
-    /// renamed away while this reads it holds no attachment of the session and is passed over.
+    /// attachment attached it. An error if several did, which no command of ai records but a
+    /// merge of `~/ai` can leave; [`Store::detach`] clears it.
     pub(super) fn owner(&self, harness: &str, session: &str) -> Result<Option<String>> {
+        let mut owners = self.owners(harness, session)?;
+        match owners.len() {
+            0 | 1 => Ok(owners.pop()),
+            _ => bail!(
+                "Session {harness} {session} is attached to {}. Detach it, which detaches it \
+                 from each (ai agent detach --harness {harness} --session {session}), then \
+                 attach it to one.",
+                owners.join(" and ")
+            ),
+        }
+    }
+
+    /// Every thread `session` is attached to, by name. The caller holds the session's lock,
+    /// which a rename of its thread holds too, so a thread renamed away while this reads it
+    /// holds no attachment of the session and is passed over.
+    pub(super) fn owners(&self, harness: &str, session: &str) -> Result<Vec<String>> {
         let mut owners = Vec::new();
         for t in self.threads()? {
-            let snap = match t.snapshot() {
-                Ok(s) => s,
+            let events = match t.events() {
+                Ok(e) => e,
                 Err(_) if !t.exists()? => continue,
                 Err(e) => return Err(e),
             };
-            let last = snap
-                .events()?
+            let last = events
                 .into_iter()
                 .rfind(|e| e.harness == harness && e.session == session);
             if last.is_some_and(|e| e.state == State::Attached) {
                 owners.push(t.name);
             }
         }
-        match owners.as_slice() {
-            [] => Ok(None),
-            [one] => Ok(Some(one.clone())),
-            many => bail!(
-                "Session {harness} {session} is attached to {}. Detach it from all but one.",
-                many.join(" and ")
-            ),
-        }
+        Ok(owners)
     }
 
     /// The thread of agent `name`; it exists once [`Store::create`] makes it.
@@ -343,12 +349,17 @@ impl Store {
         Ok(format!("{project}.{name}"))
     }
 
-    /// Creates agent `name` with an empty thread; an error if it exists.
+    /// Creates agent `name` with an empty thread; an error if it exists. A summariser's log
+    /// left on this machine under the name, a former agent's, first moves aside, so the new
+    /// agent starts a log of its own.
     pub fn create(&self, name: &str) -> Result<Thread> {
         let t = self.thread(name)?;
         self.ensure()?;
         let threads = self.root.join(THREADS);
         fs::create_dir_all(&threads).at(&threads)?;
+        if !t.exists()? {
+            t.retire_log()?;
+        }
         match fs::create_dir(&t.dir) {
             Ok(()) => Ok(t),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -358,15 +369,54 @@ impl Store {
         }
     }
 
+    /// Stills thread `t`, and `beside` with it: takes their compactor locks, then the locks of
+    /// the sessions attached to `t`, then their writer locks, each kind in name order. While
+    /// they are held, no summariser, sync or attach of `t` is mid-write, and one that found `t`
+    /// before fails at its next lock if `t` has moved. `waiting` hears the name of each
+    /// compactor it waits for. An attach records its attachment under the writer's lock, so a
+    /// session attached while this waited for that lock is seen, and its lock taken too.
+    fn still(&self, t: &Thread, beside: Option<&Thread>, waiting: impl Fn(&str)) -> Result<Still> {
+        let mut threads: Vec<&Thread> = std::iter::once(t).chain(beside).collect();
+        threads.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut held = Vec::new();
+        for t in &threads {
+            let p = t.local_file(COMPACT_LOCK)?;
+            held.push(match file::try_lock(&p)? {
+                Some(l) => l,
+                None => {
+                    waiting(&t.name);
+                    file::lock(&p)?
+                }
+            });
+        }
+        loop {
+            let attached = t.attached()?;
+            let mut locks = attached
+                .iter()
+                .map(|(h, s)| self.session_lock(h, s))
+                .collect::<Result<Vec<_>>>()?;
+            for t in &threads {
+                locks.push(file::lock(&t.local_file(WRITE_LOCK)?)?);
+            }
+            t.here()?;
+            if t.attached()?.iter().all(|s| attached.contains(s)) {
+                held.extend(locks);
+                return Ok(Still {
+                    attached,
+                    _locks: held,
+                });
+            }
+        }
+    }
+
     /// Renames agent `old` to `new`, a name no agent has: its thread moves to `threads/<new>`,
-    /// this machine's compactor log after it, and its sessions stay attached, since a thread
-    /// holds its sessions' attachments. `waiting` hears the name of each compactor it waits for.
+    /// and its sessions stay attached, since a thread holds its sessions' attachments.
+    /// `waiting` hears the name of each compactor it waits for.
     ///
-    /// It takes both names' compactor locks, then the locks of the sessions attached to `old`,
-    /// then both names' writer locks, each pair in name order: no summariser, sync or attach of
-    /// `old` is mid-write while it moves, and one that found `old` before fails at its next
-    /// lock. The move is one rename that never replaces, under `~/ai`'s commit lock, so a crash
-    /// leaves the thread whole under one name. `old`'s lock files stay where they are: a process
+    /// Both threads are [still](Store::still) meanwhile. The move is one rename that never
+    /// replaces, under `~/ai`'s commit lock, so a crash leaves the thread whole under one name.
+    /// This machine's compactor log then follows it; the agent is renamed whether or not the
+    /// log could move, which a warning tells. `old`'s lock files stay where they are: a process
     /// may still wait on one, and a new file in its place would let a second process hold it.
     pub fn rename(&self, old: &str, new: &str, waiting: impl Fn(&str)) -> Result<Thread> {
         let from = self.existing(old)?;
@@ -377,58 +427,36 @@ impl Store {
         if to.exists()? {
             bail!("Agent {new} already exists in this project.");
         }
-        let mut pair = [&from, &to];
-        pair.sort_by(|a, b| a.name.cmp(&b.name));
-        let mut compactors = Vec::new();
-        for t in pair {
-            let p = t.local_file(COMPACT_LOCK)?;
-            compactors.push(match file::try_lock(&p)? {
-                Some(l) => l,
-                None => {
-                    waiting(&t.name);
-                    file::lock(&p)?
+        let _still = self.still(&from, Some(&to), waiting)?;
+        {
+            let _commits = repo::lock(&self.homes.repo)?;
+            match file::rename_new(&from.dir, &to.dir) {
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    bail!("Agent {new} already exists in this project.")
                 }
-            });
-        }
-        loop {
-            let attached = from.attached()?;
-            let _sessions = attached
-                .iter()
-                .map(|(h, s)| self.session_lock(h, s))
-                .collect::<Result<Vec<_>>>()?;
-            let _writers = pair
-                .iter()
-                .map(|t| file::lock(&t.local_file(WRITE_LOCK)?))
-                .collect::<Result<Vec<_>>>()?;
-            from.here()?;
-            if from.attached()?.iter().any(|s| !attached.contains(s)) {
-                continue;
+                r => r.at(&from.dir)?,
             }
-            {
-                let _commits = repo::lock(&self.homes.repo)?;
-                match file::rename_new(&from.dir, &to.dir) {
-                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                        bail!("Agent {new} already exists in this project.")
-                    }
-                    r => r.at(&from.dir)?,
-                }
-            }
-            from.move_log(&to)?;
-            return Ok(to);
         }
+        if let Err(e) = from.move_log(&to) {
+            eprintln!(
+                "Agent {old} is now {new}, but its summariser's log stayed at {}: {e:#}",
+                pretty(&from.log_path())
+            );
+        }
+        Ok(to)
     }
 
     /// Removes agent `name`: its thread leaves the store and `~/ai`'s history keeps it.
     /// `waiting` hears the name of the compactor it waits for; `refuse` gets the sessions
     /// attached to the thread, by harness and session id, and stops the removal with its error.
     ///
-    /// It takes the locks [`Store::rename`] takes, so nothing writes the thread meanwhile, then
-    /// commits the project's folder: that commit holds every turn the thread has. A file under the
-    /// thread that git leaves out stops it first. This machine's compactor log moves aside, so an
-    /// agent made later under the name starts a log of its own; the lock files stay, as a rename
-    /// leaves them. The thread then moves into `~/ai`'s git directory in one rename, under the
-    /// commit lock, so no lookup and no commit sees it half gone; [`Removed::delete`] deletes it
-    /// there.
+    /// The thread is [still](Store::still) meanwhile. The project's folder is committed first:
+    /// that commit holds every turn the thread has. A file under the thread that git leaves out
+    /// stops it before. The thread then moves into `~/ai`'s git directory in one rename, under
+    /// the commit lock, so no lookup and no commit sees it half gone; [`Removed::delete`]
+    /// deletes it there. This machine's compactor log moves aside last, so an agent made later
+    /// under the name starts a log of its own; the agent is removed whether or not the log
+    /// could move, which a warning tells. The lock files stay, as a rename leaves them.
     pub fn remove(
         &self,
         name: &str,
@@ -436,53 +464,106 @@ impl Store {
         refuse: impl Fn(&[(String, String)]) -> Result<()>,
     ) -> Result<Removed> {
         let t = self.existing(name)?;
-        let p = t.local_file(COMPACT_LOCK)?;
-        let _compactor = match file::try_lock(&p)? {
-            Some(l) => l,
-            None => {
-                waiting(&t.name);
-                file::lock(&p)?
-            }
-        };
-        loop {
-            let attached = t.attached()?;
-            let _sessions = attached
-                .iter()
-                .map(|(h, s)| self.session_lock(h, s))
-                .collect::<Result<Vec<_>>>()?;
-            let _writer = file::lock(&t.local_file(WRITE_LOCK)?)?;
-            t.here()?;
-            if t.attached()?.iter().any(|s| !attached.contains(s)) {
-                continue;
-            }
-            refuse(&attached)?;
-            let path = t
-                .dir
-                .strip_prefix(&self.homes.repo)
-                .expect("a thread is in the user's repository")
-                .to_path_buf();
-            if let Some(f) = repo::left_out(&self.homes.repo, &path)?.first() {
-                bail!(
-                    "Cannot remove agent {name}: git leaves out {}, so ~/ai's history could not \
-                     keep it. Move it out of the thread, then try again.",
-                    pretty(f)
-                );
-            }
-            self.commit(&format!("ai agent remove {name}: its last state"))?;
-            t.retire_log()?;
-            let _commits = repo::lock(&self.homes.repo)?;
-            let commit = repo::head_holding(&self.homes.repo, &path)?;
-            let copy = tempfile::Builder::new()
-                .prefix("ai-remove-")
-                .tempdir_in(repo::git_dir(&self.homes.repo))
-                .context("Cannot make a directory to remove the thread in.")?;
-            file::rename_new(&t.dir, &copy.path().join(name)).at(&t.dir)?;
-            return Ok(Removed {
-                commit: commit.map(|c| c.to_string()),
-                path,
-                copy,
-            });
+        let still = self.still(&t, None, waiting)?;
+        refuse(&still.attached)?;
+        let path = self.path_in_repo(&t);
+        if let Some(f) = repo::left_out(&self.homes.repo, &path)?.first() {
+            bail!(
+                "Cannot remove agent {name}: git leaves out {}, so ~/ai's history could not \
+                 keep it. Move it out of the thread, then try again.",
+                pretty(f)
+            );
         }
+        self.commit(&format!("ai agent remove {name}: its last state"))?;
+        let _commits = repo::lock(&self.homes.repo)?;
+        let commit = repo::head_holding(&self.homes.repo, &path)?;
+        let copy = tempfile::Builder::new()
+            .prefix("ai-remove-")
+            .tempdir_in(repo::git_dir(&self.homes.repo))
+            .context("Cannot make a directory to remove the thread in.")?;
+        file::rename_new(&t.dir, &copy.path().join(name)).at(&t.dir)?;
+        if let Err(e) = t.retire_log() {
+            eprintln!(
+                "Agent {name} is removed, but its summariser's log stayed at {}: {e:#}",
+                pretty(&t.log_path())
+            );
+        }
+        Ok(Removed {
+            commit: commit.map(|c| c.to_string()),
+            path,
+            copy,
+        })
+    }
+
+    /// Thread `t`'s path in `~/ai`.
+    fn path_in_repo(&self, t: &Thread) -> PathBuf {
+        t.dir
+            .strip_prefix(&self.homes.repo)
+            .expect("a thread is in the user's repository")
+            .to_path_buf()
+    }
+
+    /// Restores agent `name` as commit `commit` of `~/ai` holds its thread, the id
+    /// [`Store::remove`] gave; an error if an agent has the name, so one made since is never
+    /// replaced. A session the thread held attached that another thread holds attached now is
+    /// detached from the restored one, and named in [`Restored::detached`].
+    ///
+    /// The thread is written in `~/ai`'s git directory, then moved into place in one rename
+    /// that never replaces, under the commit lock, with the locks of its attached sessions held.
+    pub fn restore(&self, name: &str, commit: &str) -> Result<Restored> {
+        let t = self.thread(name)?;
+        let taken = || {
+            anyhow!(
+                "Agent {name} exists in this project, and restoring would replace it. Rename it \
+                 first: ai agent rename {name} <new name>"
+            )
+        };
+        if t.exists()? {
+            return Err(taken());
+        }
+        self.ensure()?;
+        let threads = self.root.join(THREADS);
+        fs::create_dir_all(&threads).at(&threads)?;
+        let copy = tempfile::Builder::new()
+            .prefix("ai-restore-")
+            .tempdir_in(repo::git_dir(&self.homes.repo))
+            .context("Cannot make a directory to restore the thread in.")?;
+        let staged = Thread {
+            name: name.into(),
+            dir: copy.path().join(name),
+            local: t.local.clone(),
+        };
+        if !repo::checkout(
+            &self.homes.repo,
+            commit,
+            &self.path_in_repo(&t),
+            &staged.dir,
+        )? {
+            bail!(
+                "Commit {commit} of {} holds no agent {name} of this project.",
+                pretty(&self.homes.repo)
+            );
+        }
+        let attached = staged.attached()?;
+        let _sessions = attached
+            .iter()
+            .map(|(h, s)| self.session_lock(h, s))
+            .collect::<Result<Vec<_>>>()?;
+        let mut detached = Vec::new();
+        for (harness, session) in attached {
+            let owners = self.owners(&harness, &session)?;
+            if let Some(owner) = owners.into_iter().next() {
+                staged.put_event(&harness, &session, State::Detached)?;
+                detached.push((harness, session, owner));
+            }
+        }
+        t.retire_log()?;
+        let _commits = repo::lock(&self.homes.repo)?;
+        match file::rename_new(&staged.dir, &t.dir) {
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(taken()),
+            r => r.at(&t.dir)?,
+        }
+        Ok(Restored { detached })
     }
 
     /// Commits the project's folder of `~/ai` as one commit `msg`, leaving the rest of the
@@ -563,6 +644,27 @@ impl Store {
     pub fn holds(&self, dir: &Path) -> bool {
         Project::find(dir).is_ok_and(|p| p.is_some_and(|p| p.id == self.project.id))
     }
+}
+
+/// The changes of attachment in `bytes`, thread `name`'s attachments file.
+fn events(name: &str, bytes: &[u8]) -> Result<Vec<Event>> {
+    jsonl::decode_all(bytes)
+        .with_context(|| format!("Thread {name}: the attachments file is corrupt"))
+}
+
+/// What [`Store::still`] holds: the locks that keep a thread still, until dropped.
+struct Still {
+    /// The sessions attached to the thread, by harness and session id.
+    attached: Vec<(String, String)>,
+    _locks: Vec<file::Lock>,
+}
+
+/// What [`Store::restore`] did beyond putting the thread back.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Restored {
+    /// Each session the restored thread no longer holds attached, by harness and session id,
+    /// with the thread that holds it attached now.
+    pub detached: Vec<(String, String, String)>,
 }
 
 /// A thread [`Store::remove`] took out of the store, waiting in `~/ai`'s git directory to be
@@ -667,11 +769,21 @@ impl Thread {
         jsonl::append(&self.dir.join(file), rows)
     }
 
+    /// The changes of the attachments of sessions to this thread, in order, read without the
+    /// rest of the thread; an error if the thread went while this read them.
+    fn events(&self) -> Result<Vec<Event>> {
+        let bytes = jsonl::read(&self.dir.join(ATTACHMENTS))?;
+        if !bytes.is_empty() {
+            self.here()?;
+        }
+        events(&self.name, &bytes)
+    }
+
     /// The sessions attached here, by harness and session id, in order: those whose last
-    /// change of attachment to this thread attached them, as [`Store::owner`] finds them.
+    /// change of attachment to this thread attached them, as [`Store::owners`] finds them.
     fn attached(&self) -> Result<Vec<(String, String)>> {
         let mut last = BTreeMap::new();
-        for e in self.snapshot()?.events()? {
+        for e in self.events()? {
             last.insert((e.harness, e.session), e.state);
         }
         Ok(last
@@ -681,21 +793,14 @@ impl Thread {
             .collect())
     }
 
-    /// Moves this machine's compactor log to `to`'s, after the lines of any log `to` has; the
-    /// caller holds both threads' compactor locks.
+    /// Moves this machine's compactor log to `to`'s. A log already there is a former agent's
+    /// of that name, and first moves aside as [`Thread::retire_log`] moves it. The caller holds
+    /// both threads' compactor locks.
     fn move_log(&self, to: &Thread) -> Result<()> {
-        let (from, dest) = (self.log_path(), to.log_path());
-        match file::rename_new(&from, &dest) {
+        to.retire_log()?;
+        let from = self.log_path();
+        match file::rename_new(&from, &to.log_path()) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                let log = fs::read(&from).at(&from)?;
-                fs::OpenOptions::new()
-                    .append(true)
-                    .open(&dest)
-                    .and_then(|mut f| f.write_all(&log))
-                    .at(&dest)?;
-                fs::remove_file(&from).at(&from)
-            }
             r => r.at(&from),
         }
     }
@@ -732,6 +837,12 @@ impl Thread {
     /// session's lock.
     pub(super) fn record(&self, harness: &str, session: &str, state: State) -> Result<()> {
         let _w = self.writer()?;
+        self.put_event(harness, session, state)
+    }
+
+    /// Appends a change of a session's attachment to this thread; the caller holds the
+    /// session's lock and the writer's.
+    pub(super) fn put_event(&self, harness: &str, session: &str, state: State) -> Result<()> {
         let event = Event {
             harness: harness.into(),
             session: session.into(),
@@ -1010,8 +1121,7 @@ impl Snapshot {
 
     /// The changes of the attachments of sessions to this thread, in order.
     fn events(&self) -> Result<Vec<Event>> {
-        jsonl::decode_all(&self.events)
-            .with_context(|| format!("Thread {}: the attachments file is corrupt", self.name))
+        events(&self.name, &self.events)
     }
 
     /// The binding of `t`, from its session's attachment changes `events`: when it was last
@@ -1027,6 +1137,7 @@ impl Snapshot {
             harness: t.harness,
             session: t.session,
             transcript: t.transcript,
+            config: t.config,
             graft: t.graft,
             tip: t.tip,
         }))
@@ -1825,7 +1936,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_keeps_a_log_the_new_name_has_before_the_moved_one() {
+    fn rename_moves_aside_a_log_left_under_the_new_name() {
         let dir = tempfile::TempDir::new().unwrap();
         let s = store(dir.path(), &["dev"]);
         let (dev, reviewer) = (s.thread("dev").unwrap(), s.thread("reviewer").unwrap());
@@ -1836,10 +1947,188 @@ mod tests {
         )
         .unwrap();
         s.rename("dev", "reviewer", quiet).unwrap();
-        assert_eq!(
-            fs::read_to_string(reviewer.log_path()).unwrap(),
-            "an earlier reviewer\ndev\n"
-        );
+        assert_eq!(fs::read_to_string(reviewer.log_path()).unwrap(), "dev\n");
+        assert_eq!(retired(&reviewer), ["an earlier reviewer\n"]);
         assert!(!dev.log_path().exists());
+    }
+
+    #[test]
+    fn a_new_agent_starts_its_own_log_whatever_its_name_left_behind() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        s.rename("dev", "reviewer", quiet).unwrap();
+        let dev = s.thread("dev").unwrap();
+        fs::write(
+            dev.local_file(COMPACT_LOG).unwrap(),
+            "a summariser of the renamed dev\n",
+        )
+        .unwrap();
+        s.create("dev").unwrap();
+        assert!(!dev.log_path().exists());
+        assert_eq!(retired(&dev), ["a summariser of the renamed dev\n"]);
+
+        fs::write(dev.log_path(), "dev's own\n").unwrap();
+        assert!(err(s.create("dev")).contains("already exists"));
+        assert_eq!(fs::read_to_string(dev.log_path()).unwrap(), "dev's own\n");
+    }
+
+    /// Runs `op` while `t`'s files on this machine can't be moved or made: its directory there
+    /// allows no change, its lock files made first.
+    fn with_fixed_local<T>(t: &Thread, op: impl FnOnce() -> T) -> T {
+        use std::os::unix::fs::PermissionsExt;
+        for lock in [COMPACT_LOCK, WRITE_LOCK] {
+            fs::write(t.local_file(lock).unwrap(), "").unwrap();
+        }
+        fs::set_permissions(&t.local, fs::Permissions::from_mode(0o555)).unwrap();
+        let out = op();
+        fs::set_permissions(&t.local, fs::Permissions::from_mode(0o755)).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_rename_stands_when_its_log_cannot_move() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        let dev = s.thread("dev").unwrap();
+        fs::write(dev.local_file(COMPACT_LOG).unwrap(), "dev\n").unwrap();
+        let renamed = with_fixed_local(&dev, || s.rename("dev", "reviewer", quiet));
+        assert_eq!(renamed.unwrap().name(), "reviewer");
+        assert_eq!(names(&s), ["reviewer"]);
+        assert_eq!(fs::read_to_string(dev.log_path()).unwrap(), "dev\n");
+    }
+
+    #[test]
+    fn a_removal_stands_when_its_log_cannot_move() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let dev = s.thread("dev").unwrap();
+        fs::write(dev.local_file(COMPACT_LOG).unwrap(), "dev\n").unwrap();
+        let removed = with_fixed_local(&dev, || s.remove("dev", quiet, no));
+        assert!(removed.unwrap().commit.is_some());
+        assert!(names(&s).is_empty());
+        assert_eq!(fs::read_to_string(dev.log_path()).unwrap(), "dev\n");
+    }
+
+    #[test]
+    fn a_removal_that_fails_keeps_the_log_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let dev = s.thread("dev").unwrap();
+        fs::write(dev.local_file(COMPACT_LOG).unwrap(), "dev\n").unwrap();
+        s.commit("everything so far").unwrap();
+        let git = repo::git_dir(&s.homes().repo);
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o555)).unwrap();
+        let e = s.remove("dev", quiet, no).map(drop);
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(err(e).contains("Cannot make a directory to remove the thread in"));
+        assert_eq!(names(&s), ["dev"]);
+        assert_eq!(fs::read_to_string(dev.log_path()).unwrap(), "dev\n");
+        assert!(retired(&dev).is_empty());
+    }
+
+    #[test]
+    fn restore_brings_a_removed_thread_back_as_its_commit_holds_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev", "other"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let dev = s.thread("dev").unwrap();
+        let repo = s.homes().repo.clone();
+        let before = on_disk(&repo, &dev.dir);
+        let removed = s.remove("dev", quiet, no).unwrap();
+        let commit = removed.commit.clone().unwrap();
+        removed.delete().unwrap();
+        assert_eq!(names(&s), ["other"]);
+
+        let restored = s.restore("dev", &commit).unwrap();
+        assert_eq!(restored.detached, []);
+        assert_eq!(on_disk(&repo, &dev.dir), before);
+        let (owner, b) = s.attached("claude", "s-1").unwrap().unwrap();
+        assert_eq!(owner.name(), "dev");
+        assert!(b.is_attached());
+        let left: Vec<_> = fs::read_dir(repo::git_dir(&repo))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with("ai-restore-"))
+            .collect();
+        assert_eq!(left, [""; 0]);
+    }
+
+    #[test]
+    fn restore_never_replaces_an_agent_made_under_the_name_since() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let removed = s.remove("dev", quiet, no).unwrap();
+        let commit = removed.commit.clone().unwrap();
+        removed.delete().unwrap();
+        s.create("dev").unwrap();
+        attach(&s, dir.path(), "dev", "s-2");
+        let dev = s.thread("dev").unwrap();
+        let repo = s.homes().repo.clone();
+        let made = on_disk(&repo, &dev.dir);
+
+        let e = err(s.restore("dev", &commit));
+        assert_eq!(
+            e,
+            "Agent dev exists in this project, and restoring would replace it. Rename it first: \
+             ai agent rename dev <new name>"
+        );
+        assert_eq!(on_disk(&repo, &dev.dir), made);
+
+        s.rename("dev", "newer", quiet).unwrap();
+        s.restore("dev", &commit).unwrap();
+        assert_eq!(names(&s), ["dev", "newer"]);
+        assert_eq!(s.owner("claude", "s-1").unwrap().as_deref(), Some("dev"));
+        assert_eq!(s.owner("claude", "s-2").unwrap().as_deref(), Some("newer"));
+    }
+
+    #[test]
+    fn restore_leaves_a_session_with_the_thread_that_holds_it_now() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev", "other"]);
+        let transcript = attach(&s, dir.path(), "dev", "s-1");
+        let removed = s.remove("dev", quiet, no).unwrap();
+        let commit = removed.commit.clone().unwrap();
+        removed.delete().unwrap();
+        s.attach("other", "claude", "s-1", Some(&transcript))
+            .unwrap();
+
+        let restored = s.restore("dev", &commit).unwrap();
+        assert_eq!(
+            restored.detached,
+            [("claude".into(), "s-1".into(), "other".into())]
+        );
+        assert_eq!(s.owner("claude", "s-1").unwrap().as_deref(), Some("other"));
+        let b = s.thread("dev").unwrap().snapshot().unwrap();
+        let b = b.binding("claude", "s-1").unwrap().unwrap();
+        assert!(!b.is_attached());
+    }
+
+    #[test]
+    fn restore_refuses_a_commit_that_holds_no_such_agent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = store(dir.path(), &["dev"]);
+        attach(&s, dir.path(), "dev", "s-1");
+        let removed = s.remove("dev", quiet, no).unwrap();
+        let commit = removed.commit.clone().unwrap();
+        removed.delete().unwrap();
+        s.commit("the removal").unwrap();
+        let head = gix::open(&s.homes().repo)
+            .unwrap()
+            .head_id()
+            .unwrap()
+            .to_string();
+        assert_ne!(head, commit);
+
+        assert!(err(s.restore("dev", &head)).ends_with("holds no agent dev of this project."));
+        assert!(err(s.restore("dev", "abc")).contains("is not a commit's id"));
+        let absent = "0".repeat(40);
+        assert!(err(s.restore("dev", &absent)).contains("holds no commit"));
+        assert!(names(&s).is_empty());
+        s.restore("dev", &commit).unwrap();
+        assert_eq!(names(&s), ["dev"]);
     }
 }

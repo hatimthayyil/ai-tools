@@ -372,6 +372,48 @@ pub fn head_holding(dir: &Path, rel: &Path) -> Result<Option<ObjectId>> {
     Ok(tree.lookup_entry_by_path(rel)?.map(|_| id.detach()))
 }
 
+/// Writes the files commit `commit` of the repository at `dir` holds under the directory `rel`,
+/// relative to `dir`, into the new directory `to`; `false`, with nothing written, when the
+/// commit holds no such directory. `commit` is a commit's whole id.
+pub fn checkout(dir: &Path, commit: &str, rel: &Path, to: &Path) -> Result<bool> {
+    let repo = gix::open(dir)?;
+    let Ok(id) = ObjectId::from_hex(commit.as_bytes()) else {
+        bail!("'{commit}' is not a commit's id: give every digit of it.");
+    };
+    let tree = repo
+        .find_commit(id)
+        .with_context(|| format!("{} holds no commit {commit}.", pretty(dir)))?
+        .tree()?;
+    let path = rel
+        .to_str()
+        .with_context(|| format!("{} is not UTF-8.", pretty(rel)))?;
+    let Some(entry) = tree
+        .lookup_entry_by_path(path)?
+        .filter(|e| e.mode().is_tree())
+    else {
+        return Ok(false);
+    };
+    fs::create_dir(to).at(to)?;
+    for e in entry
+        .object()?
+        .into_tree()
+        .traverse()
+        .breadthfirst
+        .files()?
+    {
+        let name = path_str(e.filepath.as_ref());
+        if !e.mode.is_blob() {
+            bail!("{path}/{name} in commit {commit} is not a plain file.");
+        }
+        let p = to.join(&name);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).at(parent)?;
+        }
+        fs::write(&p, &repo.find_blob(e.oid)?.data).at(&p)?;
+    }
+    Ok(true)
+}
+
 /// Every path under `rel`, relative to the repository at `dir`, that no commit would hold: what
 /// its ignore files leave out, and what is neither a file nor a directory.
 pub fn left_out(dir: &Path, rel: &Path) -> Result<Vec<PathBuf>> {

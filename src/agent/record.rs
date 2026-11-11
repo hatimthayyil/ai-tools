@@ -60,13 +60,16 @@ impl Tag {
 
 /// A session's branch in one thread: one line of the thread's `sessions.jsonl`, the last per
 /// session holding. Its transcript is where the file [really sits](super::source::real), as the
-/// thread's sources are.
+/// thread's sources are; `config` is its harness's configuration directory on the machine it ran
+/// on, as the harness names it, which finds whether the session still runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Track {
     pub harness: String,
     pub session: String,
     #[serde(deserialize_with = "present")]
     pub transcript: Option<PathBuf>,
+    #[serde(deserialize_with = "present")]
+    pub config: Option<PathBuf>,
     #[serde(deserialize_with = "present")]
     pub graft: Option<u64>,
     #[serde(deserialize_with = "present")]
@@ -115,6 +118,8 @@ pub struct Binding {
     pub harness: String,
     pub session: String,
     pub transcript: Option<PathBuf>,
+    /// Its harness's configuration directory, as its [`Track`] holds it.
+    pub config: Option<PathBuf>,
     pub graft: Option<u64>,
     pub tip: Option<u64>,
     pub attached: Timestamp,
@@ -234,6 +239,7 @@ mod tests {
             harness: "claude".into(),
             session: "s-1".into(),
             transcript: Some("/p with spaces/s-1.jsonl".into()),
+            config: Some("/p with spaces".into()),
             graft: None,
             tip: Some(4),
         });
@@ -318,9 +324,9 @@ mod tests {
             v.as_object_mut().unwrap().remove(field);
             v
         };
-        let track = json!({"harness": "claude", "session": "s", "transcript": null, "graft": null, "tip": 4});
+        let track = json!({"harness": "claude", "session": "s", "transcript": null, "config": null, "graft": null, "tip": 4});
         assert!(serde_json::from_value::<Track>(track.clone()).is_ok());
-        for f in ["transcript", "graft", "tip"] {
+        for f in ["transcript", "config", "graft", "tip"] {
             assert!(
                 serde_json::from_value::<Track>(fail(track.clone(), f)).is_err(),
                 "{f}"

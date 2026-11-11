@@ -13,6 +13,7 @@ use ring::digest::{self, SHA256};
 
 use crate::{
     agent::{
+        claude,
         record::Pointer,
         store::{DIR, SOURCES, THREADS, check_name},
     },
@@ -32,6 +33,15 @@ pub fn real(p: &Path) -> PathBuf {
         .zip(p.file_name())
         .map(|(d, n)| d.join(n));
     resolved.unwrap_or_else(|| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()))
+}
+
+/// The configuration directory of the `harness` that keeps the session transcript `transcript`,
+/// the path as the harness gives it; `None` when the path doesn't tell.
+pub fn config(harness: &str, transcript: &Path) -> Option<PathBuf> {
+    match harness {
+        claude::HARNESS => claude::config_of(transcript),
+        _ => None,
+    }
 }
 
 /// One version of a file a thread read: the bytes it read from the file's start.
