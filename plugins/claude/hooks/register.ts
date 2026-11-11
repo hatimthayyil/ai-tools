@@ -21,8 +21,12 @@ async function ai($: EngineInterface, args: string[], timeoutMs?: number): Promi
   }
 }
 
-function agent($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
-  return ai($, ['agent', ...args], timeoutMs)
+/** Runs `ai agent args`, logging what a run that went through warned of. */
+async function agent($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
+  const ran = await ai($, ['agent', ...args], timeoutMs)
+  const said = ran.stderr.trim()
+  if (ran.exitCode === 0 && said !== '') $.ui.log(said)
+  return ran
 }
 
 async function compactSession($: EngineInterface, args: string[], cancelled?: AbortSignal): Promise<Ran> {
@@ -58,6 +62,7 @@ async function view($: EngineInterface, args: string[], fallback: string): Promi
   return undefined
 }
 
+/** Syncs or ends the session, logging why it failed. */
 async function sync($: EngineInterface, command: 'sync-session' | 'end-session', args: string[]): Promise<void> {
   const ran = await agent($, [command, ...args])
   if (ran.exitCode !== 0 && ran.exitCode !== NOT_ATTACHED) $.ui.log(`ai agent ${command} failed: ${ran.stderr.trim()}`)

@@ -336,6 +336,17 @@ test('turn end syncs once the transcript is flushed, and only a real failure is 
   expect(world.logs).toEqual(['ai agent sync-session failed: store locked'])
 })
 
+test('an ai agent command that goes through shows what it warned of', async ($, on) => {
+  const gone = 'Thread dev: /t/s-1.jsonl is gone; this thread read 8B of it.'
+  const world = engine(on, args => (sub(args) === 'session-name' ? [0, 'repo.dev\n', ''] : [0, '', `${gone}\n`]))
+  await stop($)
+  await world.clock.advance(FLUSH_MS)
+  await $.session.end({ reason: 'other', sessionId: SESSION, resume: { id: SESSION } })
+  expect(world.logs).toEqual([gone, gone])
+  await ai($, 'attach dev')
+  expect(world.logs).toEqual([gone, gone, gone])
+})
+
 test('a session syncs and commits as it ends, and only a real failure is shown', async ($, on) => {
   let answer: Answer = [0, '', '']
   const world = engine(on, () => answer)
