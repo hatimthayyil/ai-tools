@@ -1803,6 +1803,46 @@ fn build_writes_rewrites_and_previews_the_lines() {
 }
 
 #[test]
+fn a_build_that_finds_another_at_work_runs_no_key_s_command() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &talk(3, |k| format!("question {k}")));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let ran = s.root.join("ran");
+    fs::write(
+        s.root.join("home/.ai/ai.toml"),
+        format!(
+            "[chat]\nbackground = false\n\n[summariser]\nbackend = \"api\"\nmodel = \"heabsy/qwen38\"\n\n[summariser.keys]\nheabsy = \"touch '{}'; exit 1\"\n",
+            ran.display()
+        ),
+    )
+    .unwrap();
+    let lock = s.store().thread("dev").unwrap().try_lock().unwrap();
+    assert!(lock.is_some());
+    let r = s.ai_in("s-1", &["build"]);
+    assert_eq!(code(&r), 0, "{}", stderr(&r));
+    assert!(
+        stdout(&r).contains("A summariser is already running on dev; it writes these lines too."),
+        "{}",
+        stdout(&r)
+    );
+    assert!(!ran.exists(), "the key's command ran behind another build");
+    drop(lock);
+
+    let r = s.ai_in("s-1", &["build"]);
+    assert_eq!(code(&r), 1, "{}", stdout(&r));
+    assert!(
+        stderr(&r).contains("` failed: exit status: 1."),
+        "{}",
+        stderr(&r)
+    );
+    assert!(ran.exists());
+}
+
+#[test]
 fn build_writes_or_rewrites_one_line() {
     let s = Sandbox::new();
     s.transcript("s-1", &talk(5, |k| format!("question {k}")));

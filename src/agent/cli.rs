@@ -588,7 +588,7 @@ fn ready(
         }
         built = Some(build(
             t,
-            store.backend(t, None)?,
+            &|| store.backend(t, None),
             &keys,
             &Progress::quiet(),
         )?);
@@ -1271,9 +1271,9 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         (true, None) => format!("Rebuilding agent {name}"),
         (false, None) => format!("Building agent {name}"),
     };
+    let jobs = store.settings().summariser()?.jobs();
+    let about = about(&t, title, store.model(model)?, jobs)?;
     if dry {
-        let jobs = store.settings().summariser()?.jobs();
-        let about = about(&t, title, store.model(model)?, jobs)?;
         let progress = Progress::new(&mut *out, Mode::Plain, about);
         if !progress.plan(&plan(&t, again, line.map(|l| l.1))?)? {
             drop(progress);
@@ -1281,8 +1281,7 @@ fn build_cmd(cwd: &Path, out: &mut dyn Write, a: Build) -> Result<ExitCode> {
         }
         return Ok(ExitCode::SUCCESS);
     }
-    let backend = store.backend(&t, model)?;
-    let about = about(&t, title, backend.model().into(), backend.jobs())?;
+    let backend = &|| store.backend(&t, model);
     let progress = Progress::new(&mut *out, Mode::of(!background), about);
     let built = match (again, line) {
         (true, Some((id, key))) => {

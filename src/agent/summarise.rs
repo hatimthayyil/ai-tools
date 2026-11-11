@@ -132,13 +132,17 @@ pub struct PreviewLine {
     pub was: Option<String>,
 }
 
+/// Makes the backend a run calls. A run calls it only once it holds the thread's lock: making
+/// a backend may run a key's command, which a run that finds another at work has no use for.
+pub type MakeBackend<'a> = &'a dyn Fn() -> Result<Arc<dyn Backend>>;
+
 /// Under the thread's lock, waiting for it however long, builds `keys` and the unbuilt lines
 /// they are made from, [`Backend::jobs`] calls at once, until they are built or a line fails;
 /// logs to [`Thread::log_path`]. A key that is no line of the thread is an error. Shows its
 /// progress on `progress`.
 pub fn build(
     thread: &Thread,
-    backend: Arc<dyn Backend>,
+    backend: MakeBackend,
     keys: &[Key],
     progress: &Progress,
 ) -> Result<Built> {
@@ -151,7 +155,7 @@ pub fn build(
             thread.lock()?
         }
     };
-    let mut run = Run::new(thread, backend, OnFail::Stop, progress);
+    let mut run = Run::new(thread, backend()?, OnFail::Stop, progress);
     run.pass(Some(keys))?;
     let built = run.built.clone();
     drop(run);
@@ -165,30 +169,27 @@ pub fn build(
 /// `progress`.
 pub fn summarise(
     thread: &Thread,
-    backend: Arc<dyn Backend>,
+    backend: MakeBackend,
     on_fail: OnFail,
     progress: &Progress,
 ) -> Result<Option<Built>> {
     let _log = log::init(&thread.log_path())?;
-    let _span = info_span!(
-        "summarise",
-        pid = process::id(),
-        thread = thread.name(),
-        model = backend.model()
-    )
-    .entered();
+    let _span = info_span!("summarise", pid = process::id(), thread = thread.name()).entered();
     let start = Instant::now();
-    let mut run = Run::new(thread, backend, on_fail, progress);
-    let mut started = false;
+    let mut run = None;
     loop {
         let Some(lock) = thread.try_lock()? else {
             info!("busy: another compactor holds the lock; exiting");
-            return Ok(started.then(|| run.built.clone()));
+            return Ok(run.map(|r: Run| r.built.clone()));
         };
-        if !started {
-            info!("start");
-            started = true;
-        }
+        let run = match &mut run {
+            Some(r) => r,
+            None => {
+                let b = backend()?;
+                info!(model = b.model(), "start");
+                run.insert(Run::new(thread, b, on_fail, progress))
+            }
+        };
         let seen = loop {
             let tried = run.tried();
             let seen = run.pass(None)?;
@@ -217,24 +218,19 @@ pub fn summarise(
 /// lock at the deadline. Shows its progress on `progress`.
 pub fn rebuild(
     thread: &Thread,
-    backend: Arc<dyn Backend>,
+    backend: MakeBackend,
     deadline: Instant,
     progress: &Progress,
 ) -> Result<Option<(usize, Built)>> {
     let _log = log::init(&thread.log_path())?;
-    let _span = info_span!(
-        "rebuild",
-        pid = process::id(),
-        thread = thread.name(),
-        model = backend.model()
-    )
-    .entered();
+    let _span = info_span!("rebuild", pid = process::id(), thread = thread.name()).entered();
     let start = Instant::now();
     let Some(lock) = thread.lock_before(deadline)? else {
         warn!("the lock was still held at the deadline; rewrote nothing");
         return Ok(None);
     };
-    info!("start");
+    let backend = backend()?;
+    info!(model = backend.model(), "start");
     let dropped = thread.drop_lines()?;
     info!(dropped, "dropped");
     let mut run = Run::new(thread, backend, OnFail::Stop, progress);
@@ -275,7 +271,7 @@ pub struct Rewrote {
 /// `progress`.
 pub fn rewrite(
     thread: &Thread,
-    backend: Arc<dyn Backend>,
+    backend: MakeBackend,
     key: Key,
     deadline: Instant,
     progress: &Progress,
@@ -285,8 +281,7 @@ pub fn rewrite(
         "rewrite",
         pid = process::id(),
         thread = thread.name(),
-        line = %key,
-        model = backend.model()
+        line = %key
     )
     .entered();
     let Some(lock) = thread.lock_before(deadline)? else {
@@ -303,6 +298,9 @@ pub fn rewrite(
         .iter()
         .map(|&k| snap.line(k).map(|l| l.is_some()))
         .collect::<Result<Vec<bool>>>()?;
+    // Before the drop, so a backend that can't be made leaves every line as it was.
+    let backend = backend()?;
+    info!(model = backend.model(), "start");
     let dropped = thread.drop_keys(&[&[key][..], &above].concat())?;
     info!(dropped, "dropped");
     let mut run = Run::new(thread, backend, OnFail::Stop, progress);
