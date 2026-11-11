@@ -1,5 +1,6 @@
 use std::{
     cmp::Reverse,
+    collections::BTreeMap,
     env, fs,
     io::{self, IsTerminal, Write},
     ops::Range,
@@ -21,11 +22,13 @@ use crate::{
         id::Id,
         record::{Binding, Key},
         rollup::Rollup,
+        source::{self, Version},
         store::{Snapshot, Store, Thread, ThreadInfo},
         summarise::{Built, OnFail, build, plan, preview, rebuild, rewrite, summarise},
         sync::Synced,
         view::{Branch, Counts},
     },
+    backup,
     config::{FILE, Homes},
     file::{self, AtPath},
     memory::{Backend, Pattern, broken_pipe, claude::uuid, plural, quote, word},
@@ -408,9 +411,8 @@ impl Command {
                 tool_output,
             } => grep(cwd, out, targets, &pat, tool_output, terminal),
             Command::Build(a) => build_cmd(cwd, out, a),
-            Command::SyncSession { session } | Command::EndSession { session } => {
-                sync_session(cwd, session)
-            }
+            Command::SyncSession { session } => sync_session(cwd, session),
+            Command::EndSession { session } => end_session(cwd, session),
             Command::CompactSession { session } => compact_session(cwd, out, session),
             Command::SessionName { name } => session_name(cwd, out, &name),
         }
@@ -786,7 +788,11 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
                 ),
                 None => format!("the transcript of session {} names no directory", b.session),
             },
-            Some(_) => format!("the transcript of session {} is gone", b.session),
+            Some(_) => match put_back(&store, &t, b) {
+                Ok(true) => return resume(cwd, name, args),
+                Ok(false) => format!("the transcript of session {} is gone", b.session),
+                Err(e) => format!("the transcript of session {} is gone, and {e:#}", b.session),
+            },
             None => format!("session {} has no transcript", b.session),
         },
     };
@@ -794,9 +800,34 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     launch(cwd, name, &title, args)
 }
 
-/// Every thread: its turns, newest activity and branches; under it, its sessions.
+/// Puts the files of session `b` that are gone from this machine back from the backup
+/// ([`source::restore`]), and says so. Whether it put any back: the thread may have read
+/// nothing of them here. An error saying why if those it read can't be put back.
+fn put_back(store: &Store, t: &Thread, b: &Binding) -> Result<bool> {
+    let host = backup::host()?;
+    let versions = t.snapshot()?.versions()?;
+    let mine: Vec<&Version> = versions
+        .iter()
+        .filter(|v| v.harness == b.harness && v.session == b.session)
+        .collect();
+    let n = source::restore(store.homes(), &host, &mine)?;
+    if n > 0 {
+        eprintln!(
+            "Brought {} of session {} back from the backup.",
+            plural(n as u64, "file"),
+            b.session
+        );
+    }
+    Ok(n > 0)
+}
+
+/// Every thread: its turns, newest activity and branches; under it, its sessions, each with how
+/// many of the files the thread read of it on this machine no longer hold what it read, told
+/// by their size alone. A thread whose source records can't be read is said on stderr, and the
+/// listing fails once the rest is printed.
 fn list(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
-    let threads = Store::open(cwd)?.list()?;
+    let store = Store::open(cwd)?;
+    let threads = store.list()?;
     if threads.is_empty() {
         writeln!(
             out,
@@ -804,9 +835,16 @@ fn list(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
         )?;
         return Ok(ExitCode::SUCCESS);
     }
+    let host = backup::host()?;
     let current = s.current();
+    let (mut any, mut broken) = (false, false);
     for t in threads {
         writeln!(out, "{}", row(&t))?;
+        let sources = t.sources.as_deref().unwrap_or_else(|e| {
+            eprintln!("{e}");
+            broken = true;
+            &[]
+        });
         let wh = t.sessions.iter().map(|(b, _)| b.harness.len()).max();
         let ws = t.sessions.iter().map(|(b, _)| b.session.len()).max();
         let (wh, ws) = (wh.unwrap_or(0), ws.unwrap_or(0));
@@ -819,16 +857,49 @@ fn list(cwd: &Path, out: &mut dyn Write, s: Session) -> Result<ExitCode> {
                 true => "  this session",
                 false => "",
             };
+            let unheld = unheld(sources, b, &host)?;
+            any |= !unheld.is_empty();
             writeln!(
                 out,
-                "  {:<wh$}  {:<ws$}  {state}  {}{here}",
+                "  {:<wh$}  {:<ws$}  {state}  {}{here}{unheld}",
                 b.harness,
                 b.session,
                 when(at)
             )?;
         }
     }
-    Ok(ExitCode::SUCCESS)
+    if any {
+        writeln!(
+            out,
+            "Files changed or gone: `ai backup threads` tells whether the backup holds what \
+             was read of them."
+        )?;
+    }
+    Ok(match broken {
+        true => ExitCode::FAILURE,
+        false => ExitCode::SUCCESS,
+    })
+}
+
+/// How many files of session `b` on the machine `host`, of the versions `sources` its thread
+/// read, are gone or shorter than what it read of them: `  2 files changed or gone`; empty
+/// when none is. A file counts as its newest version.
+fn unheld(sources: &[Version], b: &Binding, host: &str) -> Result<String> {
+    let mut newest: BTreeMap<&Path, &Version> = BTreeMap::new();
+    for v in sources
+        .iter()
+        .filter(|v| v.harness == b.harness && v.session == b.session && v.read.host == host)
+    {
+        newest.insert(&v.read.path, v);
+    }
+    let mut n = 0;
+    for v in newest.values() {
+        n += u64::from(!v.read.stands()?);
+    }
+    Ok(match n {
+        0 => String::new(),
+        n => format!("  {} changed or gone", plural(n, "file")),
+    })
 }
 
 fn attach(cwd: &Path, out: &mut dyn Write, name: &str, s: Session) -> Result<ExitCode> {
@@ -873,6 +944,16 @@ fn sync_session(cwd: &Path, s: Session) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Syncs session `s` a last time, then starts a backup run if the settings ask for one at a
+/// session's end, attached or not; a run that can't start is told, and the sync's outcome stands.
+fn end_session(cwd: &Path, s: Session) -> Result<ExitCode> {
+    let synced = sync_session(cwd, s);
+    if let Err(e) = Homes::user().and_then(|h| crate::backup::at_session_end(&h)) {
+        eprintln!("The session's end started no backup run: {e:#}");
+    }
+    synced
 }
 
 /// Session `s`, synced, with its threads and the thread it is attached to; `None` outside an

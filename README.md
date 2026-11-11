@@ -5,7 +5,7 @@ The `ai` CLI: an all-in-one AI tool.
 - `ai memory`: permanent memory for AI agents. An agent records what it learns as one-line notes. Claude Code folds older notes into summaries, and `ai memory view` prints the whole memory as one short view.
 - `ai notes`: a global knowledge store for AI agents. Each note is one claim, filed in a tree of topics; Claude Code summarises every topic from its children, so an agent can browse the tree or search it.
 - `ai agent`: named agents, each with one thread that spans its sessions. The thread copies its Claude Code sessions into the repository's git, summarises them into a tree you can zoom, and on `/ai` compacts a session into a view of the whole thread.
-- `ai harness`: every harness's own files, its transcripts above all, kept under `~/.ai/harness`, each folder linked from where its harness looks for it.
+- `ai backup`: every harness's transcripts backed up with restic, into a local repository and, if you set one, a remote one that gets a copy of every snapshot.
 
 ## Install
 
@@ -89,9 +89,9 @@ ai init  # make this directory a project, once: mints its id into ai.toml, claim
 A project's repository holds only what the project shares: `ai/`, the agents' visible workspace; `.ai/`, hidden and tracked; and `ai.toml`. Everything of one user's agents lives in two homes of theirs:
 
 - `~/ai`, a git repository the user keeps, as they keep their dotfiles: each project's folder, `~/ai/projects/<project>/`, with the project's id in `id`, its private settings in `ai.toml`, and its agents' threads in `agents/threads/<name>/`. `ai init` claims the folder: a name another project's id holds is refused, with a hint to set `[project] name`. Every checkout and clone of the project finds the folder by its id. `~/ai` is made a repository when `ai` first writes to it; a `~/ai` that holds files but is no repository is refused.
-- `~/.ai`, what belongs to this machine and never goes in git: the threads' locks and compactor logs in `~/.ai/agents/<project id>/`, the harnesses' files in `~/.ai/harness/`, archives.
+- `~/.ai`, what belongs to this machine and never goes in git: the threads' locks and compactor logs in `~/.ai/agents/<project id>/`, the backup's repository in `~/.ai/backup/` with its key `backup.key`, its copies of databases in `backup-staging/` and its last run in `backup.json`.
 
-A thread keeps its items, lines, session tracks, attachment changes and subagents, never a copy of a session's files: it records each file it read (its harness, its path from the harness's home, its length and git blob id) in `sources.jsonl`. The harness's own files, in `~/.ai/harness`, are the only copy, so a sync that finds a recorded file gone, or a transcript that no longer begins with the bytes the thread read, is an error naming the file and saying to restore it from the backup of `~/.ai/harness`.
+A thread keeps its items, lines, session tracks, attachment changes and subagents, never a copy of a session's files: it records each file it read in `sources.jsonl` by the machine it read it on, where the file really sits there, and the length and SHA-256 of the bytes it read from the file's start. A file that grew is recorded again at its new length; one that no longer begins with what the thread read begins a new version, and the earlier one stays recorded. Those bytes are in the file while it begins with them, and after that in the machine's [backup](#ai-backup), in the newest snapshot whose file at that path begins with them. A sync never fails on a file gone or rewritten: it warns of a file that is gone on every sync, and of one that no longer begins with what the thread read on the sync that finds so. `ai agent list` ends each session's line with how many of its files on this machine are gone or shorter than what the thread read, and `ai backup threads` tells where the bytes are. `ai agent resume` brings a session's files that are gone back from the backup before it resumes the session.
 
 Events commit the project's folder of `~/ai` as one commit naming the command: creating or renaming an agent, attaching, detaching, resuming, `/ai` and other builds, a session's end (`ai agent attach dev`, `ai agent end-session`). A commit touches no other path of `~/ai`, and of its index only that folder's entries, so what you stage there yourself stays staged. A turn's sync, a view and the background summariser write without committing; the next event commits what they wrote. A command that fails still commits what it wrote.
 
@@ -124,27 +124,45 @@ A thread is JSON Lines files: append-only records and summaries. `ai` commits th
 
 This needs the [Claude Code plugin](#claude-code-plugin).
 
-### ai harness
+### ai backup
 
 ```sh
-ai harness status  # where each harness folder stands
-ai harness link    # link each folder that does not exist yet; never moves data
-ai harness move    # move what nothing is using, finish moves cut short, prune old backups
-ai harness prune   # delete every backup nothing wrote to since its move, without waiting
+ai backup run     # back up what every harness wrote since the last run, once
+ai backup watch   # run again and again, [backup] every apart; its service runs this
+ai backup status  # what is backed up, where to, and how the last run went
+ai backup check   # have restic check the repositories; --read-data reads every byte back
+ai backup threads # where the bytes every thread read are: backed up, not yet, or lost
 ```
 
-Each harness writes its transcripts and session files into its own folder: Claude Code `projects`, Codex `sessions` and `archived_sessions`, pi `sessions`, DSH `sessions` and `attachments`, Gemini `tmp`, opencode `storage` and `opencode.db`, Hermes `sessions` and `state.db`. `ai harness` keeps each one at `~/.ai/harness/<harness>/<path>` (folder mode 700) and puts a link where it was, so the harness and everything that recorded the old path find it there. A harness's folder is where the harness itself looks: its variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `DSH_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME`, `HERMES_HOME`) when that is an absolute path, else its default under `$HOME`. The link goes where the folder really sits, its parent resolved, so a folder reached through a linked parent is replaced there. A folder already under `~/.ai/harness`, as an agent's own harness folder is, is left alone, and so is a link to anywhere else.
+`ai backup` backs up every harness's transcripts with [restic](https://restic.net), which it runs as a program: the bytes are in a repository restic wrote, reads and checks. A run backs up each harness's folders of transcripts and session files, under the harness's default folder (Claude Code `~/.claude/projects`; Codex `~/.codex/sessions` and `archived_sessions`; pi `~/.pi/agent/sessions`; DSH `~/.dsh/sessions` and `attachments`; Gemini `~/.gemini/tmp`; opencode `~/.local/share/opencode/storage` and `opencode.db`; Hermes `~/.hermes/sessions` and `state.db`), and the folders `[backup] folders` names, each where it really sits, links resolved, as one snapshot of this machine, under its host name, in the local repository, `~/.ai/backup`. No environment variable counts: a folder that `CLAUDE_CONFIG_DIR` or another harness variable names belongs in `folders`, so the service and a command run from any shell back up the same folders. A harness folder that does not exist is skipped; a named one that does not is a problem. A database (opencode's, Hermes') is never read as the file its harness is writing: each run first copies it with SQLite's backup API, write-ahead log included, to its own path under `~/.ai/backup-staging/`, and backs up the copy; a copy the same as the last is left untouched.
 
-`link` makes the missing folders and links them, so a harness installed later writes straight into `~/.ai/harness`; a database is linked only once it exists, since SQLite must not meet a link to nothing. A folder that still holds data waits for `move`.
+A run asks restic first what a backup would do, and makes no snapshot when no file is new or changed. It never forgets or prunes, so a repository only grows, and a file a harness rewrote or deleted stays in the snapshots made before. restic stores a file as chunks, each once, so a snapshot of a transcript that grew adds the chunks at its end, not the file again.
 
-`move` moves a folder only while nothing can write to it: no process of its harness runs, matched on its first four arguments, and no process has a file or its working folder in it or where it goes, both read from `/proc` and checked again after the copy. It refuses a database whose `-wal` is not empty, a place under `~/.ai/harness` holding other data, and a copy that would leave less than 1G free. It copies the folder beside its place, compares every entry's kind, mode, size and SHA-1 (collision-checked, as git hashes) with the original, swaps in the link with termination signals held back, then reads the copy back through the link; anything that differs puts the original back. The original stays as `<folder>.moved-to-ai`, and the move's record, every entry's hash among it, as `<place>.move.json`. A move cut off is finished or redone by the next `move`. Fourteen days after its move, `move` deletes a backup that still matches its record, meaning nothing wrote to it since; one that does not is kept and reported. A folder in use, and every problem that needs you, is reported; problems make it exit with failure.
+restic encrypts every repository. The local one's password is `~/.ai/backup.key`, 32 random bytes in hex that the first run makes, readable by you alone; without it the repository can't be read, and a run refuses to make another key for a repository that exists. `[backup] password-command` names a command that prints the password instead: `sh -c` runs it, and the password is what it prints, without the blanks around it. Read the repository with restic itself:
 
-With Home Manager, the flake's module runs `link` on every switch and `move` from a user unit started with the user manager: at boot when the user lingers, else at the first login, which never waits for it. Harness services such as `hermes-gateway.service` start after it. Home Manager starts the unit once at the switch that adds it, where `move` leaves alone whatever is in use:
+```sh
+restic -r ~/.ai/backup -p ~/.ai/backup.key snapshots
+restic -r ~/.ai/backup -p ~/.ai/backup.key dump latest /home/you/.claude/projects/<project>/<session>.jsonl
+```
+
+With `[backup.remote]`, each run then copies every snapshot the remote repository lacks into it (`restic copy`); a run with nothing new to copy leaves the remote alone. The remote is any repository restic can reach, such as an S3-compatible store, named as restic names it. The first copy makes it, cutting files into chunks as the local repository does, so the copies store each chunk once too. A copied snapshot has an id of its own and names the local snapshot it copies as its `original`; both have the same `tree`. The remote's `password-command` is required and is yours to keep somewhere this machine's loss doesn't reach. `env-command` prints the variables restic reaches the remote with, such as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, a `NAME=value` on each line, the value as it stands but for one pair of quotes around it; `sh -c` runs it, and nothing it prints appears in an error or a log. A command that prints a password or the variables has 60 seconds: one that waits for someone to answer it is stopped, and the run fails saying so, so it can't hold up the runs after it. restic gets each password in its own environment, never as an argument. A run that can't reach the remote has made its snapshot, fails saying so, and the next run copies it.
+
+One run goes at a time, under `~/.ai/backup.lock`: a second waits for the first. A run does all it can, then exits with failure if anything went wrong: a file restic couldn't read (the snapshot holds the rest), a database it couldn't copy, a named folder that is missing, a remote it couldn't reach. Each run leaves what it did in `~/.ai/backup.json`; `status` prints it and fails while the last run failed, so a run that had no terminal still tells you. `watch` tells a failed run on its error output and runs again `every` later, reading `[backup]` anew each time; settings it can't read end it.
+
+`threads` tells where the bytes every thread in `~/ai` read of harness files are, each file once for each thread that read it. Bytes a file on this machine still holds are read and compared in full, and count as backed up once this machine's newest snapshot holds the file at that length; bytes a file no longer holds are read back from the local repository, then from the remote one, and compared. It prints how many files are backed up, not yet backed up, with no backup (no repository made yet) and read on another machine with no repository here holding them, and fails if any are lost, naming each on its error output, or if a thread's records can't be read. It needs restic only once a repository exists.
+
+Once the local repository is made, each session's end (`ai agent end-session`, which the Claude Code plugin runs) starts a run in the background, unless `on-session-end = false`. Backups begin with the first `ai backup run` or the service, never with a session.
+
+`ai backup` needs `restic` on `PATH`, and fails saying so without it; the flake's package brings its own, after any on your `PATH`. The repository and password of every restic it runs come from `[backup]` alone: `RESTIC_REPOSITORY`, `RESTIC_PASSWORD` and their like in your shell never reach it.
+
+`[backup]` belongs in your own `~/.ai/ai.toml` alone, and `ai backup` reads no other file: a project's settings never choose where backups go or what commands print their passwords. A bad key or value there fails `ai backup` and nothing else.
+
+With Home Manager, the flake's module runs `ai backup watch` as the user service `ai-tools-backup`, restarted on failure:
 
 ```nix
 {
   imports = [ inputs.ai-tools.homeModules.default ];
-  services.ai-harness.enable = true;
+  services.ai-tools.backup.enable = true;
 }
 ```
 
@@ -190,6 +208,18 @@ lines = 96         # how many lines `ai memory view` prints
 instructions = "ai/agents/stabiliser.md"  # its own instructions, a Markdown file
 worktree = "../ai-tools-stabiliser"       # the directory it runs in
 reports-to = ["lead", "engineer"]         # its superiors, each an agent with a table of its own
+
+[backup]                      # your own ~/.ai/ai.toml only
+repository = "~/.ai/backup"   # the local restic repository: an absolute path, or one under ~/
+password-command = "cat /run/secrets/ai-backup"  # prints its password; unset, ~/.ai/backup.key holds it
+every = "5m"                  # the time `ai backup watch` waits between runs: a second or more
+on-session-end = true         # a session's end starts a run, once the repository is made
+folders = ["~/.claude-work/projects"]  # folders backed up besides the harnesses' own
+
+[backup.remote]               # a second repository, which gets a copy of every snapshot; unset, none
+repository = "s3:https://s3.example.com/bucket/ai"  # as restic names it
+password-command = "pass show backup/ai"            # prints its password, required
+env-command = "pass show backup/ai-env"             # prints NAME=value lines, the variables restic reaches it with
 ```
 
 An agent's `instructions` is relative to the folder of the file that sets it, so an agent in `~/.ai/ai.toml` keeps its instructions in `~/.ai` and works in every project; in the private settings, it is relative to the project's root, where their link `ai.local.toml` sits. Instructions add up: the agent gets the user's, then the project's, then the private settings', each file's text in turn. Its `worktree` is relative to the project's root, the directory of its `ai.toml`, in whichever file sets it; in a linked git worktree, the root in the main checkout, so `../dev` names the same directory from every checkout.
@@ -208,7 +238,7 @@ With `[summariser.witness]`, a second model, the witness, checks every summary t
 
 `ai memory config` prints the memory's sizes in effect.
 
-An unknown key or a bad value fails the commands that read its table, naming the file and the key, and no other: a bad `[summariser]` key fails `ai memory build`, never `ai memory view`, and one agent's table fails the commands for that agent. A file that is not TOML, holds a table `ai` does not know, or holds `[project]` outside a project's own `ai.toml` leaves every table in it in doubt, so it fails every command that reads settings; finding the project reads the project's own `ai.toml` alone. Commands that read no settings, such as `ai memory grep`, never fail on them.
+An unknown key or a bad value fails the commands that read its table, naming the file and the key, and no other: a bad `[summariser]` key fails `ai memory build`, never `ai memory view`, and one agent's table fails the commands for that agent. A file that is not TOML, holds a table `ai` does not know, holds `[project]` outside a project's own `ai.toml`, or holds `[backup]` outside your own, leaves every table in it in doubt, so it fails every command that reads settings; finding the project reads the project's own `ai.toml` alone. Commands that read no settings, such as `ai memory grep`, never fail on them.
 
 ## Credits
 

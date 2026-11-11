@@ -16,6 +16,7 @@
     pkgs.bacon
     pkgs.cargo-nextest
     pkgs.git-cliff
+    pkgs.restic
   ];
 
   # https://devenv.sh/languages/

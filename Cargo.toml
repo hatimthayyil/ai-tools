@@ -16,6 +16,7 @@ anyhow = "1.0.104"
 backon = { version = "1.6.0", default-features = false, features = ["std"] }
 clap = { version = "4.6.7", features = ["derive"] }
 dialoguer = { version = "0.12.0", default-features = false }
+futures = { version = "0.3.34", default-features = false, features = ["std"] }
 genai = "0.7.1"
 getrandom = "0.4.3"
 gix = { version = "0.88.0", default-features = false, features = ["anyhow", "index", "sha1"] }
@@ -25,7 +26,11 @@ jiff = { version = "0.2.37", features = ["serde"] }
 libc = "0.2.190"
 memchr = "2.8.3"
 mti = "1.1.2"
+notify = "8.2.2"
+object_store = { version = "0.14.2", default-features = false, features = ["fs"] }
 regex = "1.13.1"
+ring = "0.17.14"
+rusqlite = { version = "0.41.1", default-features = false, features = ["backup", "bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"

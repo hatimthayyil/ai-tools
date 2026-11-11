@@ -27,8 +27,9 @@ use crate::{
             check_name,
         },
     },
+    backup,
     config::{FILE, Homes, Settings},
-    file::{self, AtPath, pretty},
+    file::{self, AtPath, pretty, sha256},
     jsonl,
     project::{OLD_STORE, Project},
     repo,
@@ -417,6 +418,8 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
         }
     }
     let mut pointers = Vec::new();
+    let host = backup::host()?;
+    let read = Timestamp::now();
     let sources = src.join("sources");
     for (harness, by_harness, _) in entries_if(&sources)? {
         for (session, dir, _) in entries(&by_harness)? {
@@ -434,7 +437,6 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
                 .parent()
                 .context("A transcript needs a parent directory.")?;
             let companion = transcript.with_extension("");
-            let home = source::home_here(&harness);
             for (rel, copy) in copies(&dir)? {
                 let bytes = joined(&copy)?;
                 let raw = base.join(&rel);
@@ -452,19 +454,18 @@ fn thread(src: &Path, dst: &Path, moved: &mut Moved) -> Result<()> {
                 pointers.push(Pointer {
                     harness: harness.clone(),
                     session: session.clone(),
-                    path: source::point(home.as_deref(), &at),
+                    host: host.clone(),
+                    path: source::real(&at),
+                    from: 0,
                     len: bytes.len() as u64,
-                    hash: source::hash(&bytes)?,
+                    sha256: sha256(&bytes),
+                    at: read,
                 });
             }
         }
     }
     for t in &mut tracks {
-        let home = source::home_here(&t.harness);
-        t.transcript = t
-            .transcript
-            .take()
-            .map(|p| source::point(home.as_deref(), &p));
+        t.transcript = t.transcript.take().map(|p| source::real(&p));
     }
     jsonl::append(&dst.join(SESSIONS), &tracks)?;
     jsonl::append(&dst.join(SOURCES), &pointers)?;

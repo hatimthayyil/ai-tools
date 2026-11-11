@@ -1,4 +1,5 @@
-# Home Manager module: keeps every harness's own files under ~/.ai/harness with `ai harness`.
+# Home Manager module: backs up every harness's transcripts with `ai backup`
+# (services.ai-tools.backup).
 self:
 {
   config,
@@ -7,42 +8,33 @@ self:
   ...
 }:
 let
-  cfg = config.services.ai-harness;
-  ai = lib.getExe cfg.package;
+  cfg = config.services.ai-tools;
 in
 {
-  options.services.ai-harness = {
-    enable = lib.mkEnableOption "keeping every harness's own files under ~/.ai/harness";
+  options.services.ai-tools = {
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.ai;
       defaultText = lib.literalExpression "ai-tools.packages.\${system}.ai";
-      description = "The ai that runs `ai harness`.";
+      description = "The ai that runs ai-tools' services.";
     };
+
+    backup.enable = lib.mkEnableOption "backing up every harness's transcripts with restic, again and again, as [backup] in ~/.ai/ai.toml sets it";
   };
 
-  config = lib.mkIf cfg.enable {
-    # Never moves data, so a switch never copies while harnesses run; a failed link leaves the
-    # folders where they are and the rest of the switch goes on.
-    home.activation.aiHarness = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
-      run ${ai} harness link || errorEcho "ai harness link failed; harness files stay where they are."
-    '';
-
-    # Started with the user manager at boot, before any login, so no harness has started yet and
-    # no login waits for it. `ai harness move` itself leaves any folder in use where it is.
-    systemd.user.services.ai-harness = {
-      Unit = {
-        Description = "Keep every harness's own files under ~/.ai/harness";
-        # Harnesses that run as services start after it.
-        Before = [ "hermes-gateway.service" ];
-        X-SwitchMethod = "keep-old";
-      };
+  config = lib.mkIf cfg.backup.enable {
+    # Outside every sandbox. Started with the user manager, so it runs from boot when the user
+    # lingers, else from the first login. It reads [backup] before each run, so a change to
+    # the settings needs no restart.
+    systemd.user.services.ai-tools-backup = {
+      Unit.Description = "Back up every harness's transcripts with restic";
       Service = {
-        Type = "oneshot";
-        ExecStart = "${ai} harness move";
-        # The first move copies and hashes every harness folder once; a move cut off is redone
-        # at the next boot.
-        TimeoutStartSec = "15min";
+        ExecStart = "${lib.getExe cfg.package} backup watch";
+        # A run cut short loses nothing; the next one backs up what it left. Broken settings
+        # end the service, which then tries again.
+        Restart = "on-failure";
+        RestartSec = "30s";
+        Nice = 10;
       };
       Install.WantedBy = [ "default.target" ];
     };

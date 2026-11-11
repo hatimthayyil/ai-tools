@@ -30,6 +30,14 @@ pub struct Attached {
     pub added: Added,
 }
 
+/// Tells each warning of `added`, that a file no longer holds what a thread read of it, on
+/// stderr.
+fn tell(added: &Added) {
+    for l in &added.unheld {
+        eprintln!("{l}");
+    }
+}
+
 /// The session's transcript at `path`, read by its harness's adapter; empty if it does not
 /// exist yet.
 pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcript> {
@@ -143,22 +151,17 @@ impl Store {
                 graft: None,
                 tip: None,
             });
-        let home = source::home_here(harness);
-        let path = match transcript {
-            Some(p) => Some(p.to_path_buf()),
-            None => old
-                .transcript
-                .as_deref()
-                .map(|p| source::locate(harness, home.as_deref(), p))
-                .transpose()?,
-        };
+        let path = transcript
+            .map(source::real)
+            .or_else(|| old.transcript.clone());
         let t = read(harness, session, path.as_deref())?;
         let mut b = Track {
-            transcript: path.map(|p| source::point(home.as_deref(), &p)),
+            transcript: path,
             ..old.clone()
         };
         let _w = thread.writer()?;
         let added = thread.snapshot()?.ingest(&thread, &mut b, &t)?;
+        tell(&added);
         if b != old {
             thread.put_track(&b)?;
         }
@@ -197,19 +200,13 @@ impl Store {
             );
         }
         let bound = target.snapshot()?.track(harness, session)?;
-        let home = source::home_here(harness);
-        let path: Option<PathBuf> = match transcript {
-            Some(p) => Some(p.to_path_buf()),
-            None => bound
-                .as_ref()
-                .and_then(|b| b.transcript.as_deref())
-                .map(|p| source::locate(harness, home.as_deref(), p))
-                .transpose()?,
-        };
+        let path: Option<PathBuf> = transcript
+            .map(source::real)
+            .or_else(|| bound.as_ref().and_then(|b| b.transcript.clone()));
         let t = read(harness, session, path.as_deref())?;
         let w = target.writer()?;
         let snap = target.snapshot()?;
-        let pointer = path.map(|p| source::point(home.as_deref(), &p));
+        let pointer = path;
         let mut b = match bound.clone() {
             Some(b) => Track {
                 transcript: pointer.or(b.transcript),
@@ -224,6 +221,7 @@ impl Store {
             },
         };
         let added = snap.ingest(&target, &mut b, &t)?;
+        tell(&added);
         if bound.as_ref() != Some(&b) {
             target.put_track(&b)?;
         }
@@ -468,13 +466,16 @@ mod tests {
 
         let snapshot = store.thread("dev").unwrap().snapshot().unwrap();
         assert_eq!(snapshot.len().unwrap(), 1);
-        let pointers = snapshot.pointers().unwrap();
-        let p = &pointers[&("claude".to_string(), path.clone())];
+        let versions = snapshot.versions().unwrap();
+        let v = versions
+            .iter()
+            .find(|v| v.read.path == source::real(&path))
+            .unwrap();
         assert_eq!(
-            (p.len, p.hash.as_str()),
+            (v.read.len, v.read.sha256.as_str()),
             (
                 original.len() as u64,
-                source::hash(original.as_bytes()).unwrap().as_str()
+                crate::file::sha256(original.as_bytes()).as_str()
             ),
             "the recorded bytes must be the parsed observation's"
         );

@@ -1277,7 +1277,8 @@ fn resuming_a_new_agent_binds_a_new_session_and_starts_claude() {
     assert_eq!(
         stderr(&o),
         format!(
-            "Cannot resume dev: the transcript of session {id} is gone. Starting a new session.\n"
+            "Cannot resume dev: the transcript of session {id} is gone, and there is no backup \
+             to bring it back from: `ai backup run` makes one. Starting a new session.\n"
         )
     );
     let second = &s.argv()[1];
@@ -1368,7 +1369,8 @@ fn resume_continues_the_newest_session_in_its_directory_or_starts_one() {
     let o = s.ai(&["resume", "dev", "--", "--model", "haiku"]);
     assert_eq!(
         stderr(&o),
-        "Cannot resume dev: the transcript of session s-2 is gone. Starting a new session.\n"
+        "Cannot resume dev: the transcript of session s-2 is gone, and there is no backup to \
+         bring it back from: `ai backup run` makes one. Starting a new session.\n"
     );
     let argv = s.argv();
     assert_eq!(argv[0], "--session-id");
@@ -2288,9 +2290,10 @@ fn the_users_repository_holds_the_threads_committed_on_events() {
         "{files}"
     );
     let sources = fs::read_to_string(threads.join("dev/sources.jsonl")).unwrap();
+    let transcript = s.project(&s.repo()).join("s-1.jsonl");
     assert!(
-        sources.contains("\"path\":\"projects/"),
-        "a transcript under Claude Code's home is recorded from the home: {sources}"
+        sources.contains(&format!("\"path\":\"{}\"", transcript.display())),
+        "a transcript is recorded where it really sits: {sources}"
     );
     assert!(
         s.homes()
@@ -2532,8 +2535,8 @@ fn gc_after_mib_decides_whether_a_commit_needs_git() {
     );
     assert_eq!(
         stderr(&o),
-        "Cannot pack ~/ai: no git program on PATH. Install git: ai runs git gc on it once it \
-         holds more than [agent] gc-after-mib of loose objects.\n"
+        "Cannot pack ~/ai: no git program on PATH. Install git: ai runs git gc on it once more \
+         than [agent] gc-after-mib of loose objects have been written since its last one.\n"
     );
     let status = git(&s.homes().repo, &["status", "--porcelain"]);
     assert_eq!(status, "", "the commit stands");
@@ -2714,4 +2717,138 @@ fn rename_waits_for_a_running_summariser() {
     assert_eq!(code(&o), 0);
     assert_eq!(stdout(&o), "Renamed agent dev to reviewer.\n");
     assert!(!dev.exists().unwrap());
+}
+
+#[test]
+fn list_tells_the_files_a_session_read_that_no_longer_hold_it() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let line = |session: &str| {
+        let o = s.ai_in(session, &["list"]);
+        assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
+        stdout(&o)
+            .lines()
+            .find(|l| l.contains(&format!("  {session}  ")))
+            .unwrap()
+            .to_owned()
+    };
+    assert!(line("s-1").ends_with("this session"), "{}", line("s-1"));
+
+    let gone = s.transcript("s-2", &talk(1, |_| "brief".into()));
+    ok(s.ai_in("s-2", &["attach", "dev"]), "Attached to dev.\n");
+    fs::remove_file(&gone).unwrap();
+    let o = s.ai_in("s-2", &["sync-session"]);
+    assert_eq!(code(&o), 0);
+    assert!(
+        stderr(&o).starts_with(&format!(
+            "Thread dev: {} is gone; this thread read ",
+            gone.display()
+        )) && stderr(&o)
+            .ends_with(" of it. `ai backup threads` tells whether the backup holds them.\n"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(
+        line("s-2").ends_with("this session  1 file changed or gone"),
+        "{}",
+        line("s-2")
+    );
+    assert!(line("s-1").ends_with("this session"), "{}", line("s-1"));
+    assert!(
+        stdout(&s.ai(&["list"])).ends_with(
+            "Files changed or gone: `ai backup threads` tells whether the backup holds what was \
+             read of them.\n"
+        ),
+        "{}",
+        stdout(&s.ai(&["list"]))
+    );
+}
+
+#[test]
+fn list_goes_on_past_a_thread_whose_source_records_cannot_be_read() {
+    let s = Sandbox::new();
+    s.transcript("s-1", &talk(1, |_| "ask".into()));
+    for name in ["dev", "other"] {
+        s.ai(&["new", name]);
+    }
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let sources = s.store().dir().join("threads/other/sources.jsonl");
+    fs::write(&sources, "{\"harness\":\"claude\",\"hash\":\"abc\"}\n").unwrap();
+
+    let o = s.ai(&["list"]);
+    assert_eq!(code(&o), 1, "the listing fails");
+    assert!(
+        stderr(&o).starts_with("Thread other: source record 1 is corrupt"),
+        "{}",
+        stderr(&o)
+    );
+    let out = stdout(&o);
+    assert!(
+        out.contains("dev  1 turn") && out.contains("other  0 turns"),
+        "{out}"
+    );
+    assert!(out.contains("  claude  s-1  attached"), "{out}");
+}
+
+#[test]
+fn resume_brings_a_transcript_that_is_gone_back_from_the_backup() {
+    let s = Sandbox::new();
+    let config = s.root.join("home/.ai/ai.toml");
+    let mut settings = fs::read_to_string(&config).unwrap();
+    settings.push_str(&format!(
+        "[backup]\nfolders = [\"{}\"]\n",
+        s.root.join("claude/projects").display()
+    ));
+    fs::write(&config, settings).unwrap();
+    ok(
+        s.ai(&["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let text = ran_in(&talk(2, |k| format!("ask {k}")), &s.repo());
+    let transcript = s.transcript("s-1", &text);
+    let artifact = transcript.with_extension("").join("tool-results/out.txt");
+    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    fs::write(&artifact, "kept\n").unwrap();
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    let o = s.top(None, &["backup", "run"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // The file grew after the thread read it; what comes back is the file as last backed up.
+    let grown = format!("{text}{{\"type\":\"future-event\"}}\n");
+    fs::write(&transcript, &grown).unwrap();
+    let o = s.top(None, &["backup", "run"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    fs::remove_file(&transcript).unwrap();
+
+    let o = s.ai(&["resume", "dev"]);
+    assert_eq!(
+        (code(&o), stderr(&o).as_str()),
+        (0, "Brought 1 file of session s-1 back from the backup.\n")
+    );
+    assert_eq!(s.argv(), ["--resume", "s-1", "--name=repo.dev"]);
+    assert_eq!(fs::read_to_string(&transcript).unwrap(), grown);
+    assert_eq!(fs::read_to_string(&artifact).unwrap(), "kept\n");
+
+    // Bytes no snapshot holds can't come back: a new session starts, and says why.
+    s.ai(&["new", "other"]);
+    let never = s.transcript("s-2", &ran_in(&talk(1, |_| "later".into()), &s.repo()));
+    ok(s.ai_in("s-2", &["attach", "other"]), "Attached to other.\n");
+    fs::remove_file(&never).unwrap();
+    let o = s.ai(&["resume", "other"]);
+    let e = stderr(&o);
+    assert!(
+        e.starts_with(
+            "Cannot resume other: the transcript of session s-2 is gone, and the backup does not \
+             hold the "
+        ) && e.ends_with(&format!(
+            " this thread read of {}. Starting a new session.\n",
+            never.display()
+        )),
+        "{e}"
+    );
+    assert_eq!(s.argv()[0], "--session-id");
 }

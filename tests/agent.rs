@@ -8,7 +8,9 @@ use std::{
 
 use ai_tools::{
     agent::{Item, Key, Kind, LineKind, Store, Synced, Tree, claude, read, sync},
+    backup::host,
     config::Homes,
+    file::{human, pretty, sha256},
     memory::Who,
     project::Project,
 };
@@ -190,37 +192,29 @@ fn text(p: &Path) -> String {
     fs::read_to_string(p).unwrap()
 }
 
-/// The newest record of `file` in thread `thread`'s sources: its length and hash.
+/// The newest version of `file` that thread `thread` read: the length and SHA-256 its records
+/// tell of.
 fn source(r: &Repo, thread: &str, file: &Path) -> Option<(u64, String)> {
-    let p = r
-        .store_dir()
-        .join("threads")
-        .join(thread)
-        .join("sources.jsonl");
-    text(&p)
-        .lines()
-        .rev()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-        .find(|v| v["path"].as_str() == file.to_str())
-        .map(|v| {
-            (
-                v["len"].as_u64().unwrap(),
-                v["hash"].as_str().unwrap().into(),
-            )
-        })
+    let real = real(file);
+    let snap = r.store().thread(thread).unwrap().snapshot().unwrap();
+    snap.versions()
+        .unwrap()
+        .into_iter()
+        .rfind(|v| v.read.path == real)
+        .map(|v| (v.read.len, v.read.sha256))
 }
 
-/// The git blob id of `bytes`.
-fn blob(bytes: &[u8]) -> String {
-    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
+/// `p` where it really sits: its folder's links resolved.
+fn real(p: &Path) -> PathBuf {
+    fs::canonicalize(p.parent().unwrap())
         .unwrap()
-        .to_string()
+        .join(p.file_name().unwrap())
 }
 
 fn assert_source(r: &Repo, thread: &str, file: &Path, expected: &[u8]) {
     assert_eq!(
         source(r, thread, file),
-        Some((expected.len() as u64, blob(expected))),
+        Some((expected.len() as u64, sha256(expected))),
         "the record of {}",
         file.display()
     );
@@ -647,59 +641,202 @@ fn a_rewritten_companion_file_is_recorded_again() {
     assert_source(&r, "dev", &artifact, b"changed artifact");
 }
 
+/// What a sync told of files that no longer hold what the thread read.
+fn unheld(s: Synced) -> Vec<String> {
+    match s {
+        Synced::Attached { added, .. } => added.unheld,
+        Synced::NotAttached => panic!("not attached"),
+    }
+}
+
+/// The source records of thread `thread`, as they are written.
+fn records(r: &Repo, thread: &str) -> Vec<serde_json::Value> {
+    text(
+        &r.store_dir()
+            .join(format!("threads/{thread}/sources.jsonl")),
+    )
+    .lines()
+    .map(|l| serde_json::from_str(l).unwrap())
+    .collect()
+}
+
 #[test]
-fn a_harness_file_that_is_gone_or_cut_is_an_error_naming_it() {
+fn a_harness_file_gone_or_cut_keeps_its_records_and_a_sync_tells_of_it() {
+    const CHECK: &str = "`ai backup threads` tells whether the backup holds them.";
     let r = Repo::new();
     let store = r.store();
     let path = r.transcript("s-1", &lines("plain.jsonl"));
     let artifact = path.with_extension("").join("tool-results/output.bin");
     fs::create_dir_all(artifact.parent().unwrap()).unwrap();
     fs::write(&artifact, b"artifact").unwrap();
-    store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
-    let before = r.state("dev");
+    let a = store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    assert_eq!(a.added.unheld, Vec::<String>::new());
 
     fs::remove_file(&artifact).unwrap();
-    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
-    assert!(
-        e.contains(&artifact.display().to_string())
-            && e.contains("is gone")
-            && e.contains("Restore it from your backup of ~/.ai/harness"),
-        "{e}"
+    let before = r.state("dev");
+    let gone = format!(
+        "Thread dev: {} is gone; this thread read 8B of it. {CHECK}",
+        pretty(&real(&artifact))
     );
-    fs::write(&artifact, b"artifact").unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            unheld(store.sync("claude", "s-1", None).unwrap()),
+            std::slice::from_ref(&gone),
+            "a gone file is told on every sync"
+        );
+    }
+    assert_eq!(r.state("dev"), before, "a gone file records nothing");
+    assert_source(&r, "dev", &artifact, b"artifact");
 
     let all = fs::read(&path).unwrap();
-    fs::write(&path, &all[..all.len() / 2]).unwrap();
-    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
-    assert!(
-        e.contains(&path.display().to_string())
-            && e.contains(&format!("no longer begins with the {} bytes", all.len())),
-        "{e}"
+    let cut = &all[..all.len() / 2];
+    fs::write(&path, cut).unwrap();
+    assert_eq!(
+        unheld(store.sync("claude", "s-1", None).unwrap()),
+        [
+            format!(
+                "Thread dev: {} no longer begins with the {} this thread read of it. {CHECK}",
+                pretty(&real(&path)),
+                human(all.len() as u64)
+            ),
+            gone.clone(),
+        ]
     );
-    assert_eq!(r.state("dev"), before, "a failed sync writes nothing");
-
-    fs::remove_file(&path).unwrap();
-    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
-    assert!(e.contains("is gone"), "{e}");
+    assert_source(&r, "dev", &path, cut);
+    assert_eq!(
+        unheld(store.sync("claude", "s-1", None).unwrap()),
+        [gone],
+        "a changed file is told once, on the sync that finds it changed"
+    );
+    let snap = store.thread("dev").unwrap().snapshot().unwrap();
+    let of_path: Vec<u64> = snap
+        .versions()
+        .unwrap()
+        .iter()
+        .filter(|v| v.read.path == real(&path))
+        .map(|v| v.read.len)
+        .collect();
+    assert_eq!(
+        of_path,
+        [all.len() as u64, cut.len() as u64],
+        "a cut file begins a version, and the one before stays recorded"
+    );
 }
 
 #[test]
-fn a_harness_file_under_its_home_is_recorded_from_the_home() {
+fn a_harness_file_is_recorded_where_it_really_sits() {
     let r = Repo::new();
-    let home = r.dir.path().join("home/.claude");
-    let path = home.join("projects/-x/s-1.jsonl");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let elsewhere = r.dir.path().join("elsewhere");
+    fs::create_dir_all(elsewhere.join("-x")).unwrap();
+    let link = r.dir.path().join("linked");
+    std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+    let path = link.join("-x/s-1.jsonl");
     fs::write(&path, lines("plain.jsonl").concat()).unwrap();
-    let moved = r.dir.path().join("moved");
-    let p = ai_tools::agent::point(Some(&home), &path);
-    assert_eq!(p, Path::new("projects/-x/s-1.jsonl"));
+    let store = r.store();
+    store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+
+    let sits = fs::canonicalize(&elsewhere).unwrap().join("-x/s-1.jsonl");
+    let snap = store.thread("dev").unwrap().snapshot().unwrap();
     assert_eq!(
-        ai_tools::agent::locate("claude", Some(&moved), &p).unwrap(),
-        moved.join("projects/-x/s-1.jsonl"),
-        "a record under the home holds wherever the home's files move"
+        snap.bindings().unwrap()[0].transcript.as_deref(),
+        Some(sits.as_path())
     );
-    let outside = r.dir.path().join("s-1.jsonl");
-    assert_eq!(ai_tools::agent::point(Some(&home), &outside), outside);
+    let versions = snap.versions().unwrap();
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0].read.path, sits);
+    assert_eq!(versions[0].read.host, host().unwrap());
+
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&sits)
+        .unwrap()
+        .write_all(b"{\"type\":\"future-event\"}\n")
+        .unwrap();
+    store.sync("claude", "s-1", None).unwrap();
+    assert_source(&r, "dev", &sits, &fs::read(&sits).unwrap());
+}
+
+#[test]
+fn a_file_that_grows_is_recorded_as_going_on_from_what_was_read() {
+    let r = Repo::new();
+    let store = r.store();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    let artifact = path.with_extension("").join("tool-results/log.txt");
+    let empty = path.with_extension("").join("empty");
+    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    fs::write(&artifact, b"one\n").unwrap();
+    fs::write(&empty, b"").unwrap();
+    store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    fs::write(&artifact, b"one\ntwo\n").unwrap();
+    fs::write(&empty, b"no longer\n").unwrap();
+    store.sync("claude", "s-1", None).unwrap();
+
+    let of = |p: &Path| -> Vec<serde_json::Value> {
+        let at = real(p);
+        let mut rows = records(&r, "dev");
+        rows.retain(|v| v["path"].as_str() == at.to_str());
+        rows
+    };
+    let mut rows = of(&artifact);
+    assert_eq!(rows.len(), 2);
+    for row in &mut rows {
+        let at = row.as_object_mut().unwrap().remove("at").unwrap();
+        at.as_str().unwrap().parse::<jiff::Timestamp>().unwrap();
+    }
+    assert_eq!(
+        rows[1],
+        serde_json::json!({
+            "harness": "claude",
+            "session": "s-1",
+            "host": host().unwrap(),
+            "path": real(&artifact),
+            "from": 4,
+            "len": 8,
+            "sha256": sha256(b"one\ntwo\n"),
+        }),
+        "the second record goes on from the first's length"
+    );
+    assert_eq!(
+        (rows[0]["from"].as_u64(), rows[0]["len"].as_u64()),
+        (Some(0), Some(4))
+    );
+    assert_source(&r, "dev", &artifact, b"one\ntwo\n");
+
+    let snap = store.thread("dev").unwrap().snapshot().unwrap();
+    let versions = snap.versions().unwrap();
+    assert_eq!(
+        versions
+            .iter()
+            .filter(|v| v.read.path == real(&empty))
+            .count(),
+        1,
+        "a version of no bytes gives way to the one that begins next"
+    );
+    assert_source(&r, "dev", &empty, b"no longer\n");
+}
+
+#[test]
+fn a_source_record_that_goes_on_from_nothing_is_an_error_naming_it() {
+    let r = Repo::new();
+    let store = r.store();
+    let path = r.transcript("s-1", &lines("plain.jsonl"));
+    store.attach("dev", "claude", "s-1", Some(&path)).unwrap();
+    let file = r.store_dir().join("threads/dev/sources.jsonl");
+    let mut row = records(&r, "dev").remove(0);
+    row["from"] = 7.into();
+    row["path"] = "/elsewhere/s-9.jsonl".into();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .unwrap()
+        .write_all(format!("{row}\n").as_bytes())
+        .unwrap();
+    let e = store.thread("dev").unwrap().snapshot().unwrap().versions();
+    assert_eq!(
+        e.unwrap_err().to_string(),
+        "Thread dev: source record 2 goes on from byte 7 of /elsewhere/s-9.jsonl, which no record \
+         before it began."
+    );
 }
 
 #[test]
@@ -752,7 +889,7 @@ fn subagents_are_kept_beside_the_main_tree() {
 }
 
 #[test]
-fn a_missing_main_transcript_is_an_error_and_keeps_subagent_linkage() {
+fn a_missing_main_transcript_is_told_gone_and_keeps_subagent_linkage() {
     let r = Repo::new();
     let path = r.transcript("s-1", &lines("subagent.jsonl"));
     let agents = path.with_extension("").join("subagents");
@@ -770,9 +907,12 @@ fn a_missing_main_transcript_is_an_error_and_keeps_subagent_linkage() {
     assert!(before[0].call.is_some());
     fs::remove_file(&path).unwrap();
 
-    let e = store.sync("claude", "s-1", None).unwrap_err().to_string();
+    let told = unheld(store.sync("claude", "s-1", None).unwrap());
 
-    assert!(e.contains("is gone"), "{e}");
+    assert!(
+        told.len() == 1 && told[0].contains(&format!("{} is gone", pretty(&real(&path)))),
+        "{told:?}"
+    );
     assert_eq!(thread.snapshot().unwrap().agents().unwrap(), before);
 }
 

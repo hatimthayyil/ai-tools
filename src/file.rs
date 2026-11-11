@@ -22,6 +22,22 @@ pub fn pretty(p: &Path) -> String {
     }
 }
 
+/// `n` bytes as a person reads them: `551M`, `1.2G`.
+pub fn human(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u > 0 && v < 10.0 {
+        format!("{v:.1}{}", UNITS[u])
+    } else {
+        format!("{v:.0}{}", UNITS[u])
+    }
+}
+
 pub trait AtPath<T> {
     fn at(self, p: &Path) -> Result<T>;
 }
@@ -77,6 +93,20 @@ pub fn lock(p: &Path) -> Result<Lock> {
 
 #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
 compile_error!("rename_new renames without replacing only on Linux and macOS.");
+
+/// The SHA-256 of `bytes`, in lowercase hex.
+pub fn sha256(bytes: &[u8]) -> String {
+    hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+}
+
+/// `bytes` in lowercase hex.
+pub fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
 
 /// Renames `from` to `to` unless `to` exists, in one step, so a path made at `to` meanwhile is
 /// never replaced: an error of kind [`io::ErrorKind::AlreadyExists`] if it exists.

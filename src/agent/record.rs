@@ -59,8 +59,8 @@ impl Tag {
 }
 
 /// A session's branch in one thread: one line of the thread's `sessions.jsonl`, the last per
-/// session holding. Its transcript is [pointed at](super::source::point) as the thread's
-/// sources are.
+/// session holding. Its transcript is where the file [really sits](super::source::real), as the
+/// thread's sources are.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Track {
     pub harness: String,
@@ -73,17 +73,23 @@ pub(super) struct Track {
     pub tip: Option<u64>,
 }
 
-/// A file of a session that a thread read, which the thread records in place of a copy: one
-/// line of the thread's `sources.jsonl`, the last per file holding. The file's first `len`
-/// bytes have the git blob id `hash`. `path` is [pointed at](super::source::point) from the
-/// harness's home.
+/// What a thread read of a file of a session, in place of a copy: one line of the thread's
+/// `sources.jsonl`. At the time `at`, the file's first `len` bytes had the SHA-256 `sha256`,
+/// on the machine `host` ([`crate::backup::host`]), at `path`, where the file [really
+/// sits](super::source::real): what finds those bytes again, in the file or in the machine's
+/// backup. A line whose `from` is 0 begins a version of the file, the bytes the thread read
+/// from its start. Each later line of the file until the next such says it grew: it still began
+/// with the `from` bytes the line before told of, its `len` then.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Pointer {
     pub harness: String,
     pub session: String,
+    pub host: String,
     pub path: PathBuf,
+    pub from: u64,
     pub len: u64,
-    pub hash: String,
+    pub sha256: String,
+    pub at: Timestamp,
 }
 
 /// A change of a session's attachment to a thread: one line of the thread's

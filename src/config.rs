@@ -13,7 +13,7 @@ use serde::{
 use toml::Spanned;
 
 use crate::{
-    agent,
+    agent, backup,
     file::{AtPath, pretty},
     memory,
     project::{self, Project},
@@ -49,11 +49,13 @@ pub fn home() -> Option<PathBuf> {
 
 /// Where `ai` keeps one user's stores. `repo` is the user's git repository, `~/ai`: every
 /// thread and each project's private settings, what a new machine needs. `machine` is `~/.ai`:
-/// what belongs to this machine and never goes in git, such as locks, logs and archives.
+/// what belongs to this machine and never goes in git, such as locks, logs and archives. `home`
+/// is the user's home, which holds both, and each harness's folder by default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Homes {
     pub repo: PathBuf,
     pub machine: PathBuf,
+    pub home: PathBuf,
 }
 
 impl Homes {
@@ -68,6 +70,7 @@ impl Homes {
         Homes {
             repo: dir.join("ai"),
             machine: dir.join(".ai"),
+            home: dir.to_path_buf(),
         }
     }
 }
@@ -116,6 +119,7 @@ struct Tables {
     _summariser: Option<IgnoredAny>,
     #[serde(rename = "agents")]
     _agents: Option<IgnoredAny>,
+    backup: Option<IgnoredAny>,
 }
 
 /// `[agents.<name>]`: what an agent runs with. A relative `instructions` is from the folder of the
@@ -282,6 +286,13 @@ impl Source {
                 Layer::Project => {}
             }
         }
+        if tables.backup.is_some() && !matches!(layer, Layer::User) {
+            bail!(
+                "{}: [backup] belongs in your own {FILE}, not in a project's: a project's \
+                 settings never choose where backups go or what commands print their passwords.",
+                pretty(path)
+            );
+        }
         Ok(Some(s))
     }
 
@@ -310,6 +321,16 @@ pub(crate) fn project_table(p: &Path) -> Result<Option<project::Table>> {
         Some(s) => s.part("project"),
         None => Ok(None),
     }
+}
+
+/// `[backup]` of the user's own `ai.toml` at `file`, the only file that may hold the table; its
+/// defaults without the file or the table. Only the file as a whole and that table are checked.
+pub(crate) fn backup(file: &Path) -> Result<backup::config::Table> {
+    let dir = file.parent().unwrap_or(Path::new("")).to_path_buf();
+    Ok(match Source::read(file, dir, Layer::User)? {
+        Some(s) => s.part("backup")?.unwrap_or_default(),
+        None => backup::config::Table::default(),
+    })
 }
 
 /// What `ai.toml` sets: the project's private settings over its `ai.toml` over the user's, key by

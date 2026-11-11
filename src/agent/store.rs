@@ -21,10 +21,11 @@ use crate::{
             Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Pointer, Row, State, Tag,
             Track, check_id,
         },
-        source,
+        source::{self, Version},
     },
+    backup,
     config::{Homes, Settings},
-    file::{self, AtPath, pretty},
+    file::{self, AtPath, human, pretty},
     jsonl,
     memory::{CALLS, Who},
     project::Project,
@@ -82,7 +83,8 @@ pub(super) fn gc(homes: &Homes, settings: &Settings) {
             if !NO_GIT.swap(true, Ordering::Relaxed) {
                 eprintln!(
                     "Cannot pack {}: no git program on PATH. Install git: ai runs git gc on it \
-                     once it holds more than [agent] gc-after-mib of loose objects.",
+                     once more than [agent] gc-after-mib of loose objects have been written \
+                     since its last one.",
                     pretty(&homes.repo)
                 );
             }
@@ -126,6 +128,10 @@ pub struct Added {
     pub items: Range<u64>,
     /// How many subagent items are new.
     pub agent_items: u64,
+    /// A warning for each file of the session that no longer holds what the thread read of it:
+    /// one that is gone, on every sync; one that no longer begins with it, on the sync that
+    /// finds so.
+    pub unheld: Vec<String>,
 }
 
 impl Added {
@@ -157,6 +163,9 @@ pub struct ThreadInfo {
     /// Its sessions, each with the time of its newest item (else of its attaching), newest
     /// first.
     pub sessions: Vec<(Binding, Timestamp)>,
+    /// Every version of its sessions' files that it read; the error if its source records
+    /// can't be read, which leaves the rest of the thread listed.
+    pub sources: Result<Vec<Version>, String>,
 }
 
 /// A state of a thread: the lengths of its item, line and session files then.
@@ -474,6 +483,7 @@ impl Store {
                     newest: heads.into_iter().last(),
                     turns,
                     sessions,
+                    sources: snap.versions().map_err(|e| format!("{e:#}")),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -897,17 +907,12 @@ impl Snapshot {
         let Some(i) = events.iter().rposition(|e| e.state == State::Attached) else {
             return Ok(None);
         };
-        let home = source::home_here(&t.harness);
-        let transcript = t
-            .transcript
-            .map(|p| source::locate(&t.harness, home.as_deref(), &p))
-            .transpose()?;
         Ok(Some(Binding {
             attached: events[i].at,
             detached: events.get(i + 1).map(|e| e.at),
             harness: t.harness,
             session: t.session,
-            transcript,
+            transcript: t.transcript,
             graft: t.graft,
             tip: t.tip,
         }))
@@ -1032,70 +1037,75 @@ impl Snapshot {
             .collect())
     }
 
-    /// The newest record of each file of a session this thread read, by harness and path.
-    pub(super) fn pointers(&self) -> Result<BTreeMap<(String, PathBuf), Pointer>> {
-        let mut out = BTreeMap::new();
-        for (i, l) in jsonl::lines(&self.sources).enumerate() {
-            let p: Pointer = jsonl::decode(l).with_context(|| {
-                format!("Thread {}: source record {} is corrupt", self.name, i + 1)
-            })?;
-            out.insert((p.harness.clone(), p.path.clone()), p);
-        }
-        Ok(out)
+    /// Every version of the session files this thread read, in the order each began.
+    pub fn versions(&self) -> Result<Vec<Version>> {
+        source::decode(&self.name, &self.sources)
     }
 
-    /// The records of `t`'s files this thread lacks, for session `b`: a file is recorded again
-    /// when it grew or changed. An error if a file it recorded is gone, or if the transcript no
-    /// longer begins with the bytes it recorded: the harness's files are the only copy, so the
-    /// error says to restore them.
-    fn point(&self, b: &Track, t: &Transcript) -> Result<Vec<Pointer>> {
-        let home = source::home_here(&b.harness);
-        let mut known: BTreeMap<PathBuf, Pointer> = self
-            .pointers()?
-            .into_values()
-            .filter(|p| p.harness == b.harness && p.session == b.session)
-            .map(|p| (p.path.clone(), p))
+    /// The records of `t`'s files this thread lacks, for session `b` on this machine: a file
+    /// that grew is recorded at its new length, and one that no longer begins with what the
+    /// thread read begins a new version. Then a warning for each file that no longer holds
+    /// what the thread read of it: one that no longer begins with it, and one that is gone.
+    fn point(&self, b: &Track, t: &Transcript) -> Result<(Vec<Pointer>, Vec<String>)> {
+        const CHECK: &str = "`ai backup threads` tells whether the backup holds them";
+        let host = backup::host()?;
+        let at = Timestamp::now();
+        let mine: Vec<Version> = self
+            .versions()?
+            .into_iter()
+            .filter(|v| v.harness == b.harness && v.session == b.session && v.read.host == host)
+            .collect();
+        let live: BTreeMap<PathBuf, &[u8]> = t
+            .files
+            .iter()
+            .map(|(rel, bytes)| (t.dir.join(rel), bytes.as_slice()))
             .collect();
         let mut out = Vec::new();
-        for (relative, bytes) in &t.files {
-            let abs = t.dir.join(relative);
-            let path = source::point(home.as_deref(), &abs);
-            let hash = source::hash(bytes)?;
-            if let Some(old) = known.remove(&path) {
-                if old.len == bytes.len() as u64 && old.hash == hash {
-                    continue;
-                }
-                let kept = usize::try_from(old.len).ok().and_then(|n| bytes.get(..n));
-                let prefix = kept.map(source::hash).transpose()?;
-                if *relative == t.main && prefix.as_deref() != Some(old.hash.as_str()) {
-                    bail!(
-                        "Thread {}: {} no longer begins with the {} bytes this thread read from \
-                         it. Restore it from your backup of ~/.ai/harness.",
+        let mut unheld = Vec::new();
+        for (path, bytes) in &live {
+            let newest = mine.iter().rfind(|v| v.read.path == *path);
+            let (begins, sha256) = source::hashes(bytes, newest.map(|v| &v.read));
+            let len = bytes.len() as u64;
+            let from = match newest {
+                Some(v) if begins && v.read.len == len => continue,
+                Some(v) if begins => v.read.len,
+                Some(v) => {
+                    unheld.push(format!(
+                        "Thread {}: {} no longer begins with the {} this thread read of it. \
+                         {CHECK}.",
                         self.name,
-                        pretty(&abs),
-                        old.len
-                    );
+                        pretty(path),
+                        human(v.read.len)
+                    ));
+                    0
                 }
-            }
+                None => 0,
+            };
             out.push(Pointer {
                 harness: b.harness.clone(),
                 session: b.session.clone(),
-                path,
-                len: bytes.len() as u64,
-                hash,
+                host: host.clone(),
+                path: path.clone(),
+                from,
+                len,
+                sha256,
+                at,
             });
         }
-        if let Some(gone) = known.into_values().next() {
-            let abs = source::locate(&b.harness, home.as_deref(), &gone.path)?;
-            bail!(
-                "Thread {}: {} is gone; this thread read {} bytes of it. Restore it from your \
-                 backup of ~/.ai/harness.",
+        let gone: BTreeMap<&Path, &Version> = mine
+            .iter()
+            .filter(|v| v.read.len > 0 && !live.contains_key(&v.read.path))
+            .map(|v| (v.read.path.as_path(), v))
+            .collect();
+        for (path, v) in gone {
+            unheld.push(format!(
+                "Thread {}: {} is gone; this thread read {} of it. {CHECK}.",
                 self.name,
-                pretty(&abs),
-                gone.len
-            );
+                pretty(path),
+                human(v.read.len)
+            ));
         }
-        Ok(out)
+        Ok((out, unheld))
     }
 
     /// Adds the items of `t` this thread lacks, for session `b`, and records its files: a root
@@ -1104,7 +1114,8 @@ impl Snapshot {
     pub(super) fn ingest(&self, thread: &Thread, b: &mut Track, t: &Transcript) -> Result<Added> {
         check_id(&b.harness, "harness")?;
         check_id(&b.session, "session")?;
-        thread.append(SOURCES, &self.point(b, t)?)?;
+        let (pointers, unheld) = self.point(b, t)?;
+        thread.append(SOURCES, &pointers)?;
         let mut main = Append::new(self.heads()?);
         let first = main.len();
         for item in &t.items {
@@ -1169,6 +1180,7 @@ impl Snapshot {
         Ok(Added {
             items: added,
             agent_items,
+            unheld,
         })
     }
 }

@@ -33,16 +33,23 @@
             };
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
-            # git: ai runs git gc on ~/ai; a git of the user's own on PATH comes first.
+            # git: ai runs git gc on ~/ai. restic: ai backup runs it. A git or restic of the user's
+            # own on PATH comes first.
             postInstall = ''
               mkdir -p $out/share/ai
               cp -r --no-preserve=mode ${./plugins} $out/share/ai/plugins
-              wrapProgram $out/bin/ai --suffix PATH : ${lib.makeBinPath [ pkgs.gitMinimal ]}
+              wrapProgram $out/bin/ai --suffix PATH : ${
+                lib.makeBinPath [
+                  pkgs.gitMinimal
+                  pkgs.restic
+                ]
+              }
             '';
             # cacert: the API backend's HTTP client loads the system's CA certificates, even in tests.
             nativeCheckInputs = [
               pkgs.git
               pkgs.cacert
+              pkgs.restic
             ];
             nativeInstallCheckInputs = [ pkgs.versionCheckHook ];
             doInstallCheck = true;

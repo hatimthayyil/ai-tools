@@ -28,9 +28,9 @@ enum Command {
     #[command(about = "Make this directory a project: mint its id into its ai.toml, once.")]
     Init(ai_tools::project::Init),
     #[command(
-        about = "Keep every harness's own files under ~/.ai/harness, linked from where each harness looks."
+        about = "Back up every harness's transcripts with restic: a local repository, and a remote one if set."
     )]
-    Harness(ai_tools::harness::Cli),
+    Backup(ai_tools::backup::Cli),
 }
 
 fn main() -> ExitCode {
@@ -42,7 +42,7 @@ fn main() -> ExitCode {
         Command::View(cli) => cli.exec(),
         Command::Page(cli) => cli.exec(),
         Command::Init(cli) => cli.exec(),
-        Command::Harness(cli) => cli.exec(),
+        Command::Backup(cli) => cli.exec(),
     };
     result.unwrap_or_else(|e| {
         eprintln!("{e}");
