@@ -279,10 +279,6 @@ pub fn commit_paths(dir: &Path, paths: &[&Path], me: &str, msg: &str) -> Result<
     if same && !stale {
         return Ok(());
     }
-    if !same {
-        let me = repo.committer().context("No committer.")??;
-        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
-    }
     let under = |path: &BStr| {
         prefixes.iter().any(|p| {
             path == p.as_bytes().as_bstr()
@@ -299,7 +295,12 @@ pub fn commit_paths(dir: &Path, paths: &[&Path], me: &str, msg: &str) -> Result<
     }
     index.sort_entries();
     index.remove_tree();
+    // Before HEAD moves, as in `commit`.
     index.write(Default::default())?;
+    if !same {
+        let me = repo.committer().context("No committer.")??;
+        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
+    }
     Ok(())
 }
 
@@ -667,6 +668,36 @@ mod tests {
         let (msg, text) = head(&dir, "t/items.jsonl");
         assert_eq!(msg, format!("c{}", i - 1));
         assert_eq!(text, fs::read_to_string(&file).unwrap());
+    }
+
+    #[test]
+    fn a_commit_of_paths_writes_the_index_before_head_moves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        let t = Path::new("t");
+        fs::create_dir_all(dir.join(t)).unwrap();
+        fs::write(dir.join("t/a"), "1\n").unwrap();
+        commit_paths(&dir, &[t], "ai", "one").unwrap();
+        let staged = || {
+            let index = gix::open(&dir).unwrap().index_or_empty().unwrap();
+            let paths = index.entries().iter().map(|e| e.path(&index).to_string());
+            paths.collect::<Vec<_>>()
+        };
+
+        // A held lock on HEAD's branch keeps HEAD where it is.
+        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
+        let held = git_dir(&dir).join(format!("{}.lock", branch.as_bstr()));
+        fs::write(&held, "").unwrap();
+        fs::write(dir.join("t/b"), "2\n").unwrap();
+        assert!(commit_paths(&dir, &[t], "ai", "two").is_err());
+        assert_eq!(head(&dir, "t/a").0, "one");
+        assert_eq!(staged(), ["t/a", "t/b"]);
+
+        fs::remove_file(&held).unwrap();
+        commit_paths(&dir, &[t], "ai", "two").unwrap();
+        assert_eq!(head(&dir, "t/b"), ("two".into(), "2\n".into()));
+        assert_eq!(staged(), ["t/a", "t/b"]);
     }
 
     #[test]
