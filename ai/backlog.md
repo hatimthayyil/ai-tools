@@ -50,6 +50,7 @@
 - Incremental sync: each sync re-reads every source file and its archived copy (`src/agent/source.rs:9`, `src/agent/store.rs:880`), ~285 MB on `ai-chat` and growing with the thread. Record each file's size and mtime; copy only from the old end.
 - Auto gc: A thread's `.git` is never packed (65 MB of loose objects on `ai-chat`). Run `git gc --auto` after each event commit.
 - `/reports`: a plugin command (the mod in `plugins/claude/hooks/register.ts`) opens a pane of this session's fork reports, newest first, each with the fork's name, whether it finished or failed, and when. Enter shows the whole report in a scrollable pane, one key quotes it into the prompt box, and another opens the fork's own transcript (`~/.claude/projects/<project>/<session>/subagents/agent-<id>.jsonl`). An `ai` command gives the same list and reports, with structured output, so emx shows them too. Claude Code's `/tasks` keeps a finished fork for only 30 s, and nothing shows its report after that. Check first that `/reports` clashes with no built-in. Goes on `feat/reply`, after selection quoting.
+- `/fold` into a new session was not run live end to end. Its parts were, in Claude Code 2.1.322: a plugin's `/clear`, a 120,000-character row appended right after it, forks that run on through it. Not tested: Monitors, and notifications of detached tool calls, across the `/clear`.
 
 ## Notes
 
