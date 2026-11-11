@@ -2,6 +2,10 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+// Declared by the binary alone, so the `ai_tools` library never holds the converter.
+#[path = "../tools/convert/mod.rs"]
+mod convert;
+
 #[derive(Parser)]
 #[command(name = "ai", version, about = "All-in-one AI tool.")]
 struct Cli {
@@ -31,6 +35,8 @@ enum Command {
         about = "Back up every harness's transcripts with restic: a local repository, and a remote one if set."
     )]
     Backup(ai_tools::backup::Cli),
+    #[command(about = "Convert a project's agents and settings from ai 0.17's .ai/local to ~/ai.")]
+    Convert(convert::Cli),
 }
 
 fn main() -> ExitCode {
@@ -43,6 +49,7 @@ fn main() -> ExitCode {
         Command::Page(cli) => cli.exec(),
         Command::Init(cli) => cli.exec(),
         Command::Backup(cli) => cli.exec(),
+        Command::Convert(cli) => cli.exec(),
     };
     result.unwrap_or_else(|e| {
         eprintln!("{e}");

@@ -255,7 +255,10 @@ fn capture_at(
         }
     };
     if meta.is_symlink() {
-        bail!("Cannot archive symbolic link {}.", path.display());
+        bail!(
+            "A session's file must be a regular file, not a symbolic link: {}.",
+            path.display()
+        );
     }
     if meta.is_dir() {
         if !allow_directory {
@@ -274,7 +277,10 @@ fn capture_at(
         let bytes = fs::read(path).with_context(|| format!("Cannot read {}.", path.display()))?;
         files.insert(relative, bytes);
     } else {
-        bail!("Cannot archive non-regular file {}.", path.display());
+        bail!(
+            "A session's file must be a regular file: {}.",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -296,7 +302,7 @@ mod tests {
 
         let error = capture(&transcript).unwrap_err();
 
-        assert!(error.to_string().contains("Cannot archive symbolic link"));
+        assert!(error.to_string().contains("not a symbolic link"));
     }
 
     #[test]

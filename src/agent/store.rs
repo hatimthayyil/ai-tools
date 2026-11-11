@@ -14,7 +14,6 @@ use serde::Serialize;
 use crate::{
     agent::{
         claude::Subagent,
-        convert,
         model::{Item, Kind, SourceId, Tree},
         record::{
             Agent, Binding, Event, Head, Key, Line, LineKind, LineOp, Pointer, Row, State, Tag,
@@ -36,13 +35,20 @@ pub const FORMAT: u32 = 6;
 /// The agent store's directory in a project's folder of `~/ai`, and of this machine's files for
 /// the project in `~/.ai`.
 pub const DIR: &str = "agents";
-pub(super) const THREADS: &str = "threads";
-pub(super) const ITEMS: &str = "items.jsonl";
-pub(super) const LINES: &str = "lines.jsonl";
-pub(super) const SESSIONS: &str = "sessions.jsonl";
-pub(super) const ATTACHMENTS: &str = "attachments.jsonl";
-pub(super) const AGENTS: &str = "agents.jsonl";
-pub(super) const SOURCES: &str = "sources.jsonl";
+/// The store's directory of threads, one directory each.
+pub const THREADS: &str = "threads";
+/// A thread's items.
+pub const ITEMS: &str = "items.jsonl";
+/// A thread's summary lines.
+pub const LINES: &str = "lines.jsonl";
+/// A thread's session [tracks](super::record::Track).
+pub const SESSIONS: &str = "sessions.jsonl";
+/// A thread's attachment [changes](super::record::Event).
+pub const ATTACHMENTS: &str = "attachments.jsonl";
+/// A thread's subagents.
+pub const AGENTS: &str = "agents.jsonl";
+/// What a thread read of its sessions' files: [records](super::record::Pointer).
+pub const SOURCES: &str = "sources.jsonl";
 /// The lock every writer of a thread's files takes.
 const WRITE_LOCK: &str = "write.lock";
 /// The compactor's lock on a thread, and its log.
@@ -190,7 +196,8 @@ pub struct Store {
 
 impl Store {
     /// The agents of the project at or above `dir`, in the user's `~/ai`; `None` outside a
-    /// project. A store of another format, or agents an older ai kept, are refused.
+    /// project. A store of another format, or agents ai 0.17 kept and [`Project::unconverted`] finds, are
+    /// refused.
     pub fn find(dir: &Path) -> Result<Option<Store>> {
         match Project::find(dir)? {
             Some(p) => Ok(Some(Store::of(p, &Homes::user()?, dir)?)),
@@ -222,7 +229,7 @@ impl Store {
     }
 
     fn of(project: Project, homes: &Homes, cwd: &Path) -> Result<Store> {
-        convert::refuse_pending(&project, homes)?;
+        project.refuse_unconverted(homes)?;
         let root = Store::root(homes, &project)?;
         file::check_format(&root, FORMAT, "agent")?;
         Ok(Store {

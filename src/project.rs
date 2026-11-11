@@ -13,7 +13,6 @@ use tempfile::NamedTempFile;
 use toml_edit::DocumentMut;
 
 use crate::{
-    agent,
     config::{self, FILE, Homes, LOCAL},
     file::{AtPath, pretty},
     repo,
@@ -112,14 +111,8 @@ impl Project {
         }
         let found = Project::at(&p)?;
         let at = home(dir)?;
-        let old = at.join(OLD_STORE);
-        if old.exists() {
-            bail!(
-                "{} holds this project's agents as an older ai kept them. Run `ai agent list` on \
-                 a terminal to move them to {}.",
-                pretty(&old),
-                pretty(&homes.repo)
-            );
+        if let Some(project) = &found {
+            project.refuse_unconverted(homes)?;
         }
         let folder = match &found {
             Some(project) => project.folder(homes)?,
@@ -178,6 +171,37 @@ impl Project {
     /// while it holds none, since only [`Project::claim`] makes them.
     pub fn private(&self, homes: &Homes) -> Result<Option<PathBuf>> {
         Ok(self.held(homes)?.map(|f| f.join(FILE)))
+    }
+
+    /// Where ai 0.17 kept this project's agents or private settings, while they await the
+    /// [converter](CONVERTER): its home's [`OLD_STORE`] holds agents or settings and `homes.repo`
+    /// holds no folder of the project. Once the project holds a folder, what [`OLD_STORE`] still
+    /// holds is the user's to keep or delete, and `ai` reads none of it.
+    pub fn unconverted(&self, homes: &Homes) -> Result<Option<PathBuf>> {
+        let old = self.home.join(OLD_STORE);
+        let agents = old.join("agents");
+        let settings = old.join(FILE);
+        let holds = agents.exists()
+            || match fs::metadata(&settings) {
+                Ok(m) => m.len() > 0,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+                Err(e) => return Err(e).at(&settings),
+            };
+        Ok((holds && self.held(homes)?.is_none()).then_some(old))
+    }
+
+    /// An error naming the [converter](CONVERTER) while [`Project::unconverted`] finds a store.
+    pub fn refuse_unconverted(&self, homes: &Homes) -> Result<()> {
+        match self.unconverted(homes)? {
+            Some(old) => bail!(
+                "This project's agents and private settings are still in {}, where ai 0.17 kept \
+                 them. Convert them to {} with `{CONVERTER} {}`.",
+                pretty(&old),
+                pretty(&homes.repo.join(PROJECTS)),
+                pretty(&self.home)
+            ),
+            None => Ok(()),
+        }
     }
 
     /// Makes its [folder](Project::folder) and claims it with its id; makes its private settings
@@ -239,8 +263,12 @@ fn name_of(dir: &Path, name: Option<String>) -> String {
     })
 }
 
-/// Where an older ai kept a project's agents and private settings, in its [home](Project::home).
+/// Where ai 0.17 kept a project's agents and private settings, in its [home](Project::home); now the
+/// project's private working data alone.
 pub const OLD_STORE: &str = ".ai/local";
+
+/// The command that converts what ai 0.17 kept in [`OLD_STORE`] to the project's folder of `~/ai`.
+pub const CONVERTER: &str = "ai convert";
 
 /// `name` if it can name a project's folder: letters, digits, `.`, `-` and `_`, but not `.` or
 /// `..`.
@@ -322,8 +350,9 @@ fn mint(dir: &Path, p: &Path) -> Result<Project> {
     Project::at(p)?.context("ai init wrote no project id.")
 }
 
-/// What a project keeps out of git: the link to its private settings.
-const UNTRACKED: [&str; 1] = [LOCAL];
+/// What a project keeps out of git: the link to its private settings, and its private working
+/// data.
+const UNTRACKED: [&str; 2] = [LOCAL, ".ai/local/"];
 
 /// Adds each of [`UNTRACKED`] to the `.gitignore` in `dir` as `/<name>`, unless a line there
 /// already names it, with or without its slashes.
@@ -381,11 +410,9 @@ fn check_id(id: &str) -> Result<()> {
 pub struct Init {}
 
 impl Init {
-    /// Makes the current directory a project, printing its id; on a terminal, first offers to
-    /// move agents an older ai kept in the project.
+    /// Makes the current directory a project, printing its id.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        agent::convert::offer(&cwd)?;
         println!("{}", Project::init(&cwd)?.id);
         Ok(ExitCode::SUCCESS)
     }

@@ -3,6 +3,7 @@ use std::{
     fmt, fs, io,
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -16,7 +17,7 @@ use crate::{
     agent, backup,
     file::{AtPath, pretty},
     memory,
-    project::{self, Project},
+    project::{self, CONVERTER, Project},
     summariser,
 };
 
@@ -49,7 +50,7 @@ pub fn home() -> Option<PathBuf> {
 
 /// Where `ai` keeps one user's stores. `repo` is the user's git repository, `~/ai`: every
 /// thread and each project's private settings, what a new machine needs. `machine` is `~/.ai`:
-/// what belongs to this machine and never goes in git, such as locks, logs and archives. `home`
+/// what belongs to this machine and never goes in git, such as locks, logs and the backup. `home`
 /// is the user's home, which holds both, and each harness's folder by default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Homes {
@@ -520,7 +521,13 @@ impl Settings {
         };
         let private = match (project.as_deref(), &self.homes) {
             (Some(p), Some(homes)) => match Project::at(p)? {
-                Some(project) => project.private(homes)?,
+                Some(project) => {
+                    let private = project.private(homes)?;
+                    if private.is_none() {
+                        warn_unconverted(&project, homes)?;
+                    }
+                    private
+                }
                 None => None,
             },
             _ => None,
@@ -543,6 +550,24 @@ impl Settings {
         .collect::<Result<Vec<_>>>()?;
         Ok((sources, home))
     }
+}
+
+/// Says once per process, on stderr, that the private settings ai 0.17 kept for `project` are
+/// read by no command until the [converter](CONVERTER) moves them.
+fn warn_unconverted(project: &Project, homes: &Homes) -> Result<()> {
+    static TOLD: AtomicBool = AtomicBool::new(false);
+    if let Some(old) = project.unconverted(homes)?
+        && fs::metadata(old.join(FILE)).is_ok_and(|m| m.len() > 0)
+        && !TOLD.swap(true, Ordering::Relaxed)
+    {
+        eprintln!(
+            "This project's private settings in {} are not read until they are converted: run \
+             `{CONVERTER} {}`.",
+            pretty(&old.join(FILE)),
+            pretty(&project.home)
+        );
+    }
+    Ok(())
 }
 
 /// An agent's table as [`Settings::mentions`] reads it: each key, with where its value is.

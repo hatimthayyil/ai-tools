@@ -29,6 +29,7 @@
                 ./Cargo.lock
                 ./src
                 ./tests
+                ./tools/convert
               ];
             };
             cargoLock.lockFile = ./Cargo.lock;

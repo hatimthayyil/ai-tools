@@ -1,3 +1,6 @@
+//! The records a thread keeps in its files: items' heads, summary lines, subagents, and each
+//! session's track, attachment changes and what it read.
+
 use std::{fmt, path::PathBuf};
 
 use anyhow::{Result, bail};
@@ -63,7 +66,7 @@ impl Tag {
 /// thread's sources are; `config` is its harness's configuration directory on the machine it ran
 /// on, as the harness names it, which finds whether the session still runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Track {
+pub struct Track {
     pub harness: String,
     pub session: String,
     #[serde(deserialize_with = "present")]
@@ -84,7 +87,7 @@ pub(super) struct Track {
 /// from its start. Each later line of the file until the next such says it grew: it still began
 /// with the `from` bytes the line before told of, its `len` then.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Pointer {
+pub struct Pointer {
     pub harness: String,
     pub session: String,
     pub host: String,
@@ -98,16 +101,17 @@ pub(super) struct Pointer {
 /// A change of a session's attachment to a thread: one line of the thread's
 /// `attachments.jsonl`, the last per session holding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Event {
+pub struct Event {
     pub harness: String,
     pub session: String,
     pub at: Timestamp,
     pub state: State,
 }
 
+/// Whether an [`Event`] attaches its session to the thread or detaches it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum State {
+pub enum State {
     Attached,
     Detached,
 }

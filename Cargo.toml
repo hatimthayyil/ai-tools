@@ -5,7 +5,7 @@ edition = "2024"
 description = "All-in-one AI tool: permanent memory for AI agents"
 repository = "https://github.com/hatimthayyil/ai-tools"
 license = "CC0-1.0"
-include = ["/src", "/tests", "/LICENSE", "/README.md", "/Cargo.toml", "/Cargo.lock"]
+include = ["/src", "/tests", "/tools/convert", "/LICENSE", "/README.md", "/Cargo.toml", "/Cargo.lock"]
 
 [[bin]]
 name = "ai"

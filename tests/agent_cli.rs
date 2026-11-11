@@ -2667,19 +2667,136 @@ fn a_linked_worktree_commits_to_the_main_checkouts_store() {
 }
 
 #[test]
-fn an_older_ais_store_is_refused_off_a_terminal() {
+fn a_store_ai_0_17_kept_is_refused_naming_the_converter() {
     let s = Sandbox::new();
+    // As ai 0.17 left it: no folder of the project in ~/ai.
+    fs::remove_dir_all(s.homes().repo.join("projects/repo")).unwrap();
     let agents = s.repo().join(".ai/local/agents");
     fs::create_dir_all(agents.join("threads/dev")).unwrap();
     fs::write(agents.join("format"), "4\n").unwrap();
     let refused = format!(
-        "This project's agents are still in {}, where an older ai kept them. Run an ai agent \
-         command on a terminal to move them to ~/ai.\n",
+        "This project's agents and private settings are still in {}, where ai 0.17 kept them. \
+         Convert them to ~/ai/projects with `ai convert {}`.\n",
         s.repo().join(".ai/local").display(),
+        s.repo().display(),
     );
     fails(s.ai(&["list"]), &refused);
     fails(s.ai(&["new", "other"]), &refused);
     assert!(!s.homes().repo.join("projects/repo/agents").exists());
+}
+
+#[test]
+fn ai_convert_moves_what_ai_0_17_kept_to_the_project_s_folder() {
+    let s = Sandbox::new();
+    // As ai 0.17 left it: no folder of the project in ~/ai, private settings in .ai/local.
+    let folder = s.homes().repo.join("projects/repo");
+    fs::remove_dir_all(&folder).unwrap();
+    let local = s.repo().join(".ai/local");
+    fs::create_dir_all(&local).unwrap();
+    let settings = "[summariser]\nmodel = \"opus\"\n";
+    fs::write(local.join("ai.toml"), settings).unwrap();
+    let said = |verb: &str| {
+        format!(
+            "repo: {verb} private settings from {} to \
+             ~/ai/projects/repo.\n",
+            local.display()
+        )
+    };
+
+    ok(
+        s.top(None, &["convert", "--dry-run"]),
+        &said("would convert"),
+    );
+    assert!(!folder.exists());
+
+    ok(
+        s.top(None, &["convert"]),
+        &format!(
+            "{}  {} is unchanged; its agents are no longer read, and once you have checked the \
+             conversion, are yours to delete.\n",
+            said("converted"),
+            local.display()
+        ),
+    );
+    assert_eq!(
+        fs::read_to_string(folder.join("ai.toml")).unwrap(),
+        settings
+    );
+    assert_eq!(fs::read_to_string(local.join("ai.toml")).unwrap(), settings);
+    ok(
+        s.ai(&["list"]),
+        "No agents in this project. Create one: ai agent new <name>\n",
+    );
+
+    ok(
+        s.top(None, &["convert"]),
+        "repo: already converted to ~/ai/projects/repo.\n",
+    );
+}
+
+#[test]
+fn ai_convert_over_several_directories_tells_of_each_project_and_counts_the_rest() {
+    let s = Sandbox::new();
+    fs::remove_dir_all(s.homes().repo.join("projects/repo")).unwrap();
+    let local = s.repo().join(".ai/local");
+    fs::create_dir_all(&local).unwrap();
+    fs::write(local.join("ai.toml"), "[summariser]\nmodel = \"opus\"\n").unwrap();
+    let empty = s.root.join("empty");
+    s.init(&empty);
+    let plain = s.root.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    let out = s.root.join("out");
+    let arg = |p: &Path| p.display().to_string();
+
+    ok(
+        s.top(
+            None,
+            &[
+                "convert",
+                "--dry-run",
+                &arg(&s.repo()),
+                &arg(&plain),
+                &arg(&empty),
+                &arg(&out),
+            ],
+        ),
+        &format!(
+            "repo: would convert private settings from {} to \
+             ~/ai/projects/repo.\nSkipped 2 directories that hold no ai project, and 1 project \
+             with nothing to convert in .ai/local.\n",
+            local.display()
+        ),
+    );
+    ok(
+        s.top(None, &["convert", "--dry-run", &arg(&plain), &arg(&empty)]),
+        "Skipped 1 directory that holds no ai project, and 1 project with nothing to convert in \
+         .ai/local.\n",
+    );
+}
+
+#[test]
+fn ai_convert_given_one_directory_says_what_it_found_there() {
+    let s = Sandbox::new();
+    let empty = s.root.join("empty");
+    s.init(&empty);
+    let plain = s.root.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+
+    ok(
+        s.top(None, &["convert", &plain.display().to_string()]),
+        &format!(
+            "{}: not a project (no ai.toml with a project id), nothing to convert.\n",
+            plain.display()
+        ),
+    );
+    ok(
+        s.top(None, &["convert", &empty.display().to_string()]),
+        "empty: .ai/local holds no agents and no private settings, nothing to convert.\n",
+    );
+    ok(
+        s.top(None, &["convert"]),
+        "repo: .ai/local holds no agents and no private settings, nothing to convert.\n",
+    );
 }
 
 /// Sets `[agent] gc-after-mib` in the user's `ai.toml`; `None` leaves it unset.

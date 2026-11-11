@@ -18,7 +18,7 @@ use jiff::Timestamp;
 
 use crate::{
     agent::{
-        claude, convert,
+        claude,
         id::Id,
         record::{Binding, Key},
         rollup::Rollup,
@@ -236,11 +236,9 @@ pub struct Resume {
 }
 
 impl Resume {
-    /// Runs in the current directory, on a terminal first offering to move agents an older ai
-    /// kept.
+    /// Runs in the current directory.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        convert::offer(&cwd)?;
         self.run(&cwd)
     }
 
@@ -367,22 +365,9 @@ fn committing<T>(cwd: &Path, msg: &str, op: impl FnOnce() -> Result<T>) -> Resul
 }
 
 impl Cli {
-    /// Runs in the current directory, printing to stdout; on a terminal, a porcelain command
-    /// first offers to move agents an older ai kept.
+    /// Runs in the current directory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
-        if !matches!(
-            self.command,
-            Some(
-                Command::SyncSession { .. }
-                    | Command::CompactSession { .. }
-                    | Command::EndSession { .. }
-                    | Command::CarrySession { .. }
-                    | Command::SessionName { .. }
-            )
-        ) {
-            convert::offer(&cwd)?;
-        }
         let terminal = io::stdout().is_terminal();
         match self.run(&cwd, &mut io::stdout().lock(), terminal) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),

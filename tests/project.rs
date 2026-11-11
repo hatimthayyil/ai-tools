@@ -87,16 +87,25 @@ fn init_ignores_the_link_once() {
     let s = Sandbox::new();
     let ignore = s.work().join(".gitignore");
     ok(&s.ai(&s.work(), &["init"]));
-    assert_eq!(fs::read_to_string(&ignore).unwrap(), "/ai.local.toml\n");
+    assert_eq!(
+        fs::read_to_string(&ignore).unwrap(),
+        "/ai.local.toml\n/.ai/local/\n"
+    );
     ok(&s.ai(&s.work(), &["init"]));
-    assert_eq!(fs::read_to_string(&ignore).unwrap(), "/ai.local.toml\n");
+    assert_eq!(
+        fs::read_to_string(&ignore).unwrap(),
+        "/ai.local.toml\n/.ai/local/\n"
+    );
 
     for (before, after) in [
-        ("/target", "/target\n/ai.local.toml\n"),
-        ("/target\n", "/target\n/ai.local.toml\n"),
-        ("ai.local.toml\n", "ai.local.toml\n"),
-        ("/ai.local.toml/\n", "/ai.local.toml/\n"),
-        ("/.ai/\n", "/.ai/\n/ai.local.toml\n"),
+        ("/target", "/target\n/ai.local.toml\n/.ai/local/\n"),
+        ("/target\n", "/target\n/ai.local.toml\n/.ai/local/\n"),
+        ("ai.local.toml\n.ai/local\n", "ai.local.toml\n.ai/local\n"),
+        (
+            "/ai.local.toml/\n/.ai/local/\n",
+            "/ai.local.toml/\n/.ai/local/\n",
+        ),
+        ("/.ai/\n", "/.ai/\n/ai.local.toml\n/.ai/local/\n"),
     ] {
         fs::write(&ignore, before).unwrap();
         ok(&s.ai(&s.work(), &["init"]));
@@ -233,4 +242,39 @@ fn the_users_own_file_is_never_a_project_file() {
             user.display()
         )
     );
+}
+
+#[test]
+fn a_store_ai_0_17_kept_is_refused_by_the_commands_that_open_it_alone() {
+    let s = Sandbox::new();
+    let id = "project_01h455vb4pex5vsknk084sn02q";
+    fs::write(
+        s.work().join("ai.toml"),
+        format!("[project]\nid = \"{id}\"\n"),
+    )
+    .unwrap();
+    let old = s.work().join(".ai/local");
+    fs::create_dir_all(old.join("agents")).unwrap();
+    fs::write(old.join("agents/format"), "4\n").unwrap();
+    fs::write(old.join("ai.toml"), "[memory.view]\nlines = 9\n").unwrap();
+
+    for args in [&["agent", "list"][..], &["init"]] {
+        let e = fails(&s.ai(&s.work(), args));
+        assert!(
+            e.contains("where ai 0.17 kept them") && e.contains("ai convert"),
+            "{args:?}: {e}"
+        );
+    }
+    ok(&s.ai(&s.work(), &["memory", "init"]));
+    let view = s.ai(&s.work(), &["memory", "view"]);
+    ok(&view);
+    let warned = String::from_utf8(view.stderr).unwrap();
+    assert_eq!(
+        warned
+            .matches("are not read until they are converted")
+            .count(),
+        1,
+        "{warned}"
+    );
+    assert!(!s.homes().repo.exists(), "nothing claimed the project");
 }

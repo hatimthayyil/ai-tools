@@ -3,8 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::{Options, Outcome, Report, convert, describe, kept, skipped};
 use ai_tools::{
-    agent::{Store, Synced, convert},
+    agent::{Store, Synced},
     config::Homes,
     project::Project,
 };
@@ -15,21 +16,6 @@ fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/claude")
         .join(name)
-}
-
-/// Copies the directory `from` to `to`, everything in it.
-fn copy_dir(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for e in fs::read_dir(from).unwrap() {
-        let p = e.unwrap().path();
-        let dst = to.join(p.file_name().unwrap());
-        match p.is_dir() {
-            true => copy_dir(&p, &dst),
-            false => {
-                fs::copy(&p, &dst).unwrap();
-            }
-        }
-    }
 }
 
 /// Every file under `dir` with its bytes, by its path there.
@@ -214,24 +200,61 @@ impl Old {
     }
 }
 
-#[test]
-fn an_older_ais_store_is_refused_until_it_moves() {
-    let o = Old::new();
-    let before = files(&o.local());
-    let e = Store::find_in(&o.homes(), &o.repo()).err().unwrap();
-    assert!(e.to_string().contains("where an older ai kept them"), "{e}");
-    let declined = convert::offer_with(&o.project(), &o.homes(), |q| {
-        assert!(q.contains(".ai/local") && q.contains("archived"), "{q}");
-        Ok(false)
-    })
-    .unwrap_err();
-    assert!(declined.to_string().starts_with("Not moved"), "{declined}");
-    assert_eq!(files(&o.local()), before, "declining changes nothing");
-    assert!(!o.homes().machine.join("archive").exists());
+impl Old {
+    fn convert(&self, dry_run: bool) -> anyhow::Result<Outcome> {
+        convert(&self.repo(), &self.homes(), Options { dry_run })
+    }
+
+    fn report(&self) -> Report {
+        match self.convert(false).unwrap() {
+            Outcome::Converted(r) => r,
+            o => panic!("not converted: {o:?}"),
+        }
+    }
+
+    fn folder(&self) -> PathBuf {
+        self.homes().repo.join("projects/repo")
+    }
+
+    /// Every file under the old store, the user's homes and the harness's folder.
+    fn everything(&self) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        for d in [
+            self.local(),
+            self.dir.path().join("home"),
+            self.dir.path().join("claude"),
+        ] {
+            if d.exists() {
+                out.extend(files(&d).into_iter().map(|(p, b)| (d.join(p), b)));
+            }
+        }
+        out
+    }
+}
+
+/// The subject of the newest commit of the repository at `dir`.
+fn head_summary(dir: &Path) -> String {
+    gix::open(dir)
+        .unwrap()
+        .head_commit()
+        .unwrap()
+        .message()
+        .unwrap()
+        .summary()
+        .to_string()
 }
 
 #[test]
-fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
+fn ai_refuses_a_store_awaiting_conversion_and_names_the_converter() {
+    let o = Old::new();
+    let e = Store::find_in(&o.homes(), &o.repo()).err().unwrap();
+    assert!(e.to_string().contains("ai convert"), "{e}");
+    o.report();
+    Store::find_in(&o.homes(), &o.repo()).unwrap().unwrap();
+}
+
+#[test]
+fn a_conversion_keeps_every_thread_and_points_at_the_harness_files() {
     let o = Old::new();
     let old_items = |t: &str| joined(&o.local().join("agents/threads").join(t).join("items.jsonl"));
     let (dev_items, other_items) = (old_items("dev"), old_items("other"));
@@ -240,9 +263,10 @@ fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
     fs::write(o.s2(), &s2[..s2.len() / 2]).unwrap();
     fs::remove_file(o.artifact()).unwrap();
 
-    let moved = convert::convert(&o.project(), &o.homes()).unwrap();
+    let r = o.report();
 
-    assert_eq!(moved.threads, 2);
+    assert_eq!(r.threads.len(), 2);
+    assert!(r.settings);
     let restored_s2 = o
         .dir
         .path()
@@ -257,40 +281,21 @@ fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
         b"tool\0output",
         "a gone file's copy is restored where it was"
     );
-    let mut to: Vec<&Path> = moved.restored.iter().map(|(_, to)| to.as_path()).collect();
+    let mut to: Vec<&Path> = r.restored.iter().map(|t| t.to.as_path()).collect();
     to.sort();
     to.dedup();
     assert_eq!(to, [o.artifact().as_path(), restored_s2.as_path()]);
-    assert_eq!(
-        moved.pointed, 1,
-        "s-1 is still whole in the harness's files"
-    );
+    assert_eq!(r.pointed, 1, "s-1 is still whole in the harness's files");
 
-    assert!(
-        !o.local().exists(),
-        "the old store is gone from the project"
-    );
-    let archives: Vec<PathBuf> =
-        fs::read_dir(o.homes().machine.join("archive").join(&o.project().id))
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .collect();
-    assert_eq!(archives, std::slice::from_ref(&moved.archive));
-    assert!(moved.archive.to_str().unwrap().ends_with("--local"));
-    assert_eq!(
-        files(&moved.archive),
-        old,
-        "the archive is the old store, byte for byte"
-    );
-
-    let folder = o.homes().repo.join("projects/repo");
+    assert_eq!(files(&o.local()), old, "the old store is untouched");
+    let folder = o.folder();
     assert_eq!(
         fs::read_to_string(folder.join("ai.toml")).unwrap(),
         "[summariser]\nmodel = \"opus\"\n"
     );
-    assert_eq!(
-        fs::read_to_string(folder.join("evals/run/result.json")).unwrap(),
-        "{}\n"
+    assert!(
+        !folder.join("evals").exists(),
+        "the project's working data stays in .ai/local"
     );
     assert_eq!(
         fs::read_link(o.repo().join("ai.local.toml")).unwrap(),
@@ -298,15 +303,16 @@ fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
     );
     assert!(!folder.join("agents/threads/dev/sources").exists());
     assert!(!folder.join(".git").exists() && !folder.join(".gitignore").exists());
-    let log = gix::open(&o.homes().repo)
-        .unwrap()
-        .head_commit()
-        .unwrap()
-        .message()
-        .unwrap()
-        .summary()
-        .to_string();
-    assert_eq!(log, "ai: move repo's agents from .ai/local");
+    assert_eq!(
+        head_summary(&o.homes().repo),
+        "ai convert: repo's agents and private settings from .ai/local"
+    );
+    let building = o.homes().repo.join(".git/ai-convert");
+    assert_eq!(
+        fs::read_dir(&building).unwrap().count(),
+        0,
+        "nothing left building"
+    );
 
     let store = o.store();
     let thread = |t: &str| store.thread(t).unwrap().snapshot().unwrap();
@@ -316,6 +322,24 @@ fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
         (new_items("dev"), new_items("other")),
         (dev_items, other_items)
     );
+    for t in ["dev", "other"] {
+        let snap = thread(t);
+        let old: Vec<Value> = String::from_utf8(old_items(t))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let new = snap.heads().unwrap();
+        assert_eq!(new.len(), old.len(), "{t}: every item");
+        assert_eq!(
+            snap.items().unwrap().len(),
+            old.len(),
+            "{t}: every item reads"
+        );
+        for (n, o) in new.iter().zip(&old) {
+            assert_eq!(n.seq, o["seq"].as_u64().unwrap(), "{t}: item by item");
+        }
+    }
     let state = |t: &str| {
         let mut b: Vec<(String, bool, Option<PathBuf>)> = thread(t)
             .bindings()
@@ -353,45 +377,155 @@ fn a_move_keeps_every_thread_and_points_at_the_harness_files() {
 }
 
 #[test]
-fn a_move_cut_short_after_its_store_is_in_place_is_finished() {
+fn a_dry_run_changes_nothing_and_tells_what_would_happen() {
     let o = Old::new();
-    let first = convert::convert(&o.project(), &o.homes()).unwrap();
-    let archive = o.dir.path().join("kept");
-    copy_dir(&first.archive, &archive);
-    copy_dir(&archive, &o.local());
-    let again = convert::convert(&o.project(), &o.homes()).unwrap();
+    fs::remove_file(o.artifact()).unwrap();
+    let before = o.everything();
+    let r = match o.convert(true).unwrap() {
+        Outcome::Converted(r) => r,
+        x => panic!("{x:?}"),
+    };
+    assert!(r.dry_run);
+    assert_eq!(r.threads.len(), 2);
     assert_eq!(
-        again.archive, first.archive,
-        "the archive of the same store is reused"
+        r.restored.iter().map(|t| t.to.clone()).collect::<Vec<_>>(),
+        [o.artifact()]
     );
-    assert!(!o.local().exists());
+    assert_eq!(o.everything(), before, "nothing changed");
+    assert!(!o.homes().repo.exists() && !o.homes().machine.exists());
+    let stay = kept(2, r.pointed, true);
+    let said = describe(&o.repo(), &Outcome::Converted(r)).join("\n");
+    let first = said.lines().next().unwrap();
+    assert!(
+        first.contains("would convert 2 agents") && first.ends_with(&format!(". {stay}")),
+        "{said}"
+    );
+    assert!(said.contains("Would restore"), "{said}");
+}
+
+#[test]
+fn the_report_tells_how_many_session_files_stay_where_the_harness_keeps_them() {
+    assert_eq!(
+        kept(5, 250, false),
+        "Their 250 session files stay where the harness keeps them."
+    );
+    assert_eq!(
+        kept(1, 1, false),
+        "Its only session file stays where the harness keeps it."
+    );
+    assert_eq!(
+        kept(2, 1, true),
+        "One of their session files stays where the harness keeps it."
+    );
+    assert_eq!(
+        kept(1, 3, true),
+        "3 of its session files stay where the harness keeps them."
+    );
+}
+
+#[test]
+fn a_second_run_says_it_is_done_and_changes_nothing() {
+    let o = Old::new();
+    o.report();
+    let before = o.everything();
+    let again = o.convert(false).unwrap();
+    assert_eq!(
+        again,
+        Outcome::Done {
+            project: "repo".into(),
+            folder: o.folder()
+        }
+    );
+    assert_eq!(o.everything(), before);
+}
+
+#[test]
+fn a_conversion_cut_short_before_its_move_starts_again_from_nothing() {
+    let o = Old::new();
+    gix::init(&o.homes().repo).unwrap();
+    let building = o.homes().repo.join(".git/ai-convert");
+    let left = building.join(format!("{}-cut", o.project().id));
+    fs::create_dir_all(left.join("projects/repo/agents")).unwrap();
+    fs::write(left.join("projects/repo/agents/format"), "6\n").unwrap();
+
+    o.report();
+
+    assert!(!left.exists(), "what the cut run built is swept");
     assert_eq!(o.store().threads().unwrap().len(), 2);
 }
 
 #[test]
-fn a_store_of_another_format_is_not_moved() {
+fn a_conversion_cut_short_after_its_move_is_finished_by_the_next_run() {
     let o = Old::new();
-    fs::write(o.local().join("agents/format"), "5\n").unwrap();
-    let e = convert::convert(&o.project(), &o.homes()).unwrap_err();
-    assert!(
-        e.to_string()
-            .contains("its agents are format 5; this ai moves format 4"),
-        "{e}"
-    );
-    assert!(o.local().join("agents/threads/dev").exists());
+    o.report();
+    let link = o.repo().join("ai.local.toml");
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(o.local().join("ai.toml"), &link).unwrap();
+    let repo = &o.homes().repo;
+    let before = head_summary(repo);
+
+    assert!(matches!(o.convert(false).unwrap(), Outcome::Done { .. }));
+
+    assert_eq!(fs::read_link(&link).unwrap(), o.folder().join("ai.toml"));
+    assert_eq!(head_summary(repo), before);
 }
 
 #[test]
-fn a_move_joins_each_segmented_file_into_one_of_the_same_bytes() {
+fn a_folder_another_checkout_converted_is_not_overwritten() {
+    let o = Old::new();
+    o.report();
+    fs::remove_dir_all(o.homes().machine.join("converted")).unwrap();
+    let before = o.everything();
+    let e = o.convert(false).unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("already holds this project's agents"),
+        "{e}"
+    );
+    assert_eq!(o.everything(), before);
+}
+
+#[test]
+fn a_folder_name_another_project_holds_is_refused() {
+    let o = Old::new();
+    let taken = o.homes().repo.join("projects/repo");
+    fs::create_dir_all(&taken).unwrap();
+    fs::write(taken.join("id"), "project_01h455vb4pex5vsknk084sn02q\n").unwrap();
+    let before = o.everything();
+    assert!(o.convert(false).is_err());
+    assert_eq!(o.everything(), before);
+}
+
+#[test]
+fn a_store_of_another_format_is_not_converted() {
+    let o = Old::new();
+    fs::write(o.local().join("agents/format"), "5\n").unwrap();
+    let e = o.convert(false).unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("its agents are format 5; this converts format 4"),
+        "{e}"
+    );
+    assert!(!o.folder().exists());
+}
+
+#[test]
+fn a_conversion_joins_each_segmented_file_into_one_of_the_same_bytes() {
     let o = Old::new();
     let dev = o.local().join("agents/threads/dev");
-    let mut lines = Vec::new();
+    let (mut lines, mut agents) = (Vec::new(), Vec::new());
     for i in 0..40 {
-        lines.extend_from_slice(format!("{{\"op\":\"clear\",\"n\":{i}}}\n").as_bytes());
+        lines.extend_from_slice(b"{\"op\":\"clear\"}\n");
+        agents.extend_from_slice(
+            format!(
+                "{{\"harness\":\"claude\",\"agent\":\"a{i}\",\"agent_type\":\"t\",\"description\":\"d\",\"call\":null}}\n"
+            )
+            .as_bytes(),
+        );
     }
     lines.extend_from_slice(b"{\"torn");
     segmented(&dev.join("lines.jsonl"), &lines, 100);
-    segmented(&dev.join("agents.jsonl"), &lines[..lines.len() - 6], 100);
+    segmented(&dev.join("agents.jsonl"), &agents, 100);
     segmented(
         &dev.join("agents/claude/a1.jsonl"),
         &lines[..lines.len() - 6],
@@ -409,9 +543,9 @@ fn a_move_joins_each_segmented_file_into_one_of_the_same_bytes() {
         old.push((f, joined(&p)));
     }
 
-    convert::convert(&o.project(), &o.homes()).unwrap();
+    o.report();
 
-    let new = o.homes().repo.join("projects/repo/agents/threads/dev");
+    let new = o.folder().join("agents/threads/dev");
     for (f, bytes) in old {
         assert!(new.join(f).is_file(), "{f} is one file");
         assert_eq!(fs::read(new.join(f)).unwrap(), bytes, "{f}");
@@ -419,16 +553,16 @@ fn a_move_joins_each_segmented_file_into_one_of_the_same_bytes() {
 }
 
 #[test]
-fn a_segment_out_of_order_stops_the_move() {
+fn a_segment_out_of_order_stops_the_conversion() {
     let o = Old::new();
     let items = o.local().join("agents/threads/dev/items.jsonl");
     fs::remove_file(items.join("000000.jsonl")).unwrap();
-    let e = convert::convert(&o.project(), &o.homes()).unwrap_err();
+    let e = o.convert(false).unwrap_err();
     assert!(
         format!("{e:#}").contains("its segments are not numbered from 0"),
         "{e:#}"
     );
-    assert!(o.local().join("agents/threads/dev").exists());
+    assert!(!o.folder().exists());
 }
 
 #[test]
@@ -445,7 +579,7 @@ fn a_session_the_old_store_attached_twice_ends_attached_to_the_later_thread() {
     fs::remove_dir_all(&all).unwrap();
     segmented(&all, &kept, 512);
 
-    convert::convert(&o.project(), &o.homes()).unwrap();
+    o.report();
 
     let store = o.store();
     let attached = |t: &str| {
@@ -468,4 +602,45 @@ fn a_session_the_old_store_attached_twice_ends_attached_to_the_later_thread() {
         store.sync("claude", "s-2", None).unwrap(),
         Synced::Attached { thread, .. } if thread == "other"
     ));
+}
+
+#[test]
+fn settings_alone_are_converted_and_a_project_without_either_is_skipped() {
+    let o = Old::new();
+    fs::remove_dir_all(o.local().join("agents")).unwrap();
+    let r = o.report();
+    assert!(r.threads.is_empty() && r.settings);
+    assert_eq!(
+        fs::read_to_string(o.folder().join("ai.toml")).unwrap(),
+        "[summariser]\nmodel = \"opus\"\n"
+    );
+
+    let p = Old::new();
+    fs::remove_dir_all(p.local().join("agents")).unwrap();
+    fs::write(p.local().join("ai.toml"), "").unwrap();
+    assert_eq!(
+        p.convert(false).unwrap(),
+        Outcome::Nothing {
+            project: "repo".into()
+        }
+    );
+    assert!(!p.homes().repo.exists());
+}
+
+#[test]
+fn a_run_over_several_directories_counts_what_it_skipped_in_one_line() {
+    assert_eq!(skipped(0, 0), None);
+    assert_eq!(
+        skipped(1, 0).unwrap(),
+        "Skipped 1 directory that holds no ai project."
+    );
+    assert_eq!(
+        skipped(0, 1).unwrap(),
+        "Skipped 1 project with nothing to convert in .ai/local."
+    );
+    assert_eq!(
+        skipped(37, 4).unwrap(),
+        "Skipped 37 directories that hold no ai project, and 4 projects with nothing to convert \
+         in .ai/local."
+    );
 }
