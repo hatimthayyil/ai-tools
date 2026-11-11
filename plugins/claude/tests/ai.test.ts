@@ -11,6 +11,10 @@ const PROJECT = 'a project hook context'
 const SESSION_ARGS = ['--harness', 'claude', '--session', SESSION]
 const ALL_ARGS = [...SESSION_ARGS, '--transcript', TRANSCRIPT]
 const FLUSH_MS = 1_100
+const NEXT = 's2'
+const UNATTACHED = 3
+/** The session the engine says this is: `engine` starts at `SESSION`, and a `/clear` that `clearing` answers moves on. */
+const current = { id: SESSION }
 
 type Answer = [exitCode: number, stdout: string, stderr: string]
 type World = ReturnType<typeof engine>
@@ -39,7 +43,8 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
   const spawning = { hangs: false }
   const compacts: string[] = []
   const logs: string[] = []
-  on('session.id', async () => ({ value: SESSION }))
+  current.id = SESSION
+  on('session.id', async () => ({ value: current.id }))
   on('classic.SessionStart', async () => ({ additionalContext: [PROJECT] }))
   on('classic.Stop', async () => ({}))
   on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
@@ -89,6 +94,46 @@ async function folded($: Engine, world: World) {
   return text
 }
 
+/** `ai` answering as for a session attached to agent dev: its views, and `carry-session` attaching the next one. */
+const carried = (args: readonly string[]): Answer =>
+  sub(args) === 'carry-session' ? [0, 'Attached to dev.\n', ''] : views(args)
+
+/** `ai` answering as for a session attached to no agent: the memory's view alone. */
+const unattached = (args: readonly string[]): Answer => (sub(args) === 'view' ? [0, WOKE, ''] : [UNATTACHED, '', ''])
+
+/**
+ * Answers `/clear` by starting session `clear.starts`, unless `clear.fails`, and a row the
+ * plugin appends by storing it, unless `append.deny` refuses it. `order` has each clear and
+ * stored row with how many `ai` calls came before it; `rows` has the stored rows' text.
+ */
+function clearing(on: On, world: World) {
+  const clear = { fails: false, starts: NEXT }
+  const append: { deny?: string } = {}
+  const order: [what: string, calls: number][] = []
+  const rows: string[] = []
+  on('command.run', { command: 'clear' }, async () => {
+    // The kit skips a hook that throws, so the run finds no implementation and rejects.
+    if (clear.fails) throw new Error('refused')
+    order.push(['/clear', world.calls.length])
+    current.id = clear.starts
+    return {}
+  })
+  on('session.append', { door: 'note' }, async (_$, e, next) => {
+    if (append.deny !== undefined) return { deny: append.deny }
+    order.push([`append ${e.message.type}`, world.calls.length])
+    rows.push(e.message.content.map(block => (block.type === 'text' ? block.text : `[${block.type}]`)).join(''))
+    return next(e)
+  })
+  return { clear, append, order, rows }
+}
+
+/** A `/fold` run to its end: its answer, then the session it carries on in attached. */
+async function carriedOn($: Engine, world: World) {
+  const text = await folded($, world)
+  await world.clock.advance(FLUSH_MS)
+  return text
+}
+
 function compact($: Engine, trigger: SessionCompactInput['trigger'] = 'manual') {
   return $.session.compact({ trigger, messages: [] }).then(r => r.messages)
 }
@@ -97,23 +142,115 @@ function stop($: Engine) {
   return $.classic.Stop({ session_id: SESSION, transcript_path: TRANSCRIPT, stop_hook_active: false })
 }
 
-test('/fold, with only spaces after it, builds the view once the transcript is flushed, then folds once', async ($, on) => {
-  const world = engine(on, views)
+test('/fold, with only spaces after it, builds the view once the transcript is flushed, then goes on in a new session', async ($, on) => {
+  const world = engine(on, carried)
+  const cleared = clearing(on, world)
   await start($, 'resume')
   const ran = fold($, '  ')
   await world.clock.advance(FLUSH_MS - 1)
   expect(world.calls).toEqual([])
   await world.clock.advance(1)
   expect((await ran).text).toBe('Folding.')
+  expect(world.spawns).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+  expect(cleared.order).toEqual([
+    ['/clear', 2],
+    ['append user', 2],
+  ])
+  expect(cleared.rows).toEqual([WOKE])
+  expect(world.calls.length).toBe(2)
+  expect((await fold($)).text).toBe('Not folded: a fold is under way.')
+  await world.clock.advance(FLUSH_MS)
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
+    ['ai', 'agent', 'carry-session', '--from', SESSION, '--harness', 'claude', '--session', NEXT],
   ])
-  expect(world.spawns).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
-  expect(world.compacts).toEqual(['/compact'])
-  expect(await compact($)).toEqual([{ role: 'user', text: WOKE, toolUses: [] }])
+  expect(world.logs).toEqual(["Folded into a new session. Attached to dev. It holds your memory's view and the thread's."])
+  expect(world.compacts).toEqual([])
   expect(await compact($)).toEqual(NATIVE)
-  expect(world.compacts).toEqual(['/compact', 'manual'])
+})
+
+test('/fold attaches the new session by its transcript once its start names it, and an ended session by its id alone', async ($, on) => {
+  const world = engine(on, carried)
+  clearing(on, world)
+  await start($, 'resume')
+  expect(await folded($, world)).toBe('Folding.')
+  const next = { source: 'clear' as const, session_id: NEXT, transcript_path: '/t/s2.jsonl' }
+  expect((await $.classic.SessionStart(next)).additionalContext).toEqual([PROJECT])
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  await world.clock.advance(FLUSH_MS)
+  const args = ['--harness', 'claude', '--session', NEXT, '--transcript', '/t/s2.jsonl']
+  expect(world.calls.slice(2)).toEqual([
+    ['ai', 'agent', 'end-session', ...SESSION_ARGS],
+    ['ai', 'agent', 'carry-session', '--from', SESSION, ...args],
+  ])
+})
+
+test('/fold in an attached session needs no session start: ai finds the transcripts by their ids', async ($, on) => {
+  const world = engine(on, carried)
+  const cleared = clearing(on, world)
+  expect(await carriedOn($, world)).toBe('Folding.')
+  expect(world.calls).toEqual([
+    ['ai', 'agent', 'compact-session', ...SESSION_ARGS],
+    ['ai', 'view', '--whole', ...SESSION_ARGS],
+    ['ai', 'agent', 'carry-session', '--from', SESSION, '--harness', 'claude', '--session', NEXT],
+  ])
+  expect(cleared.rows).toEqual([WOKE])
+})
+
+test('/fold says what failed, and what the session holds: the clear, the view or the attach', async ($, on) => {
+  let attach: Answer = [0, 'Attached to dev.\n', '']
+  const world = engine(on, args => (sub(args) === 'carry-session' ? attach : views(args)))
+  const cleared = clearing(on, world)
+  await start($, 'resume')
+
+  cleared.clear.fails = true
+  expect(await carriedOn($, world)).toBe('Folding.')
+  expect(world.logs.pop()).toMatch(/^Not folded: \/clear failed, so this session is as it was\. /)
+  cleared.clear.fails = false
+  cleared.clear.starts = SESSION
+  expect(await carriedOn($, world)).toBe('Folding.')
+  expect(world.logs.pop()).toBe('Not folded: /clear started no new session, so this session is as it was.')
+  expect(cleared.rows).toEqual([])
+  expect(world.calls.map(argv => sub(argv.slice(1)))).toEqual(['compact-session', 'view', 'compact-session', 'view'])
+
+  cleared.clear.starts = NEXT
+  cleared.append.deny = 'no notes here'
+  expect(await carriedOn($, world)).toBe('Folding.')
+  expect(world.logs.pop()).toBe(
+    'Folded into a new session. Attached to dev. It holds no view, which was refused (no notes here): have Claude run ai view.',
+  )
+  expect(cleared.rows).toEqual([])
+
+  cleared.append.deny = undefined
+  cleared.clear.starts = 's3'
+  attach = [1, '', 'Cannot lock the agents.\n']
+  expect(await carriedOn($, world)).toBe('Folding.')
+  expect(world.logs.pop()).toBe(
+    "Folded into a new session, which is attached to no agent: ai agent carry-session failed. Cannot lock the agents. It holds your memory's view and the thread's. Attach it with /ai attach <name>.",
+  )
+  cleared.clear.starts = 's4'
+  attach = [UNATTACHED, '', '']
+  expect(await carriedOn($, world)).toBe('Folding.')
+  expect(world.logs.pop()).toBe(
+    "Folded into a new session, which is attached to no agent: ai agent carry-session failed. Session s3 is attached to none now. It holds your memory's view and the thread's. Attach it with /ai attach <name>.",
+  )
+  expect(cleared.rows).toEqual([WOKE, WOKE])
+  expect(world.logs).toEqual([])
+  expect(world.compacts).toEqual([])
+})
+
+test('a /clear of your own carries nothing into the new session', async ($, on) => {
+  const world = engine(on, carried)
+  const cleared = clearing(on, world)
+  await start($, 'resume')
+  await run($, 'clear', '')
+  const next = { source: 'clear' as const, session_id: NEXT, transcript_path: '/t/s2.jsonl' }
+  expect((await $.classic.SessionStart(next)).additionalContext).toEqual([PROJECT])
+  await world.clock.advance(FLUSH_MS)
+  expect(cleared.order).toEqual([['/clear', 0]])
+  expect(world.calls).toEqual([])
+  expect(world.logs).toEqual([])
 })
 
 test(
@@ -164,17 +301,21 @@ test('/compact and auto-compaction stay Claude Code’s, without ai agent', asyn
   expect(world.calls).toEqual([])
 })
 
-test('/fold in an unattached session folds into the memory alone', async ($, on) => {
+test('/fold in an unattached session compacts it into the memory alone, once', async ($, on) => {
   const MEMORY = '# Memory\n\nYou are awake.\n'
   const world = engine(on, args => (sub(args) === 'view' ? [0, MEMORY, ''] : [3, '', '']))
+  const cleared = clearing(on, world)
   await start($, 'resume')
-  expect(await folded($, world)).toBe('Folding.')
+  expect(await carriedOn($, world)).toBe('Folding.')
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
   ])
   expect(world.compacts).toEqual(['/compact'])
+  expect(cleared.order).toEqual([])
   expect(await compact($)).toEqual([{ role: 'user', text: MEMORY, toolUses: [] }])
+  expect(await compact($)).toEqual(NATIVE)
+  expect(world.compacts).toEqual(['/compact', 'manual'])
   expect(world.logs).toEqual([])
 })
 
@@ -222,7 +363,7 @@ test('a failed seed starts without the view and says why', async ($, on) => {
 })
 
 test('a subagent compacts natively, leaving the view /fold built for the main conversation', async ($, on) => {
-  const world = engine(on, views)
+  const world = engine(on, unattached)
   await start($, 'resume')
   const ran = fold($)
   await world.clock.advance(FLUSH_MS)
@@ -413,11 +554,12 @@ test('a recall fork whose start comes before the spawn answers is guarded', asyn
   expect(got.passed).toEqual([])
 })
 
-test('/fold folds nothing and says why when the plugin never saw the session start', async ($, on) => {
-  const world = engine(on, views)
-  expect((await fold($)).text).toMatch(/^Not folded: the ai plugin never saw this session start/)
-  await world.clock.advance(FLUSH_MS)
-  expect(world.calls).toEqual([])
+test('/fold in an unattached session folds nothing and says why when the plugin never saw the session start', async ($, on) => {
+  const world = engine(on, unattached)
+  expect(await folded($, world)).toMatch(
+    /^Not folded: this session is attached to no agent, so a fold compacts it, and the ai plugin never saw this session start/,
+  )
+  expect(world.calls).toEqual([['ai', 'agent', 'compact-session', ...SESSION_ARGS]])
   expect(world.compacts).toEqual([])
   expect(await compact($)).toEqual(NATIVE)
 })

@@ -7,7 +7,7 @@ const FLUSH_MS = 1_100
 const USAGE = 'Usage: /ai new <name> | /ai attach <name> | /ai detach'
 const FOLD_USAGE = '/fold takes no arguments.'
 const WITHHELD =
-  'Not folded: the ai plugin never saw this session start, so it would not see the compaction either, and Claude Code would write its own summary. Where an organization manages Claude Code, only plugins its managed settings install see these events.'
+  'Not folded: this session is attached to no agent, so a fold compacts it, and the ai plugin never saw this session start, so it would not see the compaction either: Claude Code would write its own summary. Where an organization manages Claude Code, only plugins its managed settings install see these events.'
 const RECALL_USAGE = 'Usage: /recall <message>'
 const RELAY =
   "/recall started a read-only fork on the user's message. When its brief arrives, show it to the user whole and wait for their review. Then write the whole brief again with their corrections, and note nothing from it they have not approved."
@@ -73,8 +73,15 @@ function sessionArgs(id: string, path: string | undefined): string[] {
   return ['--harness', 'claude', '--session', id, ...(path === undefined ? [] : ['--transcript', path])]
 }
 
+/** The transcript of session `id`, known while `id` is the session whose start the plugin last saw. */
+async function transcriptOf($: EngineInterface, id: string): Promise<string | undefined> {
+  const seen = (await $.state.get(transcript)).value
+  return seen?.session === id ? seen.path : undefined
+}
+
 async function session($: EngineInterface): Promise<string[]> {
-  return sessionArgs(await $.session.id(), (await $.state.get(transcript)).value)
+  const id = await $.session.id()
+  return sessionArgs(id, await transcriptOf($, id))
 }
 
 async function view($: EngineInterface, args: string[], fallback: string): Promise<string | undefined> {
@@ -106,24 +113,78 @@ async function isWithheld($: EngineInterface): Promise<boolean> {
   return (await $.state.get(transcript)).value === undefined
 }
 
+/** Whether a fold is between its `/clear` and its attach, when the session is neither the old one nor yet the thread's. */
+let carrying = false
+
 /**
- * Folds the session: builds the thread's view when the session is attached, prints `ai view`
- * (the memory's view, then the thread's), and runs `/compact`, which `session.compact` answers
+ * Carries the thread of session `old` into a new session: `/clear`, then `view` as the new
+ * session's first row, before a notification that waited can start a turn there, then, once
+ * both transcripts are flushed, the new session attached where `old` is. `/clear` keeps the
+ * session's name. Logs what happened: what failed, and what the session holds.
+ */
+async function carry($: EngineInterface, old: string, view: string): Promise<void> {
+  try {
+    await $.command.run({ command: 'clear' })
+  } catch (err) {
+    $.ui.log(`Not folded: /clear failed, so this session is as it was. ${String(err)}`)
+    return
+  }
+  const id = await $.session.id()
+  if (id === old) {
+    $.ui.log('Not folded: /clear started no new session, so this session is as it was.')
+    return
+  }
+  let unseen: string | undefined
+  try {
+    const row = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: view }] } })
+    unseen = row.deny
+  } catch (err) {
+    unseen = String(err)
+  }
+  await $.clock.sleep(FLUSH_MS)
+  const args = ['carry-session', '--from', old, ...sessionArgs(id, await transcriptOf($, id))]
+  const carried = await agent($, args, LONG_MS)
+  const holds =
+    unseen === undefined
+      ? "It holds your memory's view and the thread's."
+      : `It holds no view, which was refused (${unseen}): have Claude run ai view.`
+  if (carried.exitCode === 0) {
+    $.ui.log(`Folded into a new session. ${carried.stdout.trim()} ${holds}`)
+    return
+  }
+  const why = carried.exitCode === NOT_ATTACHED ? `Session ${old} is attached to none now.` : carried.stderr.trim()
+  $.ui.log(
+    `Folded into a new session, which is attached to no agent: ai agent carry-session failed. ${why} ${holds} Attach it with /ai attach <name>.`,
+  )
+}
+
+/**
+ * Folds the session. Attached to an agent, it builds the thread's view, prints `ai view` (the
+ * memory's view, then the thread's) and hands it to `carry`, which goes on in a new session.
+ * Attached to none, it prints `ai view` and runs `/compact`, which `session.compact` answers
  * with that text. Returns why it folds nothing, else undefined.
  */
 async function fold($: EngineInterface, cancelled?: AbortSignal): Promise<string | undefined> {
-  if (await isWithheld($)) return WITHHELD
+  if (carrying) return 'Not folded: a fold is under way.'
   await $.clock.sleep(FLUSH_MS)
-  const args = await session($)
+  const old = await $.session.id()
+  const args = sessionArgs(old, await transcriptOf($, old))
   const ready = await compactSession($, args, cancelled)
   if (cancelled?.aborted) return 'Not folded: cancelled.'
   if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not folded: ${reply(ready)}`
   if (ready.exitCode === 0 && ready.stdout === '') return 'Not folded: the thread holds nothing yet.'
+  const isAttached = ready.exitCode === 0
+  if (!isAttached && (await isWithheld($))) return WITHHELD
   const shown = await ai($, ['view', '--whole', ...args])
   if (shown.exitCode !== 0) return `Not folded: ${reply(shown)}`
   if (cancelled?.aborted) return 'Not folded: cancelled.'
-  await $.state.set(prepared, shown.stdout)
-  $.clock.after(0, () => $.command.run({ command: 'compact' }))
+  if (isAttached) {
+    carrying = true
+    $.clock.after(0, () => carry($, old, shown.stdout).finally(() => (carrying = false)))
+  } else {
+    await $.state.set(prepared, shown.stdout)
+    $.clock.after(0, () => $.command.run({ command: 'compact' }))
+  }
   return undefined
 }
 
@@ -203,7 +264,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'fold',
       description:
-        "ai: replace this conversation with your memory's view, and the thread's view if this session is attached",
+        "ai: go on in a new session that starts from your memory's view and the thread's; in a session attached to no agent, compact it to your memory's view",
     })
     await $.command.register({
       name: 'ai',
@@ -221,7 +282,7 @@ export const register: Register = on => {
   })
 
   on('classic.SessionStart', async ($, e, next) => {
-    await $.state.set(transcript, e.transcript_path)
+    await $.state.set(transcript, { session: e.session_id, path: e.transcript_path })
     const started = await next(e)
     if (e.source !== 'startup') return started
     const seed = await view($, sessionArgs(e.session_id, e.transcript_path), "starting without the thread's view")
@@ -245,7 +306,7 @@ export const register: Register = on => {
 
   on('session.end', async ($, e, next) => {
     const ended = await next(e)
-    await sync($, 'end-session', sessionArgs(e.sessionId, (await $.state.get(transcript)).value))
+    await sync($, 'end-session', sessionArgs(e.sessionId, await transcriptOf($, e.sessionId)))
     return ended
   })
 
