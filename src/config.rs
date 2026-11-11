@@ -439,7 +439,7 @@ impl Settings {
         };
         let private = match (project.as_deref(), &self.homes) {
             (Some(p), Some(homes)) => match Project::at(p)? {
-                Some(project) => Some(project.private(homes)?),
+                Some(project) => project.private(homes)?,
                 None => None,
             },
             _ => None,

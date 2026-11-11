@@ -121,18 +121,16 @@ impl Project {
                 pretty(&homes.repo)
             );
         }
-        let private = match &found {
-            Some(project) => project.private(homes)?,
-            None => homes
-                .repo
-                .join(PROJECTS)
-                .join(name_of(
-                    dir,
-                    config::project_table(&p)?.and_then(|t| t.name),
-                ))
-                .join(FILE),
+        let folder = match &found {
+            Some(project) => project.folder(homes)?,
+            None => free(
+                homes,
+                &name_of(dir, config::project_table(&p)?.and_then(|t| t.name)),
+                &format!("the project at {}", pretty(dir)),
+                &p,
+            )?,
         };
-        config::check_link(&at, &private)?;
+        config::check_link(&at, &folder.join(FILE))?;
         let project = match found {
             Some(project) => project,
             None => mint(dir, &p)?,
@@ -142,40 +140,44 @@ impl Project {
         Ok(project)
     }
 
-    /// Its folder in `homes.repo`: the folder of `projects/` its id holds, whatever its name;
-    /// else `projects/<name>`, which [`Project::claim`] makes. Every checkout and clone of the
-    /// project finds the same folder. An error if another project holds the name.
-    pub fn folder(&self, homes: &Homes) -> Result<PathBuf> {
+    /// The folder of `projects/` in `homes.repo` that its id holds, whatever its name; `None`
+    /// until [`Project::claim`] makes one. Every checkout and clone of the project finds the
+    /// same folder.
+    pub fn held(&self, homes: &Homes) -> Result<Option<PathBuf>> {
         let projects = homes.repo.join(PROJECTS);
         match fs::read_dir(&projects) {
             Ok(entries) => {
                 for e in entries {
                     let p = e.at(&projects)?.path();
                     if read_id(&p)?.as_deref() == Some(self.id.as_str()) {
-                        return Ok(p);
+                        return Ok(Some(p));
                     }
                 }
+                Ok(None)
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).at(&projects),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).at(&projects),
         }
-        check_folder_name(&self.name)?;
-        let named = projects.join(&self.name);
-        if let Some(other) = read_id(&named)? {
-            bail!(
-                "Another project ({other}) holds the name {} in {}. Give this one another name: \
-                 set [project] name in {}.",
-                self.name,
-                pretty(&projects),
-                pretty(&self.dir.join(FILE))
-            );
-        }
-        Ok(named)
     }
 
-    /// Its private settings: the `ai.toml` in its [folder](Project::folder).
-    pub fn private(&self, homes: &Homes) -> Result<PathBuf> {
-        Ok(self.folder(homes)?.join(FILE))
+    /// Its folder in `homes.repo`: the one it [holds](Project::held), else `projects/<name>`,
+    /// which [`Project::claim`] makes. An error if another project holds the name.
+    pub fn folder(&self, homes: &Homes) -> Result<PathBuf> {
+        match self.held(homes)? {
+            Some(p) => Ok(p),
+            None => free(
+                homes,
+                &self.name,
+                &format!("this project ({}, at {})", self.id, pretty(&self.dir)),
+                &self.dir.join(FILE),
+            ),
+        }
+    }
+
+    /// Its private settings: the `ai.toml` in the folder it [holds](Project::held); `None`
+    /// while it holds none, since only [`Project::claim`] makes them.
+    pub fn private(&self, homes: &Homes) -> Result<Option<PathBuf>> {
+        Ok(self.held(homes)?.map(|f| f.join(FILE)))
     }
 
     /// Makes its [folder](Project::folder) and claims it with its id; makes its private settings
@@ -209,6 +211,23 @@ impl Project {
         link(&self.home.join(LOCAL), &private)?;
         Ok(named)
     }
+}
+
+/// `projects/<name>` in `homes.repo`, for `whom`, a project that holds no folder yet and whose
+/// `ai.toml` is `file`; an error naming both projects if another holds the name.
+fn free(homes: &Homes, name: &str, whom: &str, file: &Path) -> Result<PathBuf> {
+    check_folder_name(name)?;
+    let projects = homes.repo.join(PROJECTS);
+    let named = projects.join(name);
+    if let Some(other) = read_id(&named)? {
+        bail!(
+            "Another project ({other}) holds the name {name} in {}, so {whom} can't take it. \
+             Give this one another name: set [project] name in {}.",
+            pretty(&projects),
+            pretty(file)
+        );
+    }
+    Ok(named)
 }
 
 /// The name of the project at `dir`: `name`, its `[project] name`, else the directory's name.

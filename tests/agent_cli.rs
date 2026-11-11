@@ -2225,11 +2225,17 @@ fn a_projects_name_held_by_another_project_is_refused() {
     assert_eq!(
         stderr(&o),
         format!(
-            "Another project ({id}) holds the name repo in ~/ai/projects. Give this one another name: set \
-             [project] name in {}.\n",
+            "Another project ({id}) holds the name repo in ~/ai/projects, so the project at {} \
+             can't take it. Give this one another name: set [project] name in {}.\n",
+            other.display(),
             other.join("ai.toml").display()
         )
     );
+    assert!(
+        !other.join("ai.toml").exists(),
+        "a refused init mints no id"
+    );
+    fs::write(other.join("ai.toml"), "[project]\n").unwrap();
     fs::write(
         other.join("ai.toml"),
         format!(
@@ -2240,6 +2246,37 @@ fn a_projects_name_held_by_another_project_is_refused() {
     .unwrap();
     assert_eq!(code(&s.bin(&other).arg("init").output().unwrap()), 0);
     assert!(s.homes().repo.join("projects/repo-2/id").is_file());
+}
+
+#[test]
+fn a_project_whose_name_another_holds_reads_its_settings_and_only_its_agents_fail() {
+    let s = Sandbox::new();
+    assert_eq!(code(&s.top(None, &["memory", "init"])), 0);
+    let held = Project::find(&s.repo()).unwrap().unwrap().id;
+    let other = s.root.join("elsewhere/repo");
+    fs::create_dir_all(&other).unwrap();
+    let id = "project_01h455vb4pex5vsknk084sn02q";
+    fs::write(other.join("ai.toml"), format!("[project]\nid = \"{id}\"\n")).unwrap();
+
+    let note = s
+        .bin(&other)
+        .args(["memory", "note", "a fact"])
+        .output()
+        .unwrap();
+    assert_eq!(code(&note), 0, "{}", stderr(&note));
+    let view = s.bin(&other).args(["memory", "view"]).output().unwrap();
+    assert_eq!(code(&view), 0, "{}", stderr(&view));
+    assert!(stdout(&view).contains("a fact"), "{}", stdout(&view));
+
+    fails(
+        s.cmd(&other).arg("list").output().unwrap(),
+        &format!(
+            "Another project ({held}) holds the name repo in ~/ai/projects, so this project \
+             ({id}, at {}) can't take it. Give this one another name: set [project] name in {}.\n",
+            other.display(),
+            other.join("ai.toml").display()
+        ),
+    );
 }
 
 #[test]

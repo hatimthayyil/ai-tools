@@ -60,7 +60,7 @@ impl Tree {
     }
 }
 
-/// The private settings in `homes` of the project at `dir`, their directory made, its `ai.toml`
+/// The private settings in `homes` of the project at `dir`, its folder there claimed, its `ai.toml`
 /// given an id if it holds none.
 fn private_in(homes: &Homes, dir: &Path) -> PathBuf {
     let toml = dir.join("ai.toml");
@@ -74,9 +74,8 @@ fn private_in(homes: &Homes, dir: &Path) -> PathBuf {
         fs::write(&toml, text).unwrap();
     }
     ai_tools::repo::ensure(&homes.repo).unwrap();
-    let p = Project::find(dir).unwrap().unwrap().private(homes).unwrap();
-    fs::create_dir_all(p.parent().unwrap()).unwrap();
-    p
+    let project = Project::find(dir).unwrap().unwrap();
+    project.claim(homes).unwrap().join("ai.toml")
 }
 
 #[test]
@@ -678,6 +677,7 @@ fn a_local_file_of_its_own_is_refused() {
     fs::write(t.inner().join("ai.toml"), "").unwrap();
     let private = t.private(&t.inner());
     let link = t.inner().join("ai.local.toml");
+    fs::remove_file(&link).unwrap();
     fs::write(&link, "[summariser]\nmodel = \"opus\"\n").unwrap();
     for part in PARTS {
         assert_eq!(
