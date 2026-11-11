@@ -91,9 +91,6 @@ pub fn lock(p: &Path) -> Result<Lock> {
     Ok(Lock(f))
 }
 
-#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-compile_error!("rename_new renames without replacing only on Linux and macOS.");
-
 /// The SHA-256 of `bytes`, in lowercase hex.
 pub fn sha256(bytes: &[u8]) -> String {
     hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
@@ -111,27 +108,8 @@ pub fn hex(bytes: &[u8]) -> String {
 /// Renames `from` to `to` unless `to` exists, in one step, so a path made at `to` meanwhile is
 /// never replaced: an error of kind [`io::ErrorKind::AlreadyExists`] if it exists.
 pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
-    let (from, to) = (c(from)?, c(to)?);
-    // SAFETY: both paths are NUL-terminated strings that outlive the call.
-    #[cfg(target_os = "linux")]
-    let r = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            from.as_ptr(),
-            libc::AT_FDCWD,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    // SAFETY: as above.
-    #[cfg(target_vendor = "apple")]
-    let r = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
-    match r {
-        0 => Ok(()),
-        _ => Err(io::Error::last_os_error()),
-    }
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    Ok(renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE)?)
 }
 
 /// The format the `store` store in `dir` names; `None` without a format file.
