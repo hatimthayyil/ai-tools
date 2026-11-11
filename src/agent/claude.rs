@@ -132,19 +132,20 @@ pub fn read(path: &Path, session: &str) -> Result<Vec<Item>> {
 }
 
 pub(super) fn parse_bytes(session: &str, bytes: &[u8]) -> Vec<Item> {
-    let end = memchr::memrchr(b'\n', bytes).map_or(0, |i| i + 1);
-    parse(session, &String::from_utf8_lossy(&bytes[..end]))
+    let mut chain = Chain::default();
+    chain.read(session, bytes);
+    chain.items
+}
+
+/// `bytes` up to its last newline: a last line without one is still being written.
+fn whole(bytes: &[u8]) -> &[u8] {
+    &bytes[..memchr::memrchr(b'\n', bytes).map_or(0, |i| i + 1)]
 }
 
 /// The items of a transcript, in file order, each linked to its logical parent. A last line
 /// without its newline is still being written and is left for the next read.
 pub fn parse(session: &str, text: &str) -> Vec<Item> {
-    let mut chain = Chain::new(session);
-    let end = text.rfind('\n').map_or(0, |i| i + 1);
-    for line in text[..end].lines() {
-        chain.push(line);
-    }
-    chain.items
+    parse_bytes(session, text.as_bytes())
 }
 
 /// A subagent's transcript, `<session>/subagents/agent-<agent>.jsonl`.
@@ -165,18 +166,25 @@ pub fn subagents(path: &Path, session: &str) -> Result<Vec<Subagent>> {
         path.file_name()
             .context("A transcript needs a file name.")?,
     );
-    Ok(subagents_from(&files, &name.with_extension(""), session))
+    let dir = path
+        .parent()
+        .context("A transcript needs a parent directory.")?;
+    subagents_from(dir, &files, &name.with_extension(""), session)
 }
 
+/// The subagents in `files`, the session's files by their path in `dir`, under `companion`: the
+/// transcript's name without its extension. A subagent that ran on through a `/clear` wrote
+/// its entries before it under another session; it is read whole, [`earlier`] parts first.
 pub(super) fn subagents_from(
+    dir: &Path,
     files: &BTreeMap<PathBuf, Vec<u8>>,
     companion: &Path,
     session: &str,
-) -> Vec<Subagent> {
-    let dir = companion.join("subagents");
+) -> Result<Vec<Subagent>> {
+    let agents = companion.join("subagents");
     let mut out = Vec::new();
     for (file, bytes) in files {
-        if file.parent() != Some(dir.as_path()) {
+        if file.parent() != Some(agents.as_path()) {
             continue;
         }
         let name = file
@@ -194,21 +202,97 @@ pub(super) fn subagents_from(
             .and_then(|b| serde_json::from_slice(b).ok())
             .unwrap_or_default();
         let field = |k: &str| meta[k].as_str().unwrap_or_default().to_string();
+        let before = match first_parent(bytes) {
+            Some(parent) => earlier(dir, companion, name, parent)?,
+            None => Vec::new(),
+        };
+        let mut chain = Chain::default();
+        for (session, bytes) in &before {
+            chain.read(session, bytes);
+        }
+        chain.read(session, bytes);
         out.push(Subagent {
             agent: agent.into(),
             agent_type: field("agentType"),
             description: field("description"),
             call: meta["toolUseId"].as_str().map(String::from),
-            items: parse_bytes(session, bytes),
+            items: chain.items,
         });
     }
     out.sort_by(|a, b| a.agent.cmp(&b.agent));
-    out
+    Ok(out)
+}
+
+/// The entries of a transcript's whole lines; a line that is no JSON is skipped.
+fn entries(bytes: &[u8]) -> impl Iterator<Item = Value> {
+    whole(bytes)
+        .split(|&b| b == b'\n')
+        .filter_map(|l| serde_json::from_slice(l).ok())
+}
+
+/// The entry a transcript's first entry names as its parent: none where the transcript begins
+/// its conversation, the last entry written before a `/clear` where a subagent ran on through
+/// it.
+fn first_parent(bytes: &[u8]) -> Option<String> {
+    let first = entries(bytes).find(|v| v["uuid"].is_string())?;
+    first["parentUuid"]
+        .as_str()
+        .or(first["logicalParentUuid"].as_str())
+        .map(String::from)
+}
+
+/// What the subagent whose transcript is named `file` wrote before the entry that hangs on
+/// `parent`, oldest first, each part with its session. A `/clear` moves a running subagent's
+/// transcript to the new session's folder: each part sits under another session of `dir`,
+/// beside `companion`, and the first entry of one names the last of the part before it.
+fn earlier(
+    dir: &Path,
+    companion: &Path,
+    file: &str,
+    parent: String,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let cannot = |p: &Path| format!("Cannot read {}.", p.display());
+    let mut parts = Vec::new();
+    for e in fs::read_dir(dir).with_context(|| cannot(dir))? {
+        let e = e.with_context(|| cannot(dir))?;
+        let name = e.file_name();
+        let Some(session) = name.to_str().filter(|s| Path::new(s) != companion) else {
+            continue;
+        };
+        let part = e.path().join("subagents").join(file);
+        match fs::read(&part) {
+            Ok(bytes) => parts.push((session.to_string(), bytes)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) => {}
+            Err(e) => return Err(e).with_context(|| cannot(&part)),
+        }
+    }
+    let mut out = Vec::new();
+    let mut parent = Some(parent);
+    while let Some(p) = parent {
+        let holds = |bytes: &[u8]| {
+            memchr::memmem::find(bytes, p.as_bytes()).is_some()
+                && entries(bytes).any(|v| v["uuid"] == p.as_str())
+        };
+        let Some(at) = parts.iter().position(|(_, bytes)| holds(bytes)) else {
+            break;
+        };
+        let part = parts.swap_remove(at);
+        parent = first_parent(&part.1);
+        out.push(part);
+    }
+    out.reverse();
+    Ok(out)
 }
 
 /// The transcript read so far: every chain entry by uuid, and the items made from them.
-struct Chain<'s> {
-    session: &'s str,
+#[derive(Default)]
+struct Chain {
+    /// The session that wrote the part being read.
+    session: String,
     entries: HashMap<String, Entry>,
     /// The last chain entry read: the parent of an entry whose parent was never written.
     previous: Option<String>,
@@ -223,15 +307,13 @@ struct Entry {
     item: Option<usize>,
 }
 
-impl<'s> Chain<'s> {
-    fn new(session: &'s str) -> Chain<'s> {
-        Chain {
-            session,
-            entries: HashMap::new(),
-            previous: None,
-            items: Vec::new(),
-            children: Vec::new(),
-            calls: HashMap::new(),
+impl Chain {
+    /// Reads the whole lines of `bytes`, a part of the transcript that `session` wrote, after
+    /// the parts read before it.
+    fn read(&mut self, session: &str, bytes: &[u8]) {
+        self.session = session.into();
+        for line in String::from_utf8_lossy(whole(bytes)).lines() {
+            self.push(line);
         }
     }
 
@@ -303,7 +385,7 @@ impl<'s> Chain<'s> {
     fn id(&self, entry: String) -> SourceId {
         SourceId {
             harness: HARNESS.into(),
-            session: self.session.into(),
+            session: self.session.clone(),
             entry,
         }
     }
@@ -944,6 +1026,81 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// A project folder whose sessions each hold the given lines of the subagent fixture's
+    /// transcript, as a `/clear` leaves a subagent that ran on through it.
+    fn split(parts: &[(&str, std::ops::Range<usize>)]) -> tempfile::TempDir {
+        const AGENT: &str = "agent-a1b2c3d4e5f6a7b8c";
+        let dir = tempfile::TempDir::new().unwrap();
+        let from = fixture("subagent/subagents");
+        let text = fs::read_to_string(from.join(format!("{AGENT}.jsonl"))).unwrap();
+        let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        for (session, range) in parts {
+            let agents = dir.path().join(session).join("subagents");
+            fs::create_dir_all(&agents).unwrap();
+            let part = lines[range.clone()].concat();
+            fs::write(agents.join(format!("{AGENT}.jsonl")), part).unwrap();
+            let meta = format!("{AGENT}.meta.json");
+            fs::copy(from.join(&meta), agents.join(&meta)).unwrap();
+            fs::write(dir.path().join(format!("{session}.jsonl")), "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_subagent_that_ran_on_through_a_clear_reads_as_one() {
+        let whole = subagents(&fixture("subagent.jsonl"), SESSION).unwrap();
+        let sessions = |s: &Subagent| -> Vec<String> {
+            s.items.iter().map(|i| i.id.session.clone()).collect()
+        };
+
+        let dir = split(&[("old", 0..4), ("new", 4..7)]);
+        let subs = subagents(&dir.path().join("new.jsonl"), "new").unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(shape(&subs[0].items), shape(&whole[0].items));
+        assert_eq!(subs[0].call.as_deref(), Some("toolu_50"));
+        assert_eq!(
+            sessions(&subs[0]),
+            ["old", "old", "old", "new", "new", "new"]
+        );
+        let before = subagents(&dir.path().join("old.jsonl"), "old").unwrap();
+        assert_eq!(
+            before[0].items,
+            subs[0].items[..3],
+            "the session before reads its own part, the same items"
+        );
+
+        let dir = split(&[("a", 0..2), ("b", 2..4), ("c", 4..7)]);
+        let subs = subagents(&dir.path().join("c.jsonl"), "c").unwrap();
+        assert_eq!(shape(&subs[0].items), shape(&whole[0].items), "through two");
+        assert_eq!(sessions(&subs[0]), ["a", "b", "b", "c", "c", "c"]);
+
+        let dir = split(&[("new", 4..7)]);
+        let subs = subagents(&dir.path().join("new.jsonl"), "new").unwrap();
+        assert_eq!(
+            shape(&subs[0].items),
+            ["sa2<- text", "c1<-sa2 work", "sa3<-c1 text"],
+            "without the part before, what is left starts the agent"
+        );
+    }
+
+    #[test]
+    fn a_row_a_plugin_appended_is_context_not_a_message() {
+        let view =
+            r#""message":{"role":"user","content":[{"type":"text","text":"You are awake."}]}"#;
+        let at = r#""timestamp":"2026-11-11T08:00:00.000Z","sessionId":"s-1""#;
+        let plugin = r#""type":"user","origin":{"kind":"plugin","name":"ai"}"#;
+        let text = [
+            format!(r#"{{"parentUuid":null,"uuid":"v1",{at},{plugin},"isMeta":true,{view}}}"#),
+            format!(r#"{{"parentUuid":"v1","uuid":"v2",{at},{plugin},{view}}}"#),
+            format!(
+                r#"{{"parentUuid":"v2","uuid":"u1",{at},"type":"user","origin":{{"kind":"human"}},"message":{{"role":"user","content":"Go on."}}}}"#
+            ),
+        ]
+        .map(|l| l + "\n")
+        .concat();
+        assert_eq!(shape(&parse(SESSION, &text)), ["u1<- user"]);
     }
 
     #[test]

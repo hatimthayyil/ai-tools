@@ -600,6 +600,7 @@ fn plumbing_is_hidden_from_help() {
         "sync-session",
         "compact-session",
         "end-session",
+        "carry-session",
         "session-name",
         "nap",
         "claude",
@@ -674,6 +675,161 @@ fn attach_sync_and_detach() {
     let o = s.outside(&["attach", "dev", "--session", "s-1"]);
     assert_eq!(code(&o), 1);
     assert!(stderr(&o).starts_with("Not in a project"));
+}
+
+/// A transcript's first row as `/fold` leaves it: the view the plugin appended, in a session
+/// started in `dir`.
+fn view_row(dir: &Path) -> String {
+    let row = json!({
+        "type": "user", "isMeta": true, "uuid": "v1", "parentUuid": null,
+        "timestamp": "2026-10-14T17:00:00.000Z", "cwd": dir,
+        "origin": {"kind": "plugin", "name": "ai"},
+        "message": {"role": "user", "content": [{"type": "text", "text": "You are awake."}]},
+    });
+    format!("{row}\n")
+}
+
+#[test]
+fn carry_session_attaches_a_session_where_the_one_before_it_ends() {
+    const AGENT: &str = "a1b2c3d4e5f6a7b8c";
+    let s = Sandbox::new();
+    let all = ran_in(&fixture("subagent.jsonl"), &s.repo());
+    let part: String = all.split_inclusive('\n').take(5).collect();
+    let old = s.transcript("s-1", &part);
+    let sub = fixture(&format!("subagent/subagents/agent-{AGENT}.jsonl"));
+    let lines: Vec<&str> = sub.split_inclusive('\n').collect();
+    let agent = |session: &str, text: String| {
+        let dir = s.project(&s.repo()).join(session).join("subagents");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("agent-{AGENT}.jsonl")), text).unwrap();
+        let meta = format!("subagent/subagents/agent-{AGENT}.meta.json");
+        fs::write(dir.join(format!("agent-{AGENT}.meta.json")), fixture(&meta)).unwrap();
+    };
+    agent("s-1", lines[..2].concat());
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+
+    fs::write(&old, &all).unwrap();
+    agent("s-1", lines[..4].concat());
+    agent("s-2", lines[4..].concat());
+    s.transcript("s-2", &view_row(&s.repo()));
+    ok(
+        s.ai_in("s-2", &["carry-session", "--from", "s-1"]),
+        "Attached to dev.\n",
+    );
+    let t = s.store().thread("dev").unwrap();
+    let snap = t.snapshot().unwrap();
+    let binding = |id: &str| snap.binding("claude", id).unwrap().unwrap();
+    let (before, after) = (binding("s-1"), binding("s-2"));
+    assert!(before.is_attached() && after.is_attached());
+    let heads = snap.heads().unwrap();
+    let last = heads.iter().rfind(|h| h.session == "s-1").unwrap();
+    assert_eq!(
+        (last.entry.as_str(), before.tip),
+        ("a3", Some(last.seq)),
+        "the session before is synced to its end first"
+    );
+    assert_eq!(
+        (after.graft, after.tip),
+        (before.tip, None),
+        "it goes on from that session's branch"
+    );
+    let items = snap.agent_items("claude", AGENT).unwrap();
+    let chain: Vec<(&str, &str, Option<&str>)> = items
+        .iter()
+        .map(|i| {
+            let parent = i.parent.as_ref().map(|p| p.entry.as_str());
+            (i.id.session.as_str(), i.id.entry.as_str(), parent)
+        })
+        .collect();
+    assert_eq!(
+        chain,
+        [
+            ("s-1", "s1", None),
+            ("s-1", "sa1", Some("s1")),
+            ("s-1", "sr1", Some("sa1")),
+            ("s-2", "sa2", Some("sr1")),
+            ("s-2", "c1", Some("sa2")),
+            ("s-2", "sa3", Some("c1")),
+        ],
+        "a subagent that ran on through the clear is one agent, each entry once"
+    );
+    assert!(snap.agent("claude", AGENT).unwrap().unwrap().call.is_some());
+    let mark = snap.mark();
+    ok(s.ai_in("s-2", &["sync-session"]), "");
+    ok(s.ai_in("s-1", &["sync-session"]), "");
+    assert_eq!(t.snapshot().unwrap().mark(), mark, "a sync adds nothing");
+    assert_eq!(
+        t.snapshot().unwrap().agent_items("claude", AGENT).unwrap(),
+        items
+    );
+
+    ok(s.ai(&["resume", "dev"]), "");
+    assert_eq!(
+        s.argv(),
+        ["--resume", "s-2", "--name=repo.dev"],
+        "the session that goes on comes before the one it took over from"
+    );
+    let turn = talk(1, |_| "go on".into())
+        .replace("\"u0\"", "\"n0\"")
+        .replace("\"parentUuid\":null", "\"parentUuid\":\"v1\"");
+    s.transcript("s-2", &(view_row(&s.repo()) + &ran_in(&turn, &s.repo())));
+    ok(s.ai_in("s-2", &["sync-session"]), "");
+    let snap = t.snapshot().unwrap();
+    let first = snap
+        .heads()
+        .unwrap()
+        .into_iter()
+        .find(|h| h.session == "s-2");
+    assert_eq!(
+        first.map(|h| (h.entry, h.parent)),
+        Some(("n0".into(), before.tip)),
+        "the view is no item: the first message hangs on the session before"
+    );
+
+    ok(
+        s.ai_in("s-5", &["carry-session", "--from", "s-1"]),
+        "Attached to dev.\n",
+    );
+    let snap = t.snapshot().unwrap();
+    assert_ne!(before.tip, snap.graft().unwrap());
+    assert_eq!(
+        snap.binding("claude", "s-5").unwrap().unwrap().graft,
+        before.tip,
+        "from that session's branch, not the thread's newest item"
+    );
+    ok(
+        s.ai_in("s-2", &["carry-session", "--from", "s-1"]),
+        "Attached to dev.\n",
+    );
+    assert_eq!(
+        t.snapshot().unwrap().binding("claude", "s-2").unwrap(),
+        snap.binding("claude", "s-2").unwrap(),
+        "carried again, a session stays where it is"
+    );
+    unattached(s.ai_in("s-3", &["carry-session", "--from", "s-8"]));
+    assert!(s.store().attached("claude", "s-3").unwrap().is_none());
+    unattached(s.outside(&["carry-session", "--from", "s-1", "--session", "s-3"]));
+    fails(
+        s.ai(&["carry-session", "--from", "s-1"]),
+        "No session: run this inside an agent session, or pass --session.\n",
+    );
+    fails(
+        s.ai_in("s-1", &["carry-session", "--from", "s-1"]),
+        "Session claude s-1 cannot go on from itself.\n",
+    );
+    ok(
+        s.ai(&["new", "other"]),
+        "Created agent other. Start it: ai agent resume other\n",
+    );
+    ok(s.ai_in("s-4", &["attach", "other"]), "Attached to other.\n");
+    fails(
+        s.ai_in("s-4", &["carry-session", "--from", "s-1"]),
+        "Session claude s-4 is attached to other. Run ai agent detach --harness claude --session s-4 before attaching to dev.\n",
+    );
 }
 
 #[test]

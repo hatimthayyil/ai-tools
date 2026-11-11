@@ -151,6 +151,20 @@ enum Command {
     },
     #[command(
         hide = true,
+        about = "plumbing: attach this session to the thread session --from is attached to, after that session's last entries; a new binding goes on from its branch."
+    )]
+    CarrySession {
+        #[arg(
+            long,
+            value_name = "SESSION",
+            help = "the session this one goes on from"
+        )]
+        from: String,
+        #[command(flatten)]
+        session: Session,
+    },
+    #[command(
+        hide = true,
         about = "plumbing: print the name of the agent's Claude Code sessions, <project>.<agent>."
     )]
     SessionName {
@@ -350,6 +364,7 @@ impl Cli {
                 Command::SyncSession { .. }
                     | Command::CompactSession { .. }
                     | Command::EndSession { .. }
+                    | Command::CarrySession { .. }
                     | Command::SessionName { .. }
             )
         ) {
@@ -383,6 +398,7 @@ impl Cli {
             },
             Command::CompactSession { .. } => "ai agent compact-session".into(),
             Command::EndSession { .. } => "ai agent end-session".into(),
+            Command::CarrySession { .. } => "ai agent carry-session".into(),
             Command::Resume(_)
             | Command::List { .. }
             | Command::View { .. }
@@ -423,6 +439,7 @@ impl Command {
             Command::Build(a) => build_cmd(cwd, out, a),
             Command::SyncSession { session } => sync_session(cwd, session),
             Command::EndSession { session } => end_session(cwd, session),
+            Command::CarrySession { from, session } => carry_session(cwd, out, &from, session),
             Command::CompactSession { session } => compact_session(cwd, out, session),
             Command::SessionName { name } => session_name(cwd, out, &name),
         }
@@ -841,7 +858,10 @@ fn launch(cwd: &Path, name: &str, title: &str, args: &[String]) -> Result<ExitCo
 
 /// The thread's newest Claude Code session, resumed attached in the directory it ran in when
 /// it can be, with the agent's instructions; else a new one, saying why when there was one.
-/// Either way the session is named by the agent's address.
+/// Either way the session is named by the agent's address. The newest is the one furthest
+/// along the thread, by its newest item, else by the item it goes on from, and of two as far,
+/// the one attached last: a session `/fold` started comes before the one it took over from. A
+/// session with no item and no transcript holds nothing to continue, and is passed over.
 fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
     let store = Store::open(cwd)?;
     let t = store.existing(name)?;
@@ -851,7 +871,8 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
         .bindings()?
         .into_iter()
         .filter(|b| b.harness == claude::HARNESS)
-        .max_by_key(|b| (b.tip, b.attached));
+        .filter(|b| b.tip.is_some() || b.transcript.as_deref().is_some_and(Path::is_file))
+        .max_by_key(|b| (b.tip.or(b.graft), b.attached));
     let why = match &newest {
         None => return launch(cwd, name, &title, args),
         Some(b) => match &b.transcript {
@@ -1039,6 +1060,26 @@ fn end_session(cwd: &Path, s: Session) -> Result<ExitCode> {
         eprintln!("The session's end started no backup run: {e:#}");
     }
     synced
+}
+
+/// Attaches session `s` to the thread session `from` is attached to, as [`Store::carry`] does;
+/// outside a project, or while `from` is attached to no thread, it is not attached.
+fn carry_session(cwd: &Path, out: &mut dyn Write, from: &str, s: Session) -> Result<ExitCode> {
+    let Some(c) = s.current() else {
+        bail!("No session: run this inside an agent session, or pass --session.");
+    };
+    let Some(store) = Store::find(cwd)? else {
+        return not_attached();
+    };
+    let transcript = c.transcript(cwd);
+    let Some(a) = store.carry(&c.harness, from, &c.session, transcript.as_deref())? else {
+        return not_attached();
+    };
+    writeln!(out, "Attached to {}.", a.thread)?;
+    if !a.added.is_empty() {
+        start_summariser(cwd, &a.thread)?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Session `s`, synced, with its threads and the thread it is attached to; `None` outside an

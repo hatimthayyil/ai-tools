@@ -60,7 +60,7 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
             let items = files
                 .get(name)
                 .map_or_else(Vec::new, |bytes| claude::parse_bytes(session, bytes));
-            let agents = claude::subagents_from(&files, &name.with_extension(""), session);
+            let agents = claude::subagents_from(dir, &files, &name.with_extension(""), session)?;
             Ok(Transcript {
                 items,
                 agents,
@@ -189,6 +189,20 @@ impl Store {
         transcript: Option<&Path>,
         read: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
     ) -> Result<Attached> {
+        self.attach_after(name, harness, session, transcript, None, read)
+    }
+
+    /// Attaches as [`Store::attach`] does; a new binding grafts onto the newest item of session
+    /// `after`'s branch when one is given, the session it goes on from.
+    fn attach_after(
+        &self,
+        name: &str,
+        harness: &str,
+        session: &str,
+        transcript: Option<&Path>,
+        after: Option<&str>,
+        read: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
+    ) -> Result<Attached> {
         check_id(harness, "harness")?;
         check_id(session, "session")?;
         let target = self.existing(name)?;
@@ -216,7 +230,10 @@ impl Store {
                 harness: harness.into(),
                 session: session.into(),
                 transcript: pointer,
-                graft: snap.graft()?,
+                graft: match after {
+                    Some(s) => snap.track(harness, s)?.and_then(|t| t.tip.or(t.graft)),
+                    None => snap.graft()?,
+                },
                 tip: None,
             },
         };
@@ -259,6 +276,46 @@ impl Store {
             .record(harness, session, State::Detached)?;
         caught.with_context(|| format!("Detached from {name} without its newest entries"))?;
         Ok(Some(name))
+    }
+
+    /// Attaches session `to` to the thread session `from` is attached to, after ingesting
+    /// `from`'s new entries: `to` goes on from `from`, as the session a `/clear` starts does, so
+    /// its roots graft onto the newest item of `from`'s branch. `from` stays attached. None if
+    /// `from` is attached to no thread. A failed catch-up still attaches, then reports the
+    /// failure.
+    pub fn carry(
+        &self,
+        harness: &str,
+        from: &str,
+        to: &str,
+        transcript: Option<&Path>,
+    ) -> Result<Option<Attached>> {
+        self.carry_with(harness, from, to, transcript, read)
+    }
+
+    fn carry_with(
+        &self,
+        harness: &str,
+        from: &str,
+        to: &str,
+        transcript: Option<&Path>,
+        read_from: impl FnOnce(&str, &str, Option<&Path>) -> Result<Transcript>,
+    ) -> Result<Option<Attached>> {
+        check_id(harness, "harness")?;
+        check_id(from, "session")?;
+        if from == to {
+            bail!("Session {harness} {to} cannot go on from itself.");
+        }
+        let _lock = self.session_lock(harness, from)?;
+        let Some(name) = self.owner(harness, from)? else {
+            return Ok(None);
+        };
+        let caught = self.catch_up(&name, harness, from, None, read_from);
+        let attached = self.attach_after(&name, harness, to, transcript, Some(from), read)?;
+        caught.with_context(|| {
+            format!("Attached to {name} without the newest entries of session {from}")
+        })?;
+        Ok(Some(attached))
     }
 }
 
@@ -541,5 +598,34 @@ mod tests {
             "{e}"
         );
         assert!(store.attached("claude", "s-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_catch_up_still_carries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init(dir.path(), &["dev"]);
+        let store = open(dir.path());
+        let transcript = dir.path().join("s-1.jsonl");
+        fs::write(&transcript, plain()).unwrap();
+        store
+            .attach("dev", "claude", "s-1", Some(&transcript))
+            .unwrap();
+        let tip = |s: &str| {
+            let snap = store.thread("dev").unwrap().snapshot().unwrap();
+            snap.binding("claude", s).unwrap().map(|b| (b.graft, b.tip))
+        };
+        let e = store
+            .carry_with("claude", "s-1", "s-2", None, |_, _, _| bail!("unreadable"))
+            .unwrap_err();
+        let e = format!("{e:#}");
+        assert!(
+            e.contains("Attached to dev without the newest entries of session s-1: unreadable"),
+            "{e}"
+        );
+        let from = tip("s-1").unwrap().1;
+        assert!(from.is_some());
+        assert_eq!(tip("s-2"), Some((from, None)));
+        assert_eq!(store.carry("claude", "s-9", "s-3", None).unwrap(), None);
+        assert_eq!(tip("s-3"), None);
     }
 }
