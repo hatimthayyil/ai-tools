@@ -43,15 +43,21 @@ impl Cli {
     }
 }
 
-/// Where paged outputs are saved: `$XDG_CACHE_HOME/ai/views`, else `~/.cache/ai/views`.
-pub fn cache() -> Result<PathBuf> {
+/// ai's folder in the user's cache, for what it can make again: `$XDG_CACHE_HOME/ai`, else
+/// `~/.cache/ai`.
+pub fn cache_home() -> Result<PathBuf> {
     let base = match env::var_os("XDG_CACHE_HOME").map(PathBuf::from) {
         Some(d) if d.is_absolute() => d,
         _ => env::home_dir()
-            .context("No home directory to keep paged output in.")?
+            .context("No home directory to keep ai's cache in.")?
             .join(".cache"),
     };
-    Ok(base.join("ai").join("views"))
+    Ok(base.join("ai"))
+}
+
+/// Where paged outputs are saved: `views` in [`cache_home`].
+pub fn cache() -> Result<PathBuf> {
+    Ok(cache_home()?.join("views"))
 }
 
 /// `text` in parts of at most `max` bytes, each cut after its last line end when that keeps

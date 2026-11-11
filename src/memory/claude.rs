@@ -1,8 +1,7 @@
 use std::{
-    collections::{HashSet, hash_map::DefaultHasher},
+    collections::HashSet,
     ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
-    hash::{Hash, Hasher},
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -16,14 +15,16 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use tempfile::TempDir;
+use tempfile::NamedTempFile;
 
 use crate::{
     file::AtPath,
+    git,
     memory::{
         JOBS,
         backend::{Backend, Block, Conversation, Usage},
     },
+    page,
 };
 
 /// How long a model call may take before it fails.
@@ -371,23 +372,27 @@ impl Drop for Proc {
     }
 }
 
-/// Writes each distinct system prompt once into a temporary directory.
-pub struct Prompts(TempDir);
+/// Keeps each distinct system prompt in a file named by its hash, in a folder of the user's
+/// cache. A file serves every later call with its prompt and is never removed, so a process
+/// ended by a signal has no folder of its own to leave behind.
+pub struct Prompts(PathBuf);
 
 impl Prompts {
+    /// In `prompts` of [`page::cache_home`].
     pub fn new() -> Result<Prompts> {
-        Ok(Prompts(
-            TempDir::new().context("Cannot create a temporary directory.")?,
-        ))
+        Ok(Prompts(page::cache_home()?.join("prompts")))
     }
 
+    /// The file holding `system`, written unless it holds it already.
     pub fn file(&self, system: &str) -> Result<PathBuf> {
-        let mut h = DefaultHasher::new();
-        system.hash(&mut h);
-        let p = self.0.path().join(format!("{:016x}.txt", h.finish()));
-        if !p.exists() {
-            fs::write(&p, system).at(&p)?;
+        let p = self.0.join(format!("{}.txt", git::hash(system)?));
+        if fs::read(&p).is_ok_and(|held| held == system.as_bytes()) {
+            return Ok(p);
         }
+        fs::create_dir_all(&self.0).at(&self.0)?;
+        let mut tmp = NamedTempFile::new_in(&self.0).at(&self.0)?;
+        tmp.write_all(system.as_bytes()).at(tmp.path())?;
+        tmp.persist(&p).map_err(|e| e.error).at(&p)?;
         Ok(p)
     }
 }
@@ -576,6 +581,8 @@ impl Conversation for Session {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -603,6 +610,14 @@ mod tests {
         assert!(sh.wait().unwrap().success());
     }
 
+    /// The compactor through `program`, its calls and its prompts kept under `dir`.
+    fn compactor(program: OsString, dir: &Path) -> ClaudeCode {
+        ClaudeCode {
+            prompts: Prompts(dir.join("prompts")),
+            ..ClaudeCode::compactor_at(program, "sonnet", &dir.join(CALLS)).unwrap()
+        }
+    }
+
     #[test]
     fn a_call_keeps_what_went_in_and_every_byte_out() {
         let tmp = TempDir::new().unwrap();
@@ -621,7 +636,7 @@ done
 "#,
         );
         let calls = tmp.path().join(CALLS);
-        let c = ClaudeCode::compactor_at(program.into(), "sonnet", &calls).unwrap();
+        let c = compactor(program.into(), tmp.path());
         let mut conv = c.open("Write a line.").unwrap();
         assert_eq!(conv.say(&[Block::new("a")]).unwrap(), "r1");
         let first = conv.used();
@@ -674,12 +689,28 @@ done
     }
 
     #[test]
+    fn a_prompt_keeps_one_file_and_is_written_again_only_when_the_file_holds_something_else() {
+        let tmp = TempDir::new().unwrap();
+        let prompts = Prompts(tmp.path().join("prompts"));
+        let file = prompts.file("You write the memory.").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "You write the memory.");
+        let inode = || std::os::unix::fs::MetadataExt::ino(&fs::metadata(&file).unwrap());
+        let written = inode();
+        assert_eq!(prompts.file("You write the memory.").unwrap(), file);
+        assert_eq!(inode(), written);
+        assert_ne!(prompts.file("You check the memory.").unwrap(), file);
+
+        fs::write(&file, "You wr").unwrap();
+        assert_eq!(prompts.file("You write the memory.").unwrap(), file);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "You write the memory.");
+        assert_eq!(fs::read_dir(tmp.path().join("prompts")).unwrap().count(), 2);
+    }
+
+    #[test]
     fn the_compactor_runs_isolated_without_tools() {
         let tmp = TempDir::new().unwrap();
-        let c = ClaudeCode::compactor_at("claude".into(), "sonnet", tmp.path()).unwrap();
+        let c = compactor("claude".into(), tmp.path());
         let file = c.prompts.file("You write the memory.").unwrap();
-        assert_eq!(fs::read_to_string(&file).unwrap(), "You write the memory.");
-        assert_eq!(c.prompts.file("You write the memory.").unwrap(), file);
         let cmd = c.command(&file, "s1");
         assert_eq!(cmd.get_program(), "claude");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -762,6 +793,8 @@ done
 
 #[cfg(all(test, target_os = "linux"))]
 mod cleanup_tests {
+    use tempfile::TempDir;
+
     use super::*;
     fn shell(code: &str) -> Command {
         let mut c = Command::new("bash");
