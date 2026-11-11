@@ -839,6 +839,48 @@ fn a_note_is_summarised_in_the_background() {
 }
 
 #[test]
+fn a_note_tells_of_a_summariser_that_cannot_start() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    let note = |i: usize| {
+        s.cmd(s.path(), Some(&s.store()))
+            .args(["note", &format!("note {i} {}", "z".repeat(250))])
+            .env("AI_MEMORY_SUMMARISE", "1")
+            .output()
+            .unwrap()
+    };
+    s.ai(&["note", &format!("note 0 {}", "z".repeat(250))]);
+    for (i, (toml, says)) in [
+        (
+            "[summariser]\nbackend = \"api\"\nmodel = \"sonnet\"\n",
+            "names no provider",
+        ),
+        ("[summariser]\nnosuch = 1\n", "unknown field `nosuch`"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let i = i + 1;
+        s.user_toml(toml);
+        let r = note(i);
+        assert!(r.status.success(), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), format!("Saved as {i}.\n"));
+        let err = text(&r.stderr);
+        assert!(
+            err.starts_with(
+                "No summariser started, so summaries stay out of date until this is fixed: "
+            ),
+            "{err}"
+        );
+        assert!(err.contains(says), "{err}");
+    }
+    assert!(!s.store().join("summarise.log").exists());
+    let r = s.ai(&["view"]);
+    assert!(r.status.success());
+    assert_eq!(text(&r.stderr), "");
+}
+
+#[test]
 fn a_build_that_finds_another_at_work_runs_no_key_s_command() {
     let s = Sandbox::new();
     assert!(s.ai(&["init"]).status.success());

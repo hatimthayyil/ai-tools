@@ -591,7 +591,7 @@ fn note(
     };
     let (i, _, _) = s.append("note", &[m])?;
     writeln!(out, "Saved as {i}.")?;
-    if rt.summarise_on_note && pending(s)? {
+    if rt.summarise_on_note && pending(s)? && summariser::usable((rt.summariser)()).is_some() {
         spawn_summariser("memory", "AI_MEMORY_DIR", s.dir(), s.dir())?;
     }
     Ok(ExitCode::SUCCESS)

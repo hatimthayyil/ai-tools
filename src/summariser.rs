@@ -15,6 +15,21 @@ pub const WAIT: Duration = Duration::from_secs(60);
 /// What an error of the witness's own settings is told under.
 const WITNESS: &str = "Cannot start the witness of `[summariser.witness]`";
 
+/// The settings `read` gave, if they can make a backend ([`Config::check`]). If they can't, says
+/// why on stderr and gives none: the summariser a command starts in the background tells its
+/// errors only to its log, so the command that would start it is where a person sees them.
+pub fn usable(read: Result<Config>) -> Option<Config> {
+    match read.and_then(|c| c.check().map(|()| c)) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!(
+                "No summariser started, so summaries stay out of date until this is fixed: {e:#}"
+            );
+            None
+        }
+    }
+}
+
 /// `[summariser]` in `ai.toml`: what writes every summary, for agents, memory and notes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]

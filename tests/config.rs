@@ -10,7 +10,7 @@ use ai_tools::{
     file::pretty,
     memory::Knob,
     project::Project,
-    summariser::Kind,
+    summariser::{self, Kind},
 };
 use mti::prelude::*;
 use tempfile::TempDir;
@@ -418,6 +418,53 @@ fn the_claude_backend_leaves_the_keys_alone() {
         assert_eq!(e.to_string(), "No claude on PATH: ai runs on Claude Code.");
     }
     assert!(!ran.exists(), "a key's command ran for Claude Code");
+}
+
+#[test]
+fn settings_that_can_make_no_backend_are_found_without_running_anything() {
+    let t = Tree::new();
+    for (text, says) in [
+        (
+            "[summariser]\neffort = \"minimal\"\n",
+            "is no effort `claude -p` takes",
+        ),
+        (
+            "[summariser]\nbackend = \"api\"\nmodel = \"sonnet\"\n",
+            "names no provider",
+        ),
+        (
+            "[summariser]\nbackend = \"api\"\nmodel = \"nosuch/model\"\n",
+            "`nosuch` in `[summariser] model` is no provider genai knows",
+        ),
+        (
+            "[summariser.witness]\njobs = 2\n",
+            "`[summariser.witness]` takes `backend`, `model` and `effort` alone",
+        ),
+        (
+            "[summariser.witness]\nbackend = \"api\"\nmodel = \"opus\"\n",
+            "Cannot start the witness of `[summariser.witness]`: `[summariser] model = \"opus\"` names no provider",
+        ),
+    ] {
+        fs::write(t.user(), text).unwrap();
+        let read = t.load().summariser();
+        let err = format!("{:#}", read.as_ref().unwrap().check().unwrap_err());
+        assert!(err.contains(says), "{text}: {err}");
+        assert!(summariser::usable(read).is_none());
+    }
+    fs::write(t.user(), "[summariser]\nnosuch = 1\n").unwrap();
+    assert!(summariser::usable(t.load().summariser()).is_none());
+
+    for text in [
+        "",
+        "[summariser]\nmodel = \"opus\"\neffort = \"high\"\n\n[summariser.witness]\nmodel = \"sonnet\"\n",
+        "[summariser]\nbackend = \"api\"\nmodel = \"heabsy/qwen38\"\n\n[summariser.keys]\nheabsy = \"exit 1\"\n",
+    ] {
+        fs::write(t.user(), text).unwrap();
+        assert!(
+            summariser::usable(t.load().summariser()).is_some(),
+            "{text}"
+        );
+    }
 }
 
 #[test]

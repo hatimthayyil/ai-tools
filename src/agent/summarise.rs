@@ -24,6 +24,7 @@ use crate::{
     config::Settings,
     memory::{Backend, Block, JOBS, Spend, TRIES, Who, limit, log, write_line},
     progress::{Level, Progress},
+    summariser,
 };
 
 /// `[chat]` in `ai.toml`.
@@ -75,9 +76,12 @@ impl Store {
     }
 
     /// Starts `ai agent build -a <name> --background`, unless `ai.toml` sets `chat.background`
-    /// false; whether it started.
+    /// false or its `[summariser]` can make no backend ([`summariser::usable`]); whether it
+    /// started.
     pub fn spawn_summariser(&self, thread: &Thread) -> Result<bool> {
-        if !self.config()?.background() {
+        if !self.config()?.background()
+            || summariser::usable(self.settings().summariser()).is_none()
+        {
             return Ok(false);
         }
         log::spawn(&thread.log_path(), |c| {

@@ -157,7 +157,10 @@ impl Cli {
 }
 
 fn summarise_after(s: &Store, rt: &Runtime) -> Result<()> {
-    if rt.summarise_on_change && !due(&s.load()?)?.is_empty() {
+    if rt.summarise_on_change
+        && !due(&s.load()?)?.is_empty()
+        && summariser::usable((rt.summariser)()).is_some()
+    {
         spawn_summariser("notes", DIR_VAR, s.dir(), &s.git_dir())?;
     }
     Ok(())
