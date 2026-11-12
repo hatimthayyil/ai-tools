@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.18.0 - 2026-11-12
+
+### Upgrading
+
+From 0.17, once on each machine, before agents run on this release. Close every agent session first, so no hook runs `ai` halfway through.
+
+1. **Back up the harnesses' transcripts.** Threads keep no copy of a session's files: the harness's own files and the backup hold those bytes. Enable `services.ai-tools.backup` in Home Manager (or run `ai backup run` yourself), set `[backup]` in your own `~/.ai/ai.toml` if its defaults don't suit, and `[backup.remote]` for a copy off this machine. Run `ai backup run` once and check `ai backup status` before converting.
+
+2. **Let `~/ai` be made, or make it.** `ai` makes `~/ai` a git repository on its first write. If `~/ai` already exists and holds files, make it a repository first (`git init ~/ai`); a `~/ai` that holds files but is no repository is refused. Give it a remote of your own if it should leave this machine.
+
+3. **Convert each project.** `ai convert --dry-run ~/code/*/` tells what it would do for every project there; run it again without `--dry-run`. With no directory, it converts the current directory's project. For each project whose `.ai/local/` holds agents or private settings, it moves them to `~/ai/projects/<project>/`, relinks `ai.local.toml` and commits `~/ai`, naming any session file it had to write back into the harness's files. Until a project is converted, the commands that open its agents, hooks and `/fold` included, and `ai init` refuse it, naming `ai convert`.
+
+4. **Keep `.ai/local/`.** It is the project's private working data and stays ignored by the project's git; `ai init` adds `/.ai/local/` to `.gitignore` where it is missing. `ai convert` never changes or removes it; the agents in it are no longer read once converted, and once you have checked the conversion, are yours to delete.
+
+5. **Give each API provider its key** if the summariser runs on `backend = "api"`: `[summariser.keys]` in your own `~/.ai/ai.toml` maps each provider to a command that prints its key, such as `deepseek = "pass show api/deepseek"`. Without it, the provider's usual environment variable is read.
+
+6. **Fold with `/fold`.** It replaces the conversation as bare `/ai` did, and takes no arguments. Bare `/ai` now prints its usage.
+
+7. **Drop any permission rule that names `mcp__ai__compress`.** The model no longer has that tool, so asking it in words no longer folds.
+
+### Breaking changes
+
+- **agent:** keep threads in ~/ai, pointing at the harness files
+
+> agent stores are format 6, in `~/ai/projects/<project>/agents/`, and a project's private settings are `~/ai/projects/<project>/ai.toml`. A store ai 0.17 kept in .ai/local is refused until moved; see the upgrade notes.
+
+- **plugin:** fold with /fold, and drop the model's compress tool
+
+> bare /ai no longer folds; type /fold. The model no longer has the compress tool (mcp__ai__compress).
+
+### Bug fixes
+
+- **repo:** write the index before HEAD moves in a commit
+- **memory:** keep system prompt files in the cache, not a folder per process
+- **config:** fail only the commands that read a broken setting
+- **config:** read a project's private settings by its id, and check its name before minting one
+- **plugin:** show what an ai agent command that went through warned of
+- **repo:** write the index before HEAD moves in commit_paths
+- **summariser:** say why no summariser starts, where it would be started
+- **summariser:** make an agent build's backend only once it holds the thread's lock
+- **agent:** close the gaps a review found in attaching, renaming, removing and restoring
+- **plugin:** report a cancelled fold as cancelled, not as a TypeError
+- **cli:** wrap help text at word boundaries
+
+### Features
+
+- **config:** read reports-to and compile it into read grants
+- **agent:** rename an agent with ai agent rename
+- **agent:** name each agent's Claude Code sessions by its address
+- **backup:** back up every harness's transcripts with restic, and read a thread's bytes back from it
+- **agent:** remove an agent with ai agent remove
+- **summariser:** read each provider's API key from its command in your own ai.toml
+- **agent:** carry a thread into the session /fold starts
+- **convert:** convert what ai 0.17 kept with ai convert, outside ai's library
+- **plugin:** `/recall <message>` briefs you on what you want to work on
+- **plugin:** /fold goes on in a new session
+- **reply:** ai reply quotes the assistant's answers, ready to reply inline
+- **plugin:** /reply quotes an answer into the prompt box
+- **plugin:** name a session attached in place by its agent's address
+
 ## v0.17.0 - 2026-10-28
 
 ### Breaking changes
