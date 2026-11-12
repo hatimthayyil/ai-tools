@@ -91,6 +91,21 @@ pub fn lock(p: &Path) -> Result<Lock> {
     Ok(Lock(f))
 }
 
+/// Whether another process holds the lock on the file `p`; `false` with no file there. It makes
+/// no file, and takes a free lock for an instant only.
+pub fn held(p: &Path) -> Result<bool> {
+    let f = match File::open(p) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).at(p),
+    };
+    match f.try_lock() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(e)) => Err(e).at(p),
+    }
+}
+
 /// The SHA-256 of `bytes`, in lowercase hex.
 pub fn sha256(bytes: &[u8]) -> String {
     hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())

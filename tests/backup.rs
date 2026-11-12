@@ -646,6 +646,51 @@ fn watch_runs_again_and_again_and_goes_on_after_a_run_that_failed() {
 }
 
 #[test]
+fn status_tells_whether_a_watch_is_running_and_a_second_watch_is_turned_away() {
+    let m = Machine::new();
+    append(&m.claude().join("s.jsonl"), "x\n");
+    m.settings("[backup]\nevery = \"1h\"\n");
+    let off = "Runs: at each session's end and on `ai backup run`; `ai backup watch` (every 1h) \
+               isn't running: start it, or enable services.ai-tools.backup in Home Manager\n";
+    assert!(ok(&m.backup(&["status"])).contains(off));
+
+    let mut watch = m
+        .command(&["backup", "watch"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lock = m.ai().join("backup-watch.lock");
+    until("the watch to hold its lock", || {
+        File::open(&lock).is_ok_and(|f| f.try_lock().is_err())
+    });
+    until("the watch's first run", || !m.state()["ok"].is_null());
+    until("the watch to rest between runs", || {
+        File::open(m.ai().join("backup.lock"))
+            .unwrap()
+            .try_lock()
+            .is_ok()
+    });
+    let status = ok(&m.backup(&["status"]));
+    assert!(
+        status.contains(
+            "Runs: every 1h under `ai backup watch` (running), and at each session's end\n"
+        ),
+        "{status}"
+    );
+    let e = failed(&m.backup(&["watch"]));
+    assert_eq!(
+        e,
+        "Another `ai backup watch` is running: it holds ~/.ai/backup-watch.lock.\n"
+    );
+    assert!(watch.try_wait().unwrap().is_none());
+
+    watch.kill().unwrap();
+    watch.wait().unwrap();
+    assert!(ok(&m.backup(&["status"])).contains(off));
+}
+
+#[test]
 fn status_on_a_home_that_never_ran_a_backup_says_so_and_writes_nothing() {
     let m = Machine::new();
     fs::remove_dir_all(m.ai()).unwrap();

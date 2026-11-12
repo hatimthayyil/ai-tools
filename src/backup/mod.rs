@@ -13,7 +13,9 @@
 //!
 //! One run goes at a time, under `~/.ai/backup.lock`; a second waits for the first. Each run
 //! leaves what it did in `~/.ai/backup.json`, so `ai backup status` tells of a failed run that
-//! had no terminal to say so on: one `ai backup watch` made, or one a session's end started.
+//! had no terminal to say so on: one `ai backup watch` made, or one a session's end started. One
+//! `ai backup watch` goes at a time, holding `~/.ai/backup-watch.lock` while it lasts; `status`
+//! tells by that lock whether one is running.
 
 pub mod config;
 pub mod db;
@@ -32,6 +34,7 @@ use std::{
     path::{Path, PathBuf},
     process::{self, ExitCode, Stdio},
     thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -53,6 +56,8 @@ use crate::{
 
 /// The lock a run holds, in `~/.ai`.
 const LOCK: &str = "backup.lock";
+/// The lock `ai backup watch` holds while it lasts, in `~/.ai`.
+const WATCH_LOCK: &str = "backup-watch.lock";
 /// The local repository's password, in `~/.ai`, while no `password-command` names another.
 const KEY: &str = "backup.key";
 /// The folder of the databases' copies, in `~/.ai`.
@@ -450,6 +455,16 @@ fn short(id: &str) -> &str {
 /// Runs again and again, `[backup] every` apart, read anew before each run. A run that fails is
 /// told on `err` and the next still comes; broken settings end the watch.
 pub fn watch(homes: &Homes, out: &mut dyn Write, err: &mut dyn Write) -> Result<Infallible> {
+    fs::create_dir_all(&homes.machine).at(&homes.machine)?;
+    let lock = homes.machine.join(WATCH_LOCK);
+    // `status` takes a free lock for an instant to test it; waiting a moment keeps that from
+    // turning a watch away.
+    let Some(_watching) = file::lock_before(&lock, Instant::now() + Duration::from_secs(1))? else {
+        bail!(
+            "Another `ai backup watch` is running: it holds {}.",
+            pretty(&lock)
+        );
+    };
     loop {
         let every = Config::load(homes)?.every;
         if let Err(e) = run(homes, out) {
@@ -498,14 +513,8 @@ pub fn status(homes: &Homes, out: &mut dyn Write) -> Result<ExitCode> {
         None => writeln!(out, "Remote: none")?,
     }
     let every = SignedDuration::try_from(cfg.every).context("[backup] every is out of range.")?;
-    writeln!(
-        out,
-        "Runs: every {every:#} under `ai backup watch`{}",
-        match cfg.on_session_end {
-            true => ", and at each session's end",
-            false => "",
-        }
-    )?;
+    let watching = file::held(&homes.machine.join(WATCH_LOCK))?;
+    writeln!(out, "Runs: {}", runs(every, watching, cfg.on_session_end))?;
     writeln!(out, "Backs up:")?;
     for place in places(homes, &cfg) {
         let note = match (real(&place.path)?, place.db) {
@@ -516,7 +525,7 @@ pub fn status(homes: &Homes, out: &mut dyn Write) -> Result<ExitCode> {
         };
         writeln!(out, "  {}{note}", pretty(&place.path))?;
     }
-    if homes.machine.is_dir() && file::try_lock(&homes.machine.join(LOCK))?.is_none() {
+    if file::held(&homes.machine.join(LOCK))? {
         writeln!(out, "A run is in progress.")?;
     }
     let Some(ran) = state.ran else {
@@ -546,6 +555,26 @@ pub fn status(homes: &Homes, out: &mut dyn Write) -> Result<ExitCode> {
             }
             bail!("{e}")
         }
+    }
+}
+
+/// When runs come, as `status` tells it: `every` apart under a watch while one is `watching`,
+/// and at each session's end with `on_session_end`.
+fn runs(every: SignedDuration, watching: bool, on_session_end: bool) -> String {
+    let watch = "`ai backup watch`";
+    match (watching, on_session_end) {
+        (true, true) => {
+            format!("every {every:#} under {watch} (running), and at each session's end")
+        }
+        (true, false) => format!("every {every:#} under {watch} (running)"),
+        (false, ends) => format!(
+            "{}; {watch} (every {every:#}) isn't running: start it, or enable \
+             services.ai-tools.backup in Home Manager",
+            match ends {
+                true => "at each session's end and on `ai backup run`",
+                false => "on `ai backup run` alone",
+            }
+        ),
     }
 }
 
@@ -609,6 +638,29 @@ mod tests {
         assert!(!e.contains("42 apples"), "{e}");
         let e = variables("echo A=1; exit 7").unwrap_err().to_string();
         assert!(e.contains("failed: exit status: 7"), "{e}");
+    }
+
+    #[test]
+    fn runs_names_the_watch_as_running_only_while_it_is() {
+        let every = SignedDuration::from_mins(5);
+        assert_eq!(
+            runs(every, true, true),
+            "every 5m under `ai backup watch` (running), and at each session's end"
+        );
+        assert_eq!(
+            runs(every, true, false),
+            "every 5m under `ai backup watch` (running)"
+        );
+        let off = "`ai backup watch` (every 5m) isn't running: start it, or enable \
+                   services.ai-tools.backup in Home Manager";
+        assert_eq!(
+            runs(every, false, true),
+            format!("at each session's end and on `ai backup run`; {off}")
+        );
+        assert_eq!(
+            runs(every, false, false),
+            format!("on `ai backup run` alone; {off}")
+        );
     }
 
     #[test]
