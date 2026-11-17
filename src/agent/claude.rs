@@ -567,9 +567,16 @@ fn work(v: &Value) -> Option<Kind> {
 /// A user entry the user typed or sent, or a subagent's task; never injected context.
 fn prompt(v: &Value, words: &str) -> bool {
     v["origin"]["kind"] == "human"
+        || as_user(&v["origin"])
         || v["promptSource"] == "sdk"
         || words.starts_with("<command-message>")
         || (v["isSidechain"] == true && v["parentUuid"].is_null())
+}
+
+/// A plugin's prompt sent as the user's own words (`asUser`), as `/fold` sends its request for
+/// a handoff and the user's direction; any other prompt of a plugin is context.
+fn as_user(origin: &Value) -> bool {
+    origin["kind"] == "plugin" && origin["asUser"] == true
 }
 
 /// A message that arrived while the agent ran: one the user sent, or a fork's report.
@@ -577,8 +584,9 @@ fn queued(a: &Value) -> Option<Kind> {
     if a["type"] != "queued_command" {
         return None;
     }
+    let origin = &a["origin"];
     match a["commandMode"].as_str()? {
-        "prompt" if matches!(a["origin"]["kind"].as_str(), None | Some("human")) => {
+        "prompt" if matches!(origin["kind"].as_str(), None | Some("human")) || as_user(origin) => {
             Some(Kind::User(text(&a["prompt"])))
         }
         "task-notification" => report(a["prompt"].as_str()?),
@@ -1142,6 +1150,49 @@ mod tests {
         .map(|l| l + "\n")
         .concat();
         assert_eq!(shape(&parse(SESSION, &text)), ["u1<- user"]);
+    }
+
+    #[test]
+    fn a_prompt_a_plugin_sent_as_the_users_words_is_their_message() {
+        let at = r#""timestamp":"2026-11-17T08:00:00.000Z","sessionId":"s-1""#;
+        let user = |uuid: &str, parent: &str, origin: &str, said: &str| {
+            format!(
+                r#"{{"parentUuid":{parent},"uuid":"{uuid}",{at},"type":"user","origin":{origin},"promptSource":"system","message":{{"role":"user","content":"{said}"}}}}"#
+            )
+        };
+        let answer = |uuid: &str, parent: &str| {
+            format!(
+                r#"{{"parentUuid":"{parent}","uuid":"{uuid}",{at},"type":"assistant","message":{{"role":"assistant","model":"m","content":[{{"type":"text","text":"Done."}}]}}}}"#
+            )
+        };
+        let queued = r#"{"parentUuid":"a2","uuid":"q1","timestamp":"2026-11-17T08:00:00.000Z","sessionId":"s-1","type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"Queued.","origin":{"kind":"plugin","name":"ai","asUser":true}}}"#;
+        let text = [
+            user(
+                "u1",
+                "null",
+                r#"{"kind":"plugin","name":"ai","asUser":true}"#,
+                "Fold this session.",
+            ),
+            answer("a1", "u1"),
+            user(
+                "p1",
+                r#""a1""#,
+                r#"{"kind":"plugin","name":"ai"}"#,
+                "The ai plugin sent a message: hi",
+            ),
+            answer("a2", "p1"),
+            queued.to_string(),
+        ]
+        .map(|l| l + "\n")
+        .concat();
+        let items = parse(SESSION, &text);
+        assert_eq!(
+            shape(&items),
+            ["u1<- user", "a1<-u1 text", "a2<-a1 text", "q1<-a2 user"],
+            "a framed plugin prompt is context, so its answer goes on the turn before"
+        );
+        assert_eq!(items[0].kind, Kind::User("Fold this session.".into()));
+        assert_eq!(items[3].kind, Kind::User("Queued.".into()));
     }
 
     #[test]
