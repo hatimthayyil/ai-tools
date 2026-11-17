@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.18.1 - 2026-11-17
+
+### Bug fixes
+
+- **backup:** say whether ai backup watch is running
+- **nix:** link the system aws-lc and sqlite, as nixpkgs' cargo hook now asks
+
 ## v0.18.0 - 2026-11-12
 
 ### Upgrading
