@@ -1,8 +1,8 @@
-Salam. The user ran /fold. Their next message, "Fold this session.",
-asks you to write the final message of this session: a handoff to the
-session that goes on after the fold. That session starts from your
-memory's view and this thread's, and this message is the thread's
-newest turn, which the view shows word for word.
+Salam. The user ran /fold. Their next message, which starts "Fold this
+session.", asks you to write the final message of this session: a
+handoff to the session that goes on after the fold. That session
+starts from your memory's view and this thread's, and this message is
+the thread's newest turn, which the view shows word for word.
 
 Write state, not history. The thread keeps the history, and the view
 already shows the newest turns word for word: leave out what they
@@ -27,3 +27,9 @@ Write it in these parts, leaving out a part with nothing in it:
 Cite each claim's source: a turn or item id (`464`, `521.5`), a
 memory note id (note `957`), or `file:line`. Say what you have not
 checked.
+
+What follows "Next:" in their message, if anything, is their
+direction: the new session starts on it at once. Write what bears on
+it, zooming into older turns and notes for what this session does not
+hold, and leave out what it does not need. With no direction, write
+for carrying on where things stand.

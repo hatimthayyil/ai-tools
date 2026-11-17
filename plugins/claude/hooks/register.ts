@@ -5,8 +5,7 @@ const NOT_ATTACHED = 3
 const LONG_MS = 600_000
 const FLUSH_MS = 1_100
 const USAGE = 'Usage: /ai new <name> | /ai attach <name> | /ai detach'
-const FOLD_USAGE = '/fold takes no arguments.'
-/** What `/fold` sends the session as the user's words once the command has left the model the instructions for a handoff. */
+/** What `/fold` sends the session as the user's words, before its direction, once the command has left the model the instructions for a handoff. */
 const REQUEST = 'Fold this session.'
 /** Why a handoff turn that ended for `reason` wrote no handoff. */
 const UNWRITTEN: Record<TurnCompleteReason, string> = {
@@ -147,53 +146,95 @@ async function isWithheld($: EngineInterface): Promise<boolean> {
 /** Whether a fold is under way: from the end of its handoff's turn until the new session is attached. */
 let folding = false
 
-/** The turn answering the latest `/fold`'s request for a handoff, once it has started. */
-let handoff: { turnId?: string } | undefined
+/**
+ * The latest `/fold`'s request for a handoff: the message sent as the user's words, the
+ * direction the new session starts on ('' for none), and the turn answering it once started.
+ */
+type Handoff = { request: string; direction: string; turnId?: string }
+let handoff: Handoff | undefined
 
 /**
- * Asks the session for its handoff: the command leaves the model the instructions, then
- * `REQUEST` goes in as the user's words once the command has returned and the session is idle.
- * The fold follows when `turn.complete` hears that turn end. Returns what the command answers.
+ * Asks the session for its handoff, aimed at `direction`: the command leaves the model the
+ * instructions, then `REQUEST`, with `Next:` and the direction after it, goes in as the user's
+ * words once the command has returned and the session is idle. The fold follows when
+ * `turn.complete` hears that turn end. Returns what the command answers.
  */
-async function request($: EngineInterface): Promise<CommandRunResult> {
+async function request($: EngineInterface, direction: string): Promise<CommandRunResult> {
   let instructions: string
   try {
     instructions = await $.fs.read(`${$.plugin.root}/prompts/fold.txt`)
   } catch (err) {
-    return { text: `Not folded: ${String(err)}` }
+    return { text: await handBack($, `Not folded: ${String(err)}`, direction) }
   }
-  const asked = {}
+  const asked: Handoff = { request: direction === '' ? REQUEST : `${REQUEST} Next: ${direction}`, direction }
   handoff = asked
   $.clock.after(0, async () => {
-    let refused: string | undefined
-    try {
-      refused = (await $.prompt.submit({ text: REQUEST, asUser: true })).drop
-    } catch (err) {
-      refused = String(err)
-    }
+    const refused = await send($, asked.request)
     if (refused === undefined) return
     if (handoff === asked) handoff = undefined
-    $.ui.log(`Not folded: the request for a handoff was refused (${refused}), so this session is as it was.`)
+    const said = `Not folded: the request for a handoff was refused (${refused}), so this session is as it was.`
+    $.ui.log(await handBack($, said, direction))
   })
   return { text: 'Writing a handoff. The fold follows it.', context: [instructions] }
+}
+
+/** Sends `text` to the session as the user's words, once it is idle. Returns why it was refused, else undefined. */
+async function send($: EngineInterface, text: string): Promise<string | undefined> {
+  try {
+    return (await $.prompt.submit({ text, asUser: true })).drop
+  } catch (err) {
+    return String(err)
+  }
+}
+
+/**
+ * `said`, the reason a fold stops short of starting a session on `direction`, with the direction
+ * handed back so none of it is lost: put in the prompt box, after a blank line when the box holds
+ * what the user typed since, else, where no box takes it, written out whole. `said` alone for no
+ * direction.
+ */
+async function handBack($: EngineInterface, said: string, direction: string): Promise<string> {
+  if (direction === '') return said
+  const filled = await $.prompt
+    .read()
+    .then(({ text }) =>
+      $.prompt.fill(
+        text.trim() === '' ? { text: direction, mode: 'replace' } : { text: `\n\n${direction}`, mode: 'append' },
+      ),
+    )
+    .catch(() => ({ isFilled: false }))
+  // `said` can end in a message of ai's own, with no full stop.
+  const ended = /[.!?]$/.test(said) ? said : `${said}.`
+  return filled.isFilled
+    ? `${ended} Your direction is in the prompt box.`
+    : `${ended} The prompt box would not take your direction, which was: ${direction}`
+}
+
+/** Starts the folded session on `direction`, or, when `unready` says why it should not, hands it back. */
+async function begin($: EngineInterface, direction: string, unready?: string): Promise<void> {
+  if (direction === '') return
+  const why = unready ?? (await send($, direction))
+  if (why === undefined) return
+  $.ui.log(await handBack($, `Not started on your direction: ${why}.`, direction))
 }
 
 /**
  * Carries the thread of session `old` into a new session: `/clear`, then `view` as the new
  * session's first row, before a notification that waited can start a turn there, then, once
- * both transcripts are flushed, the new session attached where `old` is. `/clear` keeps the
- * session's name. Logs what happened: what failed, and what the session holds.
+ * both transcripts are flushed, the new session attached where `old` is, and started on
+ * `direction`. `/clear` keeps the session's name. Logs what happened: what failed, and what the
+ * session holds.
  */
-async function carry($: EngineInterface, old: string, view: string): Promise<void> {
+async function carry($: EngineInterface, old: string, view: string, direction: string): Promise<void> {
   try {
     await $.command.run({ command: 'clear' })
   } catch (err) {
-    $.ui.log(`Not folded: /clear failed, so this session is as it was. ${String(err)}`)
+    $.ui.log(await handBack($, `Not folded: /clear failed, so this session is as it was. ${String(err)}`, direction))
     return
   }
   const id = await $.session.id()
   if (id === old) {
-    $.ui.log('Not folded: /clear started no new session, so this session is as it was.')
+    $.ui.log(await handBack($, 'Not folded: /clear started no new session, so this session is as it was.', direction))
     return
   }
   let unseen: string | undefined
@@ -212,12 +253,15 @@ async function carry($: EngineInterface, old: string, view: string): Promise<voi
       : `It holds no view, which was refused (${unseen}): have Claude run ai view.`
   if (carried.exitCode === 0) {
     $.ui.log(`Folded into a new session. ${carried.stdout.trim()} ${holds}`)
-    return
+  } else {
+    const why = carried.exitCode === NOT_ATTACHED ? `Session ${old} is attached to none now.` : carried.stderr.trim()
+    $.ui.log(
+      `Folded into a new session, which is attached to no agent: ai agent carry-session failed. ${why} ${holds} Attach it with /ai attach <name>.`,
+    )
   }
-  const why = carried.exitCode === NOT_ATTACHED ? `Session ${old} is attached to none now.` : carried.stderr.trim()
-  $.ui.log(
-    `Folded into a new session, which is attached to no agent: ai agent carry-session failed. ${why} ${holds} Attach it with /ai attach <name>.`,
-  )
+  const unready =
+    unseen !== undefined ? 'the new session holds no view' : carried.exitCode !== 0 ? 'it is attached to no agent' : undefined
+  await begin($, direction, unready)
 }
 
 /** A session whose thread's view `ai agent compact-session` built: its id, its `ai` arguments, and whether it is attached. */
@@ -246,9 +290,15 @@ async function build($: EngineInterface, cancelled: AbortSignal): Promise<Built 
  * there from the build `/fold` ran first. Attached to an agent, it prints `ai view` (the
  * memory's view, then the thread's) and hands it to `carry`, which goes on in a new session.
  * Attached to none, it prints `ai view` and runs `/compact`, which `session.compact` answers with
- * that text and the handoff after it. Returns why it folds nothing, else undefined.
+ * that text and the handoff after it. Either way the new session then starts on `direction`.
+ * Returns why it folds nothing, else undefined.
  */
-async function fold($: EngineInterface, written: string, cancelled: AbortSignal): Promise<string | undefined> {
+async function fold(
+  $: EngineInterface,
+  written: string,
+  direction: string,
+  cancelled: AbortSignal,
+): Promise<string | undefined> {
   folding = true
   let isCarried = false
   try {
@@ -259,10 +309,15 @@ async function fold($: EngineInterface, written: string, cancelled: AbortSignal)
     if (cancelled.aborted) return 'Not folded: cancelled.'
     if (built.isAttached) {
       isCarried = true
-      $.clock.after(0, () => carry($, built.old, shown.stdout).finally(() => (folding = false)))
+      $.clock.after(0, () => carry($, built.old, shown.stdout, direction).finally(() => (folding = false)))
     } else {
       await $.state.set(prepared, { view: shown.stdout, handoff: written })
-      $.clock.after(0, () => $.command.run({ command: 'compact' }))
+      $.clock.after(0, () =>
+        $.command.run({ command: 'compact' }).then(
+          () => begin($, direction),
+          async (err: unknown) => $.ui.log(await handBack($, `Not folded: /compact failed. ${String(err)}`, direction)),
+        ),
+      )
     }
     return undefined
   } finally {
@@ -396,7 +451,8 @@ export const register: Register = on => {
     await $.command.register({
       name: 'fold',
       description:
-        "ai: have Claude write a handoff, then go on in a new session that starts from your memory's view and the thread's, the handoff its newest turn; in a session attached to no agent, compact it to your memory's view and the handoff",
+        "ai: have Claude write a handoff, aimed at your direction when you give one, then go on in a new session that starts from your memory's view and the thread's, the handoff its newest turn, and starts on your direction; in a session attached to no agent, compact it to your memory's view and the handoff",
+      argumentHint: '[direction]',
     })
     await $.command.register({
       name: 'ai',
@@ -455,21 +511,23 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'fold' }, async ($, e, next) => {
-    if (e.args.trim() !== '') return { text: FOLD_USAGE }
-    if (folding) return { text: 'Not folded: a fold is under way.' }
+    const direction = e.args.trim()
+    if (folding) return { text: await handBack($, 'Not folded: a fold is under way.', direction) }
     const built = await build($, next.signal)
-    return 'failed' in built ? { text: built.failed } : request($)
+    return 'failed' in built ? { text: await handBack($, built.failed, direction) } : request($, direction)
   })
 
   on('turn.complete', async ($, e, next) => {
     const ended = await next(e)
-    if (e.agentId !== undefined || handoff?.turnId === undefined || e.turnId !== handoff.turnId) return ended
+    const asked = handoff
+    if (e.agentId !== undefined || asked?.turnId === undefined || e.turnId !== asked.turnId) return ended
     handoff = undefined
     if (e.reason !== 'answer' || e.answer.trim() === '') {
-      $.ui.log(`Not folded: ${UNWRITTEN[e.reason]}, so this session is as it was.`)
+      $.ui.log(await handBack($, `Not folded: ${UNWRITTEN[e.reason]}, so this session is as it was.`, asked.direction))
       return ended
     }
-    $.ui.log((await fold($, e.answer, next.signal)) ?? 'Folding.')
+    const failed = await fold($, e.answer, asked.direction, next.signal)
+    $.ui.log(failed === undefined ? 'Folding.' : await handBack($, failed, asked.direction))
     return ended
   })
 
@@ -497,7 +555,7 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
-      if (handoff !== undefined && handoff.turnId === undefined && e.text === REQUEST) handoff.turnId = e.turnId
+      if (handoff !== undefined && handoff.turnId === undefined && e.text === handoff.request) handoff.turnId = e.turnId
       return next(e)
     }
     const state = await recalled($)

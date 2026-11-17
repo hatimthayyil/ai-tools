@@ -8,7 +8,7 @@ import type {
   TurnCompleteReason,
 } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, Plugin } from 'claude-code/testing'
 
 const SESSION = 's1'
 const TRANSCRIPT = '/t/s1.jsonl'
@@ -50,9 +50,10 @@ const fold = ($: Engine, args = '') => run($, 'fold', args)
 const reply = ($: Engine, args = '') => run($, 'reply', args)
 const recall = ($: Engine, args: string) => run($, 'recall', args)
 
-/** The prompt box, answering each `$.prompt.fill` with `answer`'s result. */
-function box(on: On, answer: () => PromptFillResult = () => ({ isFilled: true })) {
+/** The prompt box, holding `typed.text` as the draft, answering each `$.prompt.fill` with `answer`'s result. */
+function box(on: On, answer: () => PromptFillResult = () => ({ isFilled: true }), typed = { text: '' }) {
   const fills: { text: string; mode: string }[] = []
+  on('prompt.read', async () => ({ value: { text: typed.text, cursor: typed.text.length } }))
   on('prompt.fill', async (_$, e) => {
     fills.push({ text: e.text, mode: e.mode })
     return answer()
@@ -72,8 +73,11 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
   const reads: string[] = []
   const submits: { text: string; context?: readonly string[]; origin: PromptOrigin }[] = []
   const submitting: { drop?: string } = {}
+  const reading = { fails: false }
   on('fs.read', async (_$, e) => {
     reads.push(e.path)
+    // The kit skips a hook that throws, so the read finds no implementation and rejects.
+    if (reading.fails) throw new Error('unreadable')
     return { value: e.path.endsWith('/prompts/fold.txt') ? INSTRUCTIONS : RECALL }
   })
   on('prompt.submit', async (_$, e) => {
@@ -116,7 +120,10 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
     compacts.push(e.trigger)
     return { messages: NATIVE }
   })
+  const compacting = { fails: false }
   on('command.run', { command: 'compact' }, async () => {
+    // The kit skips a hook that throws, so the run finds no implementation and rejects.
+    if (compacting.fails) throw new Error('refused')
     compacts.push('/compact')
     return {}
   })
@@ -139,10 +146,12 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
     killed,
     spawning,
     compacts,
+    compacting,
     renames,
     renaming,
     logs,
     reads,
+    reading,
     submits,
     submitting,
   }
@@ -182,27 +191,29 @@ function complete($: Engine, end: Ended) {
 }
 
 /**
- * The request for a handoff going in, its turn starting, then ending as `end` says, the clock
- * run on through the fold that follows while it builds the view once the transcript is flushed.
+ * The request for a handoff, `request`, going in, its turn starting, then ending as `end` says,
+ * the clock run on through the fold that follows while it builds the view once the transcript
+ * is flushed.
  */
-async function handOff($: Engine, world: World, end: Ended = WROTE) {
+async function handOff($: Engine, world: World, end: Ended = WROTE, request = REQUEST) {
   await world.clock.advance(0)
-  await $.turn.start({ text: REQUEST, turnId: HANDOFF_TURN })
+  await $.turn.start({ text: request, turnId: HANDOFF_TURN })
   const ended = complete($, end)
   await world.clock.advance(FLUSH_MS)
   await ended
 }
 
 /**
- * A typed `/fold` run through its handoff: the request, its turn ending as `end` says, then the
- * fold that follows. Returns what the typed run answered when it asked for no handoff, else what
- * the turn's end logged, taken out of the logs.
+ * A typed `/fold` with `direction` run through its handoff: the request, its turn ending as
+ * `end` says, then the fold that follows. Returns what the typed run answered when it asked for
+ * no handoff, else what the turn's end logged, taken out of the logs.
  */
-async function folded($: Engine, world: World, end: Ended = WROTE) {
-  const { text } = await ask($, world)
+async function folded($: Engine, world: World, end: Ended = WROTE, direction = '') {
+  const { text } = await ask($, world, direction)
   if (text !== ASKING) return text
   const before = world.logs.length
-  await handOff($, world, end)
+  const next = direction.trim()
+  await handOff($, world, end, next === '' ? REQUEST : `${REQUEST} Next: ${next}`)
   const logged = world.logs.splice(before, 1)[0]
   await world.clock.advance(0)
   return logged
@@ -241,9 +252,9 @@ function clearing(on: On, world: World) {
   return { clear, append, order, rows }
 }
 
-/** A `/fold` run to its end: its answer, then the session it carries on in attached. */
-async function carriedOn($: Engine, world: World) {
-  const text = await folded($, world)
+/** A `/fold` with `direction` run to its end: its answer, then the session it carries on in attached. */
+async function carriedOn($: Engine, world: World, direction = '') {
+  const text = await folded($, world, WROTE, direction)
   await world.clock.advance(FLUSH_MS)
   return text
 }
@@ -312,6 +323,7 @@ test('/fold, once the handoff is written, builds the view again once the transcr
     'Folding.',
     "Folded into a new session. Attached to dev. It holds your memory's view and the thread's.",
   ])
+  expect(world.submits).toHaveLength(1)
   expect(world.compacts).toEqual([])
   expect(await compact($)).toEqual(NATIVE)
 })
@@ -394,6 +406,22 @@ test('/fold says what failed, and what the session holds: the clear, the view or
   expect(world.compacts).toEqual([])
 })
 
+/** A plugin above ai's that cancels a `/fold` 5 s in, as Esc does, and logs what ai's run beneath answered. */
+const CANCELLING: Plugin = {
+  name: 'cancel',
+  tier: 'prepend',
+  register(on) {
+    on('command.run', { command: 'fold' }, async ($, e, next) => {
+      void next(e).then(
+        ({ text }) => $.ui.log(`beneath: ${text}`),
+        (err: unknown) => $.ui.log(`beneath threw: ${String(err)}`),
+      )
+      await $.clock.sleep(5_000)
+      return { text: 'Cancelled.' }
+    })
+  },
+}
+
 test('a /clear of your own carries nothing into the new session', async ($, on) => {
   const world = engine(on, carried)
   const cleared = clearing(on, world)
@@ -409,24 +437,7 @@ test('a /clear of your own carries nothing into the new session', async ($, on) 
 
 test(
   'cancelling /fold stops ai agent compact-session and asks for no handoff',
-  {
-    plugins: [
-      {
-        name: 'cancel',
-        tier: 'prepend',
-        register(on) {
-          on('command.run', { command: 'fold' }, async ($, e, next) => {
-            void next(e).then(
-              ({ text }) => $.ui.log(`beneath: ${text}`),
-              (err: unknown) => $.ui.log(`beneath threw: ${String(err)}`),
-            )
-            await $.clock.sleep(5_000)
-            return { text: 'Cancelled.' }
-          })
-        },
-      },
-    ],
-  },
+  { plugins: [CANCELLING] },
   async ($, on) => {
     const world = engine(on, views)
     world.spawning.hangs = true
@@ -604,6 +615,207 @@ test('a turn other than the handoff’s folds nothing', async ($, on) => {
   expect(world.logs).toEqual([])
 })
 
+const DIRECTION = 'carry on with  the fix pass, $& and all'
+
+test('/fold with a direction asks for a handoff aimed at it, then starts the new session on it as your words', async ($, on) => {
+  const world = engine(on, carried)
+  const cleared = clearing(on, world)
+  await start($, 'resume')
+  expect(await carriedOn($, world, ` ${DIRECTION} `)).toBe('Folding.')
+  expect(world.submits).toEqual([
+    { text: `${REQUEST} Next: ${DIRECTION}`, context: undefined, origin: OWN },
+    { text: DIRECTION, context: undefined, origin: OWN },
+  ])
+  expect(cleared.rows).toEqual([WOKE])
+  expect(world.logs).toEqual(["Folded into a new session. Attached to dev. It holds your memory's view and the thread's."])
+})
+
+test('a direction the new session cannot start on is left in the prompt box, and says why', async ($, on) => {
+  let attach: Answer = [0, 'Attached to dev.\n', '']
+  const world = engine(on, args => (sub(args) === 'carry-session' ? attach : views(args)))
+  const cleared = clearing(on, world)
+  const fills = box(on)
+  await start($, 'resume')
+
+  cleared.append.deny = 'no notes here'
+  expect(await carriedOn($, world, DIRECTION)).toBe('Folding.')
+  expect(world.logs.splice(0)[1]).toBe('Not started on your direction: the new session holds no view. Your direction is in the prompt box.')
+
+  cleared.append.deny = undefined
+  cleared.clear.starts = 's3'
+  attach = [1, '', 'Cannot lock the agents.\n']
+  expect(await carriedOn($, world, DIRECTION)).toBe('Folding.')
+  expect(world.logs.splice(0)[1]).toBe('Not started on your direction: it is attached to no agent. Your direction is in the prompt box.')
+
+  cleared.clear.starts = 's4'
+  attach = [0, 'Attached to dev.\n', '']
+  expect(await folded($, world, WROTE, DIRECTION)).toBe('Folding.')
+  world.submitting.drop = 'a Stop stands'
+  await world.clock.advance(FLUSH_MS)
+  expect(world.logs.splice(0)[1]).toBe('Not started on your direction: a Stop stands. Your direction is in the prompt box.')
+  expect(fills).toEqual(Array(3).fill({ text: DIRECTION, mode: 'replace' }))
+  expect(world.submits.map(s => s.text)).toEqual([
+    `${REQUEST} Next: ${DIRECTION}`,
+    `${REQUEST} Next: ${DIRECTION}`,
+    `${REQUEST} Next: ${DIRECTION}`,
+    DIRECTION,
+  ])
+})
+
+test('a direction left where no prompt box takes it is named in the log', async ($, on) => {
+  const world = engine(on, carried)
+  const cleared = clearing(on, world)
+  box(on, () => ({ isFilled: false, refusal: 'no_composer' }))
+  await start($, 'resume')
+  cleared.append.deny = 'no notes here'
+  expect(await carriedOn($, world, DIRECTION)).toBe('Folding.')
+  expect(world.logs.at(-1)).toBe(`Not started on your direction: the new session holds no view. The prompt box would not take your direction, which was: ${DIRECTION}`)
+})
+
+const BACK = 'Your direction is in the prompt box.'
+
+test('a /fold whose first build fails hands its direction back; a bare one fills nothing', async ($, on) => {
+  const world = engine(on, () => [1, '', 'Cannot commit ~/ai/projects/repo: index.lock exists\n'])
+  const fills = box(on)
+  await start($, 'resume')
+  expect((await ask($, world, ` ${DIRECTION} `)).text).toBe(
+    `Not folded: Cannot commit ~/ai/projects/repo: index.lock exists. ${BACK}`,
+  )
+  expect((await ask($, world)).text).toBe('Not folded: Cannot commit ~/ai/projects/repo: index.lock exists')
+  expect(fills).toEqual([{ text: DIRECTION, mode: 'replace' }])
+  expect(world.submits).toEqual([])
+})
+
+test('a direction handed back goes after what you typed since, and is written out whole where no box takes it', async ($, on) => {
+  const world = engine(on, () => [1, '', 'Failed.\n'])
+  const filling = { takes: true }
+  const fills = box(on, () => (filling.takes ? { isFilled: true } : { isFilled: false, refusal: 'dialog' }), {
+    text: 'my own draft',
+  })
+  await start($, 'resume')
+  expect((await ask($, world, DIRECTION)).text).toBe(`Not folded: Failed. ${BACK}`)
+  expect(fills).toEqual([{ text: `\n\n${DIRECTION}`, mode: 'append' }])
+  filling.takes = false
+  expect((await ask($, world, DIRECTION)).text).toBe(
+    `Not folded: Failed. The prompt box would not take your direction, which was: ${DIRECTION}`,
+  )
+})
+
+test('cancelling /fold with a direction hands it back', { plugins: [CANCELLING] }, async ($, on) => {
+  const world = engine(on, views)
+  const fills = box(on)
+  world.spawning.hangs = true
+  await start($, 'resume')
+  const ran = fold($, DIRECTION)
+  await world.clock.advance(FLUSH_MS + 5_000)
+  expect((await ran).text).toBe('Cancelled.')
+  await world.clock.advance(0)
+  expect(world.logs).toEqual([`beneath: Not folded: cancelled. ${BACK}`])
+  expect(fills).toEqual([{ text: DIRECTION, mode: 'replace' }])
+})
+
+test('/fold with a direction while a fold runs, or when it cannot read its instructions, hands the direction back', async ($, on) => {
+  const world = engine(on, carried)
+  clearing(on, world)
+  const fills = box(on)
+  await start($, 'resume')
+  expect((await ask($, world)).text).toBe(ASKING)
+  await world.clock.advance(0)
+  await $.turn.start({ text: REQUEST, turnId: HANDOFF_TURN })
+  const ended = complete($, WROTE)
+  await world.clock.advance(0)
+  expect((await fold($, DIRECTION)).text).toBe(`Not folded: a fold is under way. ${BACK}`)
+  await world.clock.advance(FLUSH_MS)
+  await ended
+  await world.clock.advance(FLUSH_MS)
+  expect(world.logs).toEqual([
+    'Folding.',
+    "Folded into a new session. Attached to dev. It holds your memory's view and the thread's.",
+  ])
+
+  world.reading.fails = true
+  expect((await ask($, world, DIRECTION)).text).toMatch(/^Not folded: .+\. Your direction is in the prompt box\.$/)
+  expect(fills).toEqual(Array(2).fill({ text: DIRECTION, mode: 'replace' }))
+  expect(world.submits.map(s => s.text)).toEqual([REQUEST])
+})
+
+test('a refused request for a handoff with a direction hands the direction back', async ($, on) => {
+  const world = engine(on, carried)
+  const fills = box(on)
+  await start($, 'resume')
+  world.submitting.drop = 'a Stop stands'
+  expect((await ask($, world, DIRECTION)).text).toBe(ASKING)
+  await world.clock.advance(0)
+  expect(world.logs).toEqual([
+    `Not folded: the request for a handoff was refused (a Stop stands), so this session is as it was. ${BACK}`,
+  ])
+  expect(fills).toEqual([{ text: DIRECTION, mode: 'replace' }])
+})
+
+test('a handoff turn with a direction that writes no handoff hands the direction back', async ($, on) => {
+  const world = engine(on, carried)
+  clearing(on, world)
+  const fills = box(on)
+  await start($, 'resume')
+  const ends: Ended[] = [
+    { reason: 'aborted', answer: '' },
+    { reason: 'refusal', answer: '' },
+    { reason: 'error', answer: '' },
+    { reason: 'answer', answer: ' \n' },
+  ]
+  const said: (string | undefined)[] = []
+  for (const end of ends) said.push(await folded($, world, end, DIRECTION))
+  expect(said).toEqual([
+    `Not folded: the handoff was stopped, so this session is as it was. ${BACK}`,
+    `Not folded: the model refused to write the handoff, so this session is as it was. ${BACK}`,
+    `Not folded: the handoff turn failed, so this session is as it was. ${BACK}`,
+    `Not folded: the handoff turn ended with no answer, so this session is as it was. ${BACK}`,
+  ])
+  expect(fills).toEqual(Array(4).fill({ text: DIRECTION, mode: 'replace' }))
+})
+
+test('a fold with a direction that fails after its handoff hands the direction back: the view, the clear', async ($, on) => {
+  let view: Answer = [1, '', 'memory locked\n']
+  const world = engine(on, args => (sub(args) === 'view' ? view : carried(args)))
+  const cleared = clearing(on, world)
+  const fills = box(on)
+  await start($, 'resume')
+  expect(await folded($, world, WROTE, DIRECTION)).toBe(`Not folded: memory locked. ${BACK}`)
+
+  view = [0, WOKE, '']
+  cleared.clear.fails = true
+  expect(await carriedOn($, world, DIRECTION)).toBe('Folding.')
+  expect(world.logs.pop()).toMatch(/^Not folded: \/clear failed, so this session is as it was\. .+ Your direction is in the prompt box\.$/)
+  cleared.clear.fails = false
+  cleared.clear.starts = SESSION
+  expect(await carriedOn($, world, DIRECTION)).toBe('Folding.')
+  expect(world.logs.pop()).toBe(`Not folded: /clear started no new session, so this session is as it was. ${BACK}`)
+  expect(fills).toEqual(Array(3).fill({ text: DIRECTION, mode: 'replace' }))
+  expect(world.submits.map(s => s.text)).toEqual(Array(3).fill(`${REQUEST} Next: ${DIRECTION}`))
+  expect(world.logs).toEqual([])
+})
+
+test('a /compact that fails in an unattached session hands the direction back', async ($, on) => {
+  const world = engine(on, unattached)
+  const fills = box(on)
+  await start($, 'resume')
+  world.compacting.fails = true
+  expect(await folded($, world, WROTE, DIRECTION)).toBe('Folding.')
+  await world.clock.advance(0)
+  expect(world.logs).toHaveLength(1)
+  expect(world.logs[0]).toMatch(/^Not folded: \/compact failed\. .+ Your direction is in the prompt box\.$/)
+  expect(fills).toEqual([{ text: DIRECTION, mode: 'replace' }])
+  expect(world.submits.map(s => s.text)).toEqual([`${REQUEST} Next: ${DIRECTION}`])
+})
+
+test('/fold with a direction in an unattached session compacts it, then starts on the direction', async ($, on) => {
+  const world = engine(on, unattached)
+  await start($, 'resume')
+  expect(await folded($, world, WROTE, DIRECTION)).toBe('Folding.')
+  expect(world.compacts).toEqual(['/compact'])
+  expect(world.submits.map(s => s.text)).toEqual([`${REQUEST} Next: ${DIRECTION}`, DIRECTION])
+})
+
 test('/ai attach and detach run ai agent with the session and show its answer', async ($, on) => {
   const world = engine(on, args =>
     sub(args) === 'detach' ? [1, '', 'This session is not attached to an agent.\n'] : attaching(args),
@@ -674,16 +886,12 @@ test('a /rename that fails after /ai attach is logged', async ($, on) => {
   expect(world.logs).toEqual([expect.stringMatching(/^ai: \/rename repo\.dev failed: /)])
 })
 
-test('/ai alone prints its usage, /fold with words after it says it takes none, and neither folds', async ($, on) => {
+test('/ai alone prints its usage and runs nothing', async ($, on) => {
   const world = engine(on, views)
   await start($, 'resume')
   expect((await ai($, '')).text).toBe('Usage: /ai new <name> | /ai attach <name> | /ai detach')
   expect((await ai($, '  ')).text).toMatch(/^Usage: \/ai new/)
-  expect((await fold($, 'now')).text).toBe('/fold takes no arguments.')
-  await world.clock.advance(FLUSH_MS)
   expect(world.calls).toEqual([])
-  expect(world.compacts).toEqual([])
-  expect(await compact($)).toEqual(NATIVE)
 })
 
 test('/reply is a command that runs mid-turn', async ($, on) => {
