@@ -368,10 +368,10 @@ fn a_project_s_provider_gets_no_key_set_for_another() {
     .unwrap();
     let s = t.load().summariser().unwrap();
     for model in [None, Some("heabsy/other")] {
-        let err = format!("{:#}", s.backend(model, &calls).err().unwrap());
+        let err = ai_tools::error::line(&s.backend(model, &calls).err().unwrap());
         assert!(err.contains("Set HEABSY_API_KEY"), "{err}");
     }
-    let err = format!("{:#}", s.check().unwrap_err());
+    let err = ai_tools::error::line(&s.check().unwrap_err());
     assert!(err.contains("Set HEABSY_API_KEY"), "{err}");
     assert!(!ran.exists(), "deepseek's command ran for another provider");
 
@@ -382,8 +382,8 @@ fn a_project_s_provider_gets_no_key_set_for_another() {
     .unwrap();
     let s = t.load().summariser().unwrap();
     for err in [
-        format!("{:#}", s.backend(None, &calls).err().unwrap()),
-        format!("{:#}", s.check().unwrap_err()),
+        ai_tools::error::line(&s.backend(None, &calls).err().unwrap()),
+        ai_tools::error::line(&s.check().unwrap_err()),
     ] {
         assert!(err.starts_with("Cannot start the witness"), "{err}");
         assert!(err.contains("Set HEABSY_API_KEY"), "{err}");
@@ -447,7 +447,7 @@ fn settings_that_can_make_no_backend_are_found_without_running_anything() {
     ] {
         fs::write(t.user(), text).unwrap();
         let read = t.load().summariser();
-        let err = format!("{:#}", read.as_ref().unwrap().check().unwrap_err());
+        let err = ai_tools::error::line(&read.as_ref().unwrap().check().unwrap_err());
         assert!(err.contains(says), "{text}: {err}");
         assert!(summariser::usable(read).is_none());
     }

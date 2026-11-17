@@ -12,6 +12,7 @@ use tracing::{Span, dispatcher, error, info, info_span, warn};
 
 use crate::{
     config::Settings,
+    error,
     file::pretty,
     git::hash,
     memory::{
@@ -462,7 +463,7 @@ fn build_cmd(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
-            error!(error = format!("{e:#}"), "failed");
+            error!(error = error::line(&e), "failed");
             Err(e.context(
                 "Summaries stay out of date; the summariser after the next change tries again",
             ))

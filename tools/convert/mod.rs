@@ -24,6 +24,7 @@ use std::{
 use ai_tools::{
     agent::{AGENTS, DIR, ITEMS, LINES, Store, THREADS},
     config::{FILE, Homes},
+    error,
     file::{self, AtPath, pretty, sha256},
     project::{OLD_STORE, PROJECTS, Project},
     repo,
@@ -87,7 +88,7 @@ impl Cli {
                 }
                 Err(e) => {
                     failed = true;
-                    eprintln!("{}: {e:#}", dir.display());
+                    eprintln!("{}: {}", dir.display(), error::line(&e));
                 }
             }
         }

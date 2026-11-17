@@ -134,7 +134,7 @@ fn run_rt(dir: &Path, rt: &Runtime, args: &[&str]) -> Out {
         Err(e) => Out {
             code: 1,
             stdout,
-            stderr: format!("{e:#}"),
+            stderr: ai_tools::error::line(&e),
         },
     }
 }

@@ -601,7 +601,7 @@ mod tests {
         let e = store
             .detach_with("claude", "s-1", |_, _, _| bail!("unreadable"))
             .unwrap_err();
-        let e = format!("{e:#}");
+        let e = crate::error::line(&e);
         assert!(
             e.contains("Detached from dev without its newest entries"),
             "{e}"
@@ -626,7 +626,7 @@ mod tests {
         let e = store
             .carry_with("claude", "s-1", "s-2", None, |_, _, _| bail!("unreadable"))
             .unwrap_err();
-        let e = format!("{e:#}");
+        let e = crate::error::line(&e);
         assert!(
             e.contains("Attached to dev without the newest entries of session s-1: unreadable"),
             "{e}"

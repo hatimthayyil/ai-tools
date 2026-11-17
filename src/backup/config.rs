@@ -26,6 +26,7 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 
 use crate::{
     config::{self, FILE, Homes},
+    error,
     file::pretty,
 };
 
@@ -87,13 +88,15 @@ impl Config {
         let file = homes.machine.join(FILE);
         config::backup(&file)?
             .resolve(homes)
-            .map_err(|e| anyhow!("{}: [backup] {e}", pretty(&file)))
+            .map_err(|e| anyhow!("{}: [backup] {}", pretty(&file), error::line(&e)))
     }
 }
 
 impl Table {
     fn resolve(self, homes: &Homes) -> Result<Config> {
-        let path = |key: &str, v: &str| expand(v, &homes.home).map_err(|e| anyhow!("{key}: {e}"));
+        let path = |key: &str, v: &str| {
+            expand(v, &homes.home).map_err(|e| anyhow!("{key}: {}", error::line(&e)))
+        };
         Ok(Config {
             repository: match &self.repository {
                 Some(r) => path("repository", r)?,
@@ -177,7 +180,7 @@ mod tests {
     }
 
     fn error(text: &str) -> String {
-        format!("{:#}", config(text).unwrap_err())
+        crate::error::line(&config(text).unwrap_err())
     }
 
     #[test]

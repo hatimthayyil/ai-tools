@@ -22,6 +22,7 @@ use crate::{
         store::{Mark, Snapshot, Store, Thread},
     },
     config::Settings,
+    error,
     memory::{Backend, Block, JOBS, Spend, TRIES, Who, limit, log, write_line},
     progress::{Level, Progress},
     summariser,
@@ -697,7 +698,7 @@ impl<'t, 'o> Run<'t, 'o> {
                     .built(k.level, &roll.id(k), took, chars, spent.all.cost)?;
             }
             Err(e) => {
-                let error = format!("{e:#}");
+                let error = error::line(&e);
                 log::spend!(warn, spent, { line = %k, error, secs }, "failed");
                 self.progress.failed(&roll.id(k), &error, spent.all.cost)?;
                 self.failed.insert(k);

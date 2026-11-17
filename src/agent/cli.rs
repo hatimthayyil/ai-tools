@@ -30,6 +30,7 @@ use crate::{
     },
     backup,
     config::{FILE, Homes},
+    error,
     file::{self, AtPath},
     memory::{Backend, Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page,
@@ -358,7 +359,7 @@ fn committing<T>(cwd: &Path, msg: &str, op: impl FnOnce() -> Result<T>) -> Resul
         (Ok(_), Err(e)) => Err(e),
         (Err(e), Ok(())) => Err(e),
         (Err(e), Err(c)) => {
-            eprintln!("{c}");
+            eprintln!("{}", error::line(&c));
             Err(e)
         }
     }
@@ -678,12 +679,13 @@ fn rename(cwd: &Path, out: &mut dyn Write, old: &str, new: &str) -> Result<ExitC
                     }
                 }
                 Err(e) => eprintln!(
-                    "Cannot tell whether agent {new}'s sessions are running: {e:#}. One that \
-                     runs keeps its old name. {named}"
+                    "Cannot tell whether agent {new}'s sessions are running: {}. One that \
+                     runs keeps its old name. {named}",
+                    error::line(&e)
                 ),
             }
         }
-        Err(e) => eprintln!("{e:#}"),
+        Err(e) => eprintln!("{}", error::line(&e)),
     }
     mentions(&store, old, |by| match by {
         None => format!("[agents.{old}] no longer applies here: {new} reads [agents.{new}]."),
@@ -776,7 +778,12 @@ fn refuse_running(store: &Store, name: &str, sessions: &[(String, String)]) -> R
     let running: Vec<String> = store
         .thread(name)
         .and_then(|t| running(&t, sessions))
-        .map_err(|e| anyhow!("Cannot tell whether agent {name}'s sessions are running: {e:#}."))?
+        .map_err(|e| {
+            anyhow!(
+                "Cannot tell whether agent {name}'s sessions are running: {}.",
+                error::line(&e)
+            )
+        })?
         .into_iter()
         .map(|(s, title)| match title {
             Some(title) => format!("{} {s} ({title})", claude::HARNESS),
@@ -804,7 +811,7 @@ fn mentions(store: &Store, name: &str, say: impl Fn(Option<&str>) -> String) {
                 eprintln!("{at}: {}", say(m.by.as_deref()));
             }
         }
-        Err(e) => eprintln!("Cannot check the settings for {name}: {e}"),
+        Err(e) => eprintln!("Cannot check the settings for {name}: {}", error::line(&e)),
     }
 }
 
@@ -819,9 +826,12 @@ fn instructions(store: &Store, name: &str) -> Result<Option<String>> {
     paths
         .iter()
         .map(|p| {
-            fs::read_to_string(p)
-                .at(p)
-                .map_err(|e| anyhow!("Cannot read agent {name}'s instructions: {e}"))
+            fs::read_to_string(p).at(p).map_err(|e| {
+                anyhow!(
+                    "Cannot read agent {name}'s instructions: {}",
+                    error::line(&e)
+                )
+            })
         })
         .collect::<Result<Vec<_>>>()
         .map(|texts| Some(texts.join("\n\n")))
@@ -956,7 +966,11 @@ fn resume(cwd: &Path, name: &str, args: &[String]) -> Result<ExitCode> {
             Some(_) => match put_back(&store, &t, b) {
                 Ok(true) => return resume(cwd, name, args),
                 Ok(false) => format!("the transcript of session {} is gone", b.session),
-                Err(e) => format!("the transcript of session {} is gone, and {e:#}", b.session),
+                Err(e) => format!(
+                    "the transcript of session {} is gone, and {}",
+                    b.session,
+                    error::line(&e)
+                ),
             },
             None => format!("session {} has no transcript", b.session),
         },
@@ -1117,7 +1131,10 @@ fn sync_session(cwd: &Path, s: Session) -> Result<ExitCode> {
 fn end_session(cwd: &Path, s: Session) -> Result<ExitCode> {
     let synced = sync_session(cwd, s);
     if let Err(e) = Homes::user().and_then(|h| crate::backup::at_session_end(&h)) {
-        eprintln!("The session's end started no backup run: {e:#}");
+        eprintln!(
+            "The session's end started no backup run: {}",
+            error::line(&e)
+        );
     }
     synced
 }
@@ -1383,7 +1400,7 @@ impl Reply {
 /// error ends with how to quote part of an answer.
 fn reply(cwd: &Path, out: &mut dyn Write, args: &[String], s: Session) -> Result<ExitCode> {
     use super::reply::{PART, Ref, Which, Whose, quote, split};
-    let hint = |e: anyhow::Error| anyhow!("{e:#} {PART}");
+    let hint = |e: anyhow::Error| anyhow!("{} {PART}", error::line(&e));
     let refs = match split(args) {
         refs if refs.is_empty() => vec![""],
         refs => refs,
@@ -1410,7 +1427,8 @@ fn reply(cwd: &Path, out: &mut dyn Write, args: &[String], s: Session) -> Result
     let branch = match attached_branch(cwd, &c) {
         Err(e) if !numbered => {
             eprintln!(
-                "ai reply read this session's transcript alone, as it cannot read this project's agents: {e:#}"
+                "ai reply read this session's transcript alone, as it cannot read this project's agents: {}",
+                error::line(&e)
             );
             None
         }

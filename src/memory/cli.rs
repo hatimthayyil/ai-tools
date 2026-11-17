@@ -12,6 +12,7 @@ use tracing::{info, info_span};
 
 use crate::{
     config::{self as settings, Settings},
+    error,
     file::{AtPath, pretty},
     memory::{
         backend::MakeBackend,
@@ -404,7 +405,7 @@ impl Cli {
         let error = match &r {
             Ok(c) if *c == ExitCode::SUCCESS => None,
             Ok(_) => Some("exit 1".into()),
-            Err(e) => Some(format!("{e:#}")),
+            Err(e) => Some(error::line(e)),
         };
         let _ = usage::record(dir, &Use::new(cmd, args, &place, &who, &out, error));
         if quiet { Ok(ExitCode::SUCCESS) } else { r }
@@ -708,7 +709,7 @@ fn build(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     let Some(g) = e.downcast_ref::<GaveUp>() else {
-        log::spend!(error, spent, { error = format!("{e:#}") }, "failed");
+        log::spend!(error, spent, { error = error::line(&e) }, "failed");
         return Err(e);
     };
     log::spend!(error, spent, { node = %g.node, tries = g.tries, error = g.error }, "gave up");

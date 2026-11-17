@@ -14,14 +14,17 @@ use anyhow::{Result, bail};
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use tracing::{Span, dispatcher, warn};
 
-use crate::memory::{
-    backend::{Backend, Block, Conversation, Usage},
-    log,
-    record::{Message, Who, flat},
-    store::Store,
-    tree::{Coord, WORDS, limit},
-    view::{Mem, VIEW},
-    witness::settle,
+use crate::{
+    error,
+    memory::{
+        backend::{Backend, Block, Conversation, Usage},
+        log,
+        record::{Message, Who, flat},
+        store::Store,
+        tree::{Coord, WORDS, limit},
+        view::{Mem, VIEW},
+        witness::settle,
+    },
 };
 
 pub const COMPACT: &str = include_str!("prompts/compact.txt");
@@ -463,7 +466,7 @@ impl<'s> Compactor<'s> {
                 self.built += 1;
             }
             Err(e) => {
-                let error = format!("{e:#}");
+                let error = error::line(&e);
                 let first = !self.failed.contains_key(&c);
                 let (backoff, fails) = self
                     .failed

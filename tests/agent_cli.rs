@@ -994,7 +994,10 @@ fn reply_reads_a_transcript_not_written_yet_as_a_session_with_no_replies() {
     let dir = s.root.join("out");
     fails(
         reply(&dir, &[]),
-        &format!("Cannot read {}.\n", dir.display()),
+        &format!(
+            "Cannot read {}. Is a directory (os error 21)\n",
+            dir.display()
+        ),
     );
 }
 
@@ -3018,6 +3021,33 @@ fn a_turns_sync_waits_for_the_next_event_to_be_committed() {
     }
     s.ai(&["resume", "dev"]);
     assert_eq!(top(), "ai agent resume dev");
+}
+
+#[test]
+fn a_commit_a_stale_git_lock_stops_names_the_lock_on_one_line() {
+    let s = Sandbox::new();
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    let lock = s.homes().repo.join(".git/index.lock");
+    fs::write(&lock, "").unwrap();
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    let o = s.ai_in("s-1", &["attach", "dev"]);
+    let e = stderr(&o);
+    assert_eq!(code(&o), 1, "{e}");
+    assert!(e.starts_with("Cannot commit ~/ai/projects/repo: "), "{e}");
+    assert!(
+        e.contains(&format!("The lockfile at '{}'", lock.display())),
+        "every cause is told: {e}"
+    );
+    assert_eq!(e.lines().count(), 1, "{e}");
+    assert_eq!(
+        e.matches("File exists").count(),
+        1,
+        "a cause is told once: {e}"
+    );
+    assert!(!e.contains(".rs:"), "no source locations: {e}");
 }
 
 #[test]

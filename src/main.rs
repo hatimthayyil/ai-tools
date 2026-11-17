@@ -57,7 +57,7 @@ fn main() -> ExitCode {
         Command::Convert(cli) => cli.exec(),
     };
     result.unwrap_or_else(|e| {
-        eprintln!("{e}");
+        eprintln!("{}", ai_tools::error::line(&e));
         ExitCode::FAILURE
     })
 }

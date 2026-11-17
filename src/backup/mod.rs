@@ -51,6 +51,7 @@ use self::{
 use crate::{
     command::{self, LIMIT},
     config::Homes,
+    error,
     file::{self, AtPath, human, pretty},
 };
 
@@ -345,7 +346,7 @@ fn gather(homes: &Homes, cfg: &Config, problems: &mut Vec<String>) -> Result<Vec
             }
             true => {
                 if let Err(e) = db::stage(&staging, &at) {
-                    problems.push(format!("{e:#}"));
+                    problems.push(error::line(&e));
                 }
             }
         }
@@ -376,7 +377,7 @@ pub fn run(homes: &Homes, out: &mut dyn Write) -> Result<()> {
             state.ok = Some(now);
             state.error = None;
         }
-        Err(e) => state.error = Some(format!("{e:#}")),
+        Err(e) => state.error = Some(error::line(e)),
     }
     state.save(&file)?;
     result
@@ -424,7 +425,7 @@ fn attempt(homes: &Homes, state: &mut State, out: &mut dyn Write) -> Result<()> 
         if state.copied.as_ref() != Some(&now) {
             match copy(r, &local, &now.remote, out) {
                 Ok(()) => state.copied = Some(now),
-                Err(e) => problems.push(format!("{e:#}")),
+                Err(e) => problems.push(error::line(&e)),
             }
         }
     }
@@ -468,7 +469,7 @@ pub fn watch(homes: &Homes, out: &mut dyn Write, err: &mut dyn Write) -> Result<
     loop {
         let every = Config::load(homes)?.every;
         if let Err(e) = run(homes, out) {
-            writeln!(err, "{e:#}")?;
+            writeln!(err, "{}", error::line(&e))?;
         }
         thread::sleep(every);
     }

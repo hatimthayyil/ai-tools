@@ -7,6 +7,7 @@ use super::{Options, Outcome, Report, convert, describe, kept, skipped};
 use ai_tools::{
     agent::{Store, Synced},
     config::Homes,
+    error,
     project::Project,
 };
 use serde_json::{Value, json};
@@ -557,11 +558,8 @@ fn a_segment_out_of_order_stops_the_conversion() {
     let o = Old::new();
     let items = o.local().join("agents/threads/dev/items.jsonl");
     fs::remove_file(items.join("000000.jsonl")).unwrap();
-    let e = o.convert(false).unwrap_err();
-    assert!(
-        format!("{e:#}").contains("its segments are not numbered from 0"),
-        "{e:#}"
-    );
+    let e = error::line(&o.convert(false).unwrap_err());
+    assert!(e.contains("its segments are not numbered from 0"), "{e}");
     assert!(!o.folder().exists());
 }
 

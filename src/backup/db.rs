@@ -121,7 +121,7 @@ mod tests {
             "not a database, but long enough to have a header to misread",
         )
         .unwrap();
-        let e = format!("{:#}", stage(&root.join("staging"), &db).unwrap_err());
+        let e = crate::error::line(&stage(&root.join("staging"), &db).unwrap_err());
         assert!(e.contains("state.db"), "{e}");
     }
 }

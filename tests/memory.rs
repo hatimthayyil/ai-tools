@@ -105,7 +105,7 @@ fn run_rt(dir: &Path, rt: &Runtime, args: &[&str]) -> Out {
         Err(e) => Out {
             code: 1,
             stdout,
-            stderr: format!("{e:#}"),
+            stderr: ai_tools::error::line(&e),
         },
     }
 }
@@ -1973,7 +1973,7 @@ fn the_hook_reminds_on_long_prompts_only_and_never_fails() {
     );
     assert_eq!(
         log[3]["error"],
-        "Not a hook input with a prompt.: EOF while parsing a value at line 1 column 0"
+        "Not a hook input with a prompt. EOF while parsing a value at line 1 column 0"
     );
     assert_eq!(log[1]["lines"], 1);
     let r = run(&d, &["stats"]);

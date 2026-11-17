@@ -17,6 +17,7 @@ use super::{host, read::Backup};
 use crate::{
     agent::{self, Version},
     config::Homes,
+    error,
     file::{human, pretty},
     memory::plural,
 };
@@ -100,7 +101,7 @@ pub fn check(homes: &Homes, out: &mut dyn Write, err: &mut dyn Write) -> Result<
         let versions = match versions {
             Ok(v) => v,
             Err(e) => {
-                writeln!(err, "{e:#}")?;
+                writeln!(err, "{}", error::line(e))?;
                 failed = true;
                 continue;
             }

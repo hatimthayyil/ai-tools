@@ -1181,10 +1181,10 @@ fn corrupt_records_are_errors_naming_thread_and_record() {
             "items.jsonl" => s.tree().map(|_| ()).unwrap_err(),
             _ => s.binding("claude", "s-1").map(|_| ()).unwrap_err(),
         };
-        let e = format!("{e:#}");
+        let e = ai_tools::error::line(&e);
         assert!(e.contains("Thread dev") && e.contains(want), "{file}: {e}");
         if file != "agents.jsonl" {
-            let e = format!("{:#}", store.list().unwrap_err());
+            let e = ai_tools::error::line(&store.list().unwrap_err());
             assert!(e.contains("Thread dev") && e.contains(want), "{file}: {e}");
         }
     }

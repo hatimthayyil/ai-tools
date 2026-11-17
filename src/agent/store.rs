@@ -23,6 +23,7 @@ use crate::{
     },
     backup,
     config::{Homes, Settings},
+    error,
     file::{self, AtPath, human, pretty},
     jsonl,
     memory::{CALLS, Who},
@@ -78,7 +79,7 @@ pub(super) fn gc(homes: &Homes, settings: &Settings) {
     let limit = match settings.agent_table() {
         Ok(t) => t.gc_after(),
         Err(e) => {
-            eprintln!("Cannot pack {}: {e:#}", pretty(&homes.repo));
+            eprintln!("Cannot pack {}: {}", pretty(&homes.repo), error::line(&e));
             return;
         }
     };
@@ -94,7 +95,7 @@ pub(super) fn gc(homes: &Homes, settings: &Settings) {
                 );
             }
         }
-        Err(e) => eprintln!("Cannot pack {}: {e:#}", pretty(&homes.repo)),
+        Err(e) => eprintln!("Cannot pack {}: {}", pretty(&homes.repo), error::line(&e)),
     }
 }
 
@@ -446,8 +447,9 @@ impl Store {
         }
         if let Err(e) = from.move_log(&to) {
             eprintln!(
-                "Agent {old} is now {new}, but its summariser's log stayed at {}: {e:#}",
-                pretty(&from.log_path())
+                "Agent {old} is now {new}, but its summariser's log stayed at {}: {}",
+                pretty(&from.log_path()),
+                error::line(&e)
             );
         }
         Ok(to)
@@ -491,8 +493,9 @@ impl Store {
         file::rename_new(&t.dir, &copy.path().join(name)).at(&t.dir)?;
         if let Err(e) = t.retire_log() {
             eprintln!(
-                "Agent {name} is removed, but its summariser's log stayed at {}: {e:#}",
-                pretty(&t.log_path())
+                "Agent {name} is removed, but its summariser's log stayed at {}: {}",
+                pretty(&t.log_path()),
+                error::line(&e)
             );
         }
         Ok(Removed {
@@ -638,7 +641,7 @@ impl Store {
                     newest: heads.into_iter().last(),
                     turns,
                     sessions,
-                    sources: snap.versions().map_err(|e| format!("{e:#}")),
+                    sources: snap.versions().map_err(|e| error::line(&e)),
                 })
             })
             .collect::<Result<Vec<_>>>()?;

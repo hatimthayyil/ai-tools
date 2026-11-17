@@ -1139,7 +1139,7 @@ fn ai_toml_sets_the_model_and_switches_the_summariser_off() {
         format!("{project}\n[chat]\nbackground = \"maybe\"\n"),
     )
     .unwrap();
-    let err = format!("{:#}", store.config().unwrap_err());
+    let err = ai_tools::error::line(&store.config().unwrap_err());
     assert!(
         err.contains("ai.toml: ") && err.contains("background = \"maybe\""),
         "{err}"

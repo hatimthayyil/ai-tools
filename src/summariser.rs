@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, de::Error};
 
 use crate::{
     config::positive,
+    error,
     memory::{Api, Backend, ClaudeCode, JOBS, MakeBackend, Provider, Witnessed, claude},
 };
 
@@ -23,7 +24,8 @@ pub fn usable(read: Result<Config>) -> Option<Config> {
         Ok(c) => Some(c),
         Err(e) => {
             eprintln!(
-                "No summariser started, so summaries stay out of date until this is fixed: {e:#}"
+                "No summariser started, so summaries stay out of date until this is fixed: {}",
+                error::line(&e)
             );
             None
         }

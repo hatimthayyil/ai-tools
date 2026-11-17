@@ -14,6 +14,7 @@ use toml_edit::DocumentMut;
 
 use crate::{
     config::{self, FILE, Homes, LOCAL},
+    error,
     file::{AtPath, pretty},
     repo,
 };
@@ -82,7 +83,7 @@ impl Project {
         let Some(id) = t.id else {
             return Ok(None);
         };
-        check_id(&id).map_err(|e| anyhow!("{}: [project] id: {e}", pretty(p)))?;
+        check_id(&id).map_err(|e| anyhow!("{}: [project] id: {}", pretty(p), error::line(&e)))?;
         let dir = p.parent().unwrap_or(p).to_path_buf();
         let name = name_of(&dir, t.name);
         Ok(Some(Project {

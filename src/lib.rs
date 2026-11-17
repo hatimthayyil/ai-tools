@@ -2,6 +2,7 @@ pub mod agent;
 pub mod backup;
 pub mod command;
 pub mod config;
+pub mod error;
 pub mod file;
 pub mod git;
 pub mod jsonl;
