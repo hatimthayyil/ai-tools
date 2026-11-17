@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 // Declared by the binary alone, so the `ai_tools` library never holds the converter.
 #[path = "../tools/convert/mod.rs"]
 mod convert;
+mod signal;
 
 #[derive(Parser)]
 #[command(name = "ai", version, about = "All-in-one AI tool.")]
@@ -44,6 +45,9 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    if let Err(e) = signal::clean_up_on_termination() {
+        eprintln!("Cannot handle termination signals, so one may leave a git lock behind: {e}");
+    }
     let result = match Cli::parse().command {
         Command::Memory(cli) => cli.exec(),
         Command::Notes(cli) => cli.exec(),
