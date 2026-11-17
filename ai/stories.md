@@ -15,4 +15,5 @@ User stories for `ai`, one line each.
 
 ## Fold
 
+- As a user, when I fold, the session being folded should write a handoff of where things stand, and the new session should start from it word for word.
 - As a user, I should be able to fold with a direction: the session being folded writes a final message aimed at it, the fold carries that message word for word, and the new session starts on the direction at once.

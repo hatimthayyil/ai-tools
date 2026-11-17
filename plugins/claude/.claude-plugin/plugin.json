@@ -1,6 +1,6 @@
 {
   "name": "ai",
   "version": "0.1.0",
-  "description": "ai in Claude Code: /fold goes on in a new session that starts from your memory's view and the thread's, or compacts a session attached to no agent to your memory's view; /reply quotes the text you selected, else the latest answer, into the prompt box; /ai new, attach and detach tie the session to an agent; /recall briefs you on your message from your memory, the thread and the repository",
+  "description": "ai in Claude Code: /fold has Claude write a handoff, then goes on in a new session that starts from your memory's view and the thread's, or compacts a session attached to no agent to your memory's view and the handoff; /reply quotes the text you selected, else the latest answer, into the prompt box; /ai new, attach and detach tie the session to an agent; /recall briefs you on your message from your memory, the thread and the repository",
   "types": "./types/index.d.ts"
 }

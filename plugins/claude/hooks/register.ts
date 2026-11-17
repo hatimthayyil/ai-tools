@@ -1,4 +1,4 @@
-import type { CommandRunResult, EngineInterface, Register } from 'claude-code'
+import type { CommandRunResult, EngineInterface, Register, TurnCompleteReason } from 'claude-code'
 import type { AiRecall } from '../types'
 
 const NOT_ATTACHED = 3
@@ -6,6 +6,15 @@ const LONG_MS = 600_000
 const FLUSH_MS = 1_100
 const USAGE = 'Usage: /ai new <name> | /ai attach <name> | /ai detach'
 const FOLD_USAGE = '/fold takes no arguments.'
+/** What `/fold` sends the session as the user's words once the command has left the model the instructions for a handoff. */
+const REQUEST = 'Fold this session.'
+/** Why a handoff turn that ended for `reason` wrote no handoff. */
+const UNWRITTEN: Record<TurnCompleteReason, string> = {
+  answer: 'the handoff turn ended with no answer',
+  aborted: 'the handoff was stopped',
+  refusal: 'the model refused to write the handoff',
+  error: 'the handoff turn failed',
+}
 const WITHHELD =
   'Not folded: this session is attached to no agent, so a fold compacts it, and the ai plugin never saw this session start, so it would not see the compaction either: Claude Code would write its own summary. Where an organization manages Claude Code, only plugins its managed settings install see these events.'
 const RECALL_USAGE = 'Usage: /recall <message>'
@@ -15,7 +24,7 @@ const REFUSED =
   'A recall only reads: Read, Grep, Glob, and one read-only ai, git or but command per Bash call, with no pipes, redirections or substitutions (quote patterns in single quotes).'
 
 const transcript = { plugin: 'ai', key: 'transcript' } as const
-const prepared = { plugin: 'ai', key: 'view' } as const
+const prepared = { plugin: 'ai', key: 'compaction' } as const
 const recalls = { plugin: 'ai', key: 'recall' } as const
 
 /** The tools a recall fork may call besides Bash. */
@@ -135,8 +144,39 @@ async function isWithheld($: EngineInterface): Promise<boolean> {
   return (await $.state.get(transcript)).value === undefined
 }
 
-/** Whether a fold is between its `/clear` and its attach, when the session is neither the old one nor yet the thread's. */
-let carrying = false
+/** Whether a fold is under way: from the end of its handoff's turn until the new session is attached. */
+let folding = false
+
+/** The turn answering the latest `/fold`'s request for a handoff, once it has started. */
+let handoff: { turnId?: string } | undefined
+
+/**
+ * Asks the session for its handoff: the command leaves the model the instructions, then
+ * `REQUEST` goes in as the user's words once the command has returned and the session is idle.
+ * The fold follows when `turn.complete` hears that turn end. Returns what the command answers.
+ */
+async function request($: EngineInterface): Promise<CommandRunResult> {
+  let instructions: string
+  try {
+    instructions = await $.fs.read(`${$.plugin.root}/prompts/fold.txt`)
+  } catch (err) {
+    return { text: `Not folded: ${String(err)}` }
+  }
+  const asked = {}
+  handoff = asked
+  $.clock.after(0, async () => {
+    let refused: string | undefined
+    try {
+      refused = (await $.prompt.submit({ text: REQUEST, asUser: true })).drop
+    } catch (err) {
+      refused = String(err)
+    }
+    if (refused === undefined) return
+    if (handoff === asked) handoff = undefined
+    $.ui.log(`Not folded: the request for a handoff was refused (${refused}), so this session is as it was.`)
+  })
+  return { text: 'Writing a handoff. The fold follows it.', context: [instructions] }
+}
 
 /**
  * Carries the thread of session `old` into a new session: `/clear`, then `view` as the new
@@ -180,34 +220,54 @@ async function carry($: EngineInterface, old: string, view: string): Promise<voi
   )
 }
 
+/** A session whose thread's view `ai agent compact-session` built: its id, its `ai` arguments, and whether it is attached. */
+type Built = { old: string; args: string[]; isAttached: boolean }
+
 /**
- * Folds the session. Attached to an agent, it builds the thread's view, prints `ai view` (the
- * memory's view, then the thread's) and hands it to `carry`, which goes on in a new session.
- * Attached to none, it prints `ai view` and runs `/compact`, which `session.compact` answers
- * with that text. Returns why it folds nothing, else undefined.
+ * Builds the thread's view of the session once its transcript is flushed, writing the lines it
+ * needs, however long they take. Returns the session as built, or why it folds nothing.
  */
-async function fold($: EngineInterface, cancelled?: AbortSignal): Promise<string | undefined> {
-  if (carrying) return 'Not folded: a fold is under way.'
+async function build($: EngineInterface, cancelled: AbortSignal): Promise<Built | { failed: string }> {
   await $.clock.sleep(FLUSH_MS)
   const old = await $.session.id()
   const args = sessionArgs(old, await transcriptOf($, old))
   const ready = await compactSession($, args, cancelled)
-  if (cancelled?.aborted) return 'Not folded: cancelled.'
-  if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return `Not folded: ${outcome(ready)}`
-  if (ready.exitCode === 0 && ready.stdout === '') return 'Not folded: the thread holds nothing yet.'
+  if (cancelled.aborted) return { failed: 'Not folded: cancelled.' }
+  if (ready.exitCode !== 0 && ready.exitCode !== NOT_ATTACHED) return { failed: `Not folded: ${outcome(ready)}` }
+  if (ready.exitCode === 0 && ready.stdout === '') return { failed: 'Not folded: the thread holds nothing yet.' }
   const isAttached = ready.exitCode === 0
-  if (!isAttached && (await isWithheld($))) return WITHHELD
-  const shown = await ai($, ['view', '--whole', ...args])
-  if (shown.exitCode !== 0) return `Not folded: ${outcome(shown)}`
-  if (cancelled?.aborted) return 'Not folded: cancelled.'
-  if (isAttached) {
-    carrying = true
-    $.clock.after(0, () => carry($, old, shown.stdout).finally(() => (carrying = false)))
-  } else {
-    await $.state.set(prepared, shown.stdout)
-    $.clock.after(0, () => $.command.run({ command: 'compact' }))
+  if (!isAttached && (await isWithheld($))) return { failed: WITHHELD }
+  return { old, args, isAttached }
+}
+
+/**
+ * Folds the session once it has written `written`, its handoff, while the turn that wrote it
+ * ends: the thread's view is built again, its newest turn now the handoff and its lines mostly
+ * there from the build `/fold` ran first. Attached to an agent, it prints `ai view` (the
+ * memory's view, then the thread's) and hands it to `carry`, which goes on in a new session.
+ * Attached to none, it prints `ai view` and runs `/compact`, which `session.compact` answers with
+ * that text and the handoff after it. Returns why it folds nothing, else undefined.
+ */
+async function fold($: EngineInterface, written: string, cancelled: AbortSignal): Promise<string | undefined> {
+  folding = true
+  let isCarried = false
+  try {
+    const built = await build($, cancelled)
+    if ('failed' in built) return built.failed
+    const shown = await ai($, ['view', '--whole', ...built.args])
+    if (shown.exitCode !== 0) return `Not folded: ${outcome(shown)}`
+    if (cancelled.aborted) return 'Not folded: cancelled.'
+    if (built.isAttached) {
+      isCarried = true
+      $.clock.after(0, () => carry($, built.old, shown.stdout).finally(() => (folding = false)))
+    } else {
+      await $.state.set(prepared, { view: shown.stdout, handoff: written })
+      $.clock.after(0, () => $.command.run({ command: 'compact' }))
+    }
+    return undefined
+  } finally {
+    if (!isCarried) folding = false
   }
-  return undefined
 }
 
 /** Why the prompt box took no text, by the engine's refusal; a hook's refusal carries none. */
@@ -336,7 +396,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'fold',
       description:
-        "ai: go on in a new session that starts from your memory's view and the thread's; in a session attached to no agent, compact it to your memory's view",
+        "ai: have Claude write a handoff, then go on in a new session that starts from your memory's view and the thread's, the handoff its newest turn; in a session attached to no agent, compact it to your memory's view and the handoff",
     })
     await $.command.register({
       name: 'ai',
@@ -371,10 +431,15 @@ export const register: Register = on => {
 
   on('session.compact', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
-    const text = (await $.state.get(prepared)).value
-    if (!text) return next(e)
-    await $.state.set(prepared, '')
-    return { messages: [{ role: 'user', text, toolUses: [] }] }
+    const ready = (await $.state.get(prepared)).value
+    if (!ready?.view) return next(e)
+    await $.state.set(prepared, { view: '', handoff: '' })
+    return {
+      messages: [
+        { role: 'user', text: ready.view, toolUses: [] },
+        { role: 'assistant', text: ready.handoff, toolUses: [] },
+      ],
+    }
   })
 
   on('classic.Stop', async ($, e, next) => {
@@ -391,7 +456,21 @@ export const register: Register = on => {
 
   on('command.run', { command: 'fold' }, async ($, e, next) => {
     if (e.args.trim() !== '') return { text: FOLD_USAGE }
-    return { text: (await fold($, next.signal)) ?? 'Folding.' }
+    if (folding) return { text: 'Not folded: a fold is under way.' }
+    const built = await build($, next.signal)
+    return 'failed' in built ? { text: built.failed } : request($)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const ended = await next(e)
+    if (e.agentId !== undefined || handoff?.turnId === undefined || e.turnId !== handoff.turnId) return ended
+    handoff = undefined
+    if (e.reason !== 'answer' || e.answer.trim() === '') {
+      $.ui.log(`Not folded: ${UNWRITTEN[e.reason]}, so this session is as it was.`)
+      return ended
+    }
+    $.ui.log((await fold($, e.answer, next.signal)) ?? 'Folding.')
+    return ended
   })
 
   on('command.run', { command: 'reply' }, async ($, e) => {
@@ -417,7 +496,10 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) return next(e)
+    if (e.agentId === undefined) {
+      if (handoff !== undefined && handoff.turnId === undefined && e.text === REQUEST) handoff.turnId = e.turnId
+      return next(e)
+    }
     const state = await recalled($)
     if (state.prompts.includes(e.text)) await $.state.set(recalls, known(state, e.text, e.agentId))
     return next(e)

@@ -1,4 +1,12 @@
-import type { CommandSpec, On, PromptFillResult, SessionCompactInput, SessionMessage } from 'claude-code'
+import type {
+  CommandSpec,
+  On,
+  PromptFillResult,
+  PromptOrigin,
+  SessionCompactInput,
+  SessionMessage,
+  TurnCompleteReason,
+} from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
@@ -13,6 +21,12 @@ const ALL_ARGS = [...SESSION_ARGS, '--transcript', TRANSCRIPT]
 const FLUSH_MS = 1_100
 const NEXT = 's2'
 const UNATTACHED = 3
+const INSTRUCTIONS = 'Write the handoff.\n'
+const REQUEST = 'Fold this session.'
+const ASKING = 'Writing a handoff. The fold follows it.'
+const HANDOFF = 'Where things stand: KIWI-9.'
+const HANDOFF_TURN = 'h1'
+const OWN: PromptOrigin = { kind: 'plugin', name: 'ai', asUser: true }
 /** The session the engine says this is: `engine` starts at `SESSION`, and a `/clear` that `clearing` answers moves on. */
 const current = { id: SESSION }
 
@@ -55,6 +69,19 @@ function selecting(on: On) {
 
 function engine(on: On, answer: (args: readonly string[]) => Answer) {
   const clock = mock.clock(on)
+  const reads: string[] = []
+  const submits: { text: string; context?: readonly string[]; origin: PromptOrigin }[] = []
+  const submitting: { drop?: string } = {}
+  on('fs.read', async (_$, e) => {
+    reads.push(e.path)
+    return { value: e.path.endsWith('/prompts/fold.txt') ? INSTRUCTIONS : RECALL }
+  })
+  on('prompt.submit', async (_$, e) => {
+    submits.push({ text: e.text, context: e.context, origin: e.origin })
+    return submitting.drop === undefined ? { text: e.text, context: e.context } : { drop: submitting.drop }
+  })
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
   const calls: (readonly string[])[] = []
   const spawns: (readonly string[])[] = []
   const killed: (readonly string[])[] = []
@@ -105,7 +132,20 @@ function engine(on: On, answer: (args: readonly string[]) => Answer) {
     logs.push(e.text)
     return { value: undefined }
   })
-  return { clock, calls, spawns, killed, spawning, compacts, renames, renaming, logs }
+  return {
+    clock,
+    calls,
+    spawns,
+    killed,
+    spawning,
+    compacts,
+    renames,
+    renaming,
+    logs,
+    reads,
+    submits,
+    submitting,
+  }
 }
 
 /** `ai agent attach`, `detach` and `session-name` answering as for agent dev of project repo. */
@@ -122,12 +162,50 @@ function start($: Engine, source: 'startup' | 'resume' | 'clear' = 'startup') {
   return $.classic.SessionStart({ source, session_id: SESSION, transcript_path: TRANSCRIPT })
 }
 
-async function folded($: Engine, world: World) {
-  const ran = fold($)
+/** A typed `/fold` with `args`, run while it builds the view once the transcript is flushed. */
+async function ask($: Engine, world: World, args = '') {
+  const ran = fold($, args)
   await world.clock.advance(FLUSH_MS)
-  const { text } = await ran
+  return ran
+}
+
+type Ended = { reason: TurnCompleteReason; answer: string }
+const WROTE: Ended = { reason: 'answer', answer: HANDOFF }
+
+/** The end of the handoff's turn as `end` says, which a fold that follows holds until it returns. */
+function complete($: Engine, end: Ended) {
+  const { reason, answer } = end
+  const ended = { turnId: HANDOFF_TURN, durationMs: 1, isAborted: reason === 'aborted', answer }
+  return reason === 'refusal'
+    ? $.turn.complete({ ...ended, reason, refusal: { category: null, explanation: null } })
+    : $.turn.complete({ ...ended, reason })
+}
+
+/**
+ * The request for a handoff going in, its turn starting, then ending as `end` says, the clock
+ * run on through the fold that follows while it builds the view once the transcript is flushed.
+ */
+async function handOff($: Engine, world: World, end: Ended = WROTE) {
   await world.clock.advance(0)
-  return text
+  await $.turn.start({ text: REQUEST, turnId: HANDOFF_TURN })
+  const ended = complete($, end)
+  await world.clock.advance(FLUSH_MS)
+  await ended
+}
+
+/**
+ * A typed `/fold` run through its handoff: the request, its turn ending as `end` says, then the
+ * fold that follows. Returns what the typed run answered when it asked for no handoff, else what
+ * the turn's end logged, taken out of the logs.
+ */
+async function folded($: Engine, world: World, end: Ended = WROTE) {
+  const { text } = await ask($, world)
+  if (text !== ASKING) return text
+  const before = world.logs.length
+  await handOff($, world, end)
+  const logged = world.logs.splice(before, 1)[0]
+  await world.clock.advance(0)
+  return logged
 }
 
 /** `ai` answering as for a session attached to agent dev: its views, and `carry-session` attaching the next one. */
@@ -178,30 +256,62 @@ function stop($: Engine) {
   return $.classic.Stop({ session_id: SESSION, transcript_path: TRANSCRIPT, stop_hook_active: false })
 }
 
-test('/fold, with only spaces after it, builds the view once the transcript is flushed, then goes on in a new session', async ($, on) => {
+test('/fold builds the view once the transcript is flushed, leaves the model the instructions for a handoff, then asks for it in your words', async ($, on) => {
   const world = engine(on, carried)
-  const cleared = clearing(on, world)
   await start($, 'resume')
   const ran = fold($, '  ')
   await world.clock.advance(FLUSH_MS - 1)
   expect(world.calls).toEqual([])
   await world.clock.advance(1)
-  expect((await ran).text).toBe('Folding.')
-  expect(world.spawns).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+  const asked = await ran
+  expect(asked.text).toBe(ASKING)
+  expect(asked.context).toEqual([INSTRUCTIONS])
+  expect(world.calls).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+  expect(world.reads).toHaveLength(1)
+  expect(world.reads[0]).toMatch(/\/prompts\/fold\.txt$/)
+  expect(world.submits).toEqual([{ text: REQUEST, context: undefined, origin: OWN }])
+  await $.turn.start({ text: REQUEST, turnId: HANDOFF_TURN })
+  await world.clock.advance(FLUSH_MS)
+  expect(world.calls).toHaveLength(1)
+  expect(world.logs).toEqual([])
+})
+
+test('/fold, once the handoff is written, builds the view again once the transcript is flushed, then goes on in a new session', async ($, on) => {
+  const world = engine(on, carried)
+  const cleared = clearing(on, world)
+  await start($, 'resume')
+  expect((await ask($, world)).text).toBe(ASKING)
+  await world.clock.advance(0)
+  await $.turn.start({ text: REQUEST, turnId: HANDOFF_TURN })
+  const ended = complete($, WROTE)
+  await world.clock.advance(FLUSH_MS - 1)
+  expect(world.calls).toHaveLength(1)
+  await world.clock.advance(1)
+  expect((await ended).text).toBe(HANDOFF)
+  expect(world.logs).toEqual(['Folding.'])
+  expect(world.spawns).toEqual([
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+  ])
+  await world.clock.advance(0)
   expect(cleared.order).toEqual([
-    ['/clear', 2],
-    ['append user', 2],
+    ['/clear', 3],
+    ['append user', 3],
   ])
   expect(cleared.rows).toEqual([WOKE])
-  expect(world.calls.length).toBe(2)
+  expect(world.calls).toHaveLength(3)
   expect((await fold($)).text).toBe('Not folded: a fold is under way.')
   await world.clock.advance(FLUSH_MS)
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
     ['ai', 'agent', 'carry-session', '--from', SESSION, '--harness', 'claude', '--session', NEXT],
   ])
-  expect(world.logs).toEqual(["Folded into a new session. Attached to dev. It holds your memory's view and the thread's."])
+  expect(world.logs).toEqual([
+    'Folding.',
+    "Folded into a new session. Attached to dev. It holds your memory's view and the thread's.",
+  ])
   expect(world.compacts).toEqual([])
   expect(await compact($)).toEqual(NATIVE)
 })
@@ -216,7 +326,7 @@ test('/fold attaches the new session by its transcript once its start names it, 
   await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
   await world.clock.advance(FLUSH_MS)
   const args = ['--harness', 'claude', '--session', NEXT, '--transcript', '/t/s2.jsonl']
-  expect(world.calls.slice(2)).toEqual([
+  expect(world.calls.slice(3)).toEqual([
     ['ai', 'agent', 'end-session', ...SESSION_ARGS],
     ['ai', 'agent', 'carry-session', '--from', SESSION, ...args],
   ])
@@ -227,6 +337,7 @@ test('/fold in an attached session needs no session start: ai finds the transcri
   const cleared = clearing(on, world)
   expect(await carriedOn($, world)).toBe('Folding.')
   expect(world.calls).toEqual([
+    ['ai', 'agent', 'compact-session', ...SESSION_ARGS],
     ['ai', 'agent', 'compact-session', ...SESSION_ARGS],
     ['ai', 'view', '--whole', ...SESSION_ARGS],
     ['ai', 'agent', 'carry-session', '--from', SESSION, '--harness', 'claude', '--session', NEXT],
@@ -248,7 +359,14 @@ test('/fold says what failed, and what the session holds: the clear, the view or
   expect(await carriedOn($, world)).toBe('Folding.')
   expect(world.logs.pop()).toBe('Not folded: /clear started no new session, so this session is as it was.')
   expect(cleared.rows).toEqual([])
-  expect(world.calls.map(argv => sub(argv.slice(1)))).toEqual(['compact-session', 'view', 'compact-session', 'view'])
+  expect(world.calls.map(argv => sub(argv.slice(1)))).toEqual([
+    'compact-session',
+    'compact-session',
+    'view',
+    'compact-session',
+    'compact-session',
+    'view',
+  ])
 
   cleared.clear.starts = NEXT
   cleared.append.deny = 'no notes here'
@@ -290,7 +408,7 @@ test('a /clear of your own carries nothing into the new session', async ($, on) 
 })
 
 test(
-  'cancelling /fold stops ai agent compact-session and folds nothing',
+  'cancelling /fold stops ai agent compact-session and asks for no handoff',
   {
     plugins: [
       {
@@ -323,6 +441,8 @@ test(
     expect(world.logs).toEqual(['beneath: Not folded: cancelled.'])
     expect(world.killed).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
     expect(world.calls).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+    expect(world.reads).toEqual([])
+    expect(world.submits).toEqual([])
     expect(world.compacts).toEqual([])
     expect(await compact($)).toEqual(NATIVE)
   },
@@ -337,7 +457,7 @@ test('/compact and auto-compaction stay Claude Code’s, without ai agent', asyn
   expect(world.calls).toEqual([])
 })
 
-test('/fold in an unattached session compacts it into the memory alone, once', async ($, on) => {
+test('/fold in an unattached session compacts it into the memory and the handoff, once', async ($, on) => {
   const MEMORY = '# Memory\n\nYou are awake.\n'
   const world = engine(on, args => (sub(args) === 'view' ? [0, MEMORY, ''] : [3, '', '']))
   const cleared = clearing(on, world)
@@ -345,25 +465,31 @@ test('/fold in an unattached session compacts it into the memory alone, once', a
   expect(await carriedOn($, world)).toBe('Folding.')
   expect(world.calls).toEqual([
     ['ai', 'agent', 'compact-session', ...ALL_ARGS],
+    ['ai', 'agent', 'compact-session', ...ALL_ARGS],
     ['ai', 'view', '--whole', ...ALL_ARGS],
   ])
   expect(world.compacts).toEqual(['/compact'])
   expect(cleared.order).toEqual([])
-  expect(await compact($)).toEqual([{ role: 'user', text: MEMORY, toolUses: [] }])
+  expect(await compact($)).toEqual([
+    { role: 'user', text: MEMORY, toolUses: [] },
+    { role: 'assistant', text: HANDOFF, toolUses: [] },
+  ])
   expect(await compact($)).toEqual(NATIVE)
   expect(world.compacts).toEqual(['/compact', 'manual'])
   expect(world.logs).toEqual([])
 })
 
-test('/fold folds nothing and says why when ai fails or the thread is empty', async ($, on) => {
+test('/fold folds nothing and says why when ai fails or the thread is empty; a build that fails first asks for no handoff', async ($, on) => {
   let answer: Answer = [1, '', 'Failed 12: empty reply\n']
   const world = engine(on, args => (sub(args) === 'view' ? [1, '', 'memory locked\n'] : answer))
   await start($, 'resume')
   expect(await folded($, world)).toBe('Not folded: Failed 12: empty reply')
+  expect(world.submits).toEqual([])
   answer = [3, '', '']
   expect(await folded($, world)).toBe('Not folded: memory locked')
   answer = [0, '', '']
   expect(await folded($, world)).toBe('Not folded: the thread holds nothing yet.')
+  expect(world.submits).toHaveLength(1)
   answer = [0, VIEW, '']
   expect(await folded($, world)).toBe('Not folded: memory locked')
   expect(world.compacts).toEqual([])
@@ -401,12 +527,81 @@ test('a failed seed starts without the view and says why', async ($, on) => {
 test('a subagent compacts natively, leaving the view /fold built for the main conversation', async ($, on) => {
   const world = engine(on, unattached)
   await start($, 'resume')
-  const ran = fold($)
-  await world.clock.advance(FLUSH_MS)
-  expect((await ran).text).toBe('Folding.')
+  expect(await folded($, world)).toBe('Folding.')
   await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: [] })
   expect(world.compacts).toEqual(['/compact', 'auto'])
-  expect(await compact($)).toEqual([{ role: 'user', text: WOKE, toolUses: [] }])
+  expect(await compact($)).toEqual([
+    { role: 'user', text: WOKE, toolUses: [] },
+    { role: 'assistant', text: HANDOFF, toolUses: [] },
+  ])
+})
+
+test('a handoff turn that is stopped, refused, fails or writes nothing folds nothing and says why', async ($, on) => {
+  const world = engine(on, carried)
+  clearing(on, world)
+  await start($, 'resume')
+  const ends: Ended[] = [
+    { reason: 'aborted', answer: '' },
+    { reason: 'refusal', answer: '' },
+    { reason: 'error', answer: '' },
+    { reason: 'answer', answer: ' \n' },
+  ]
+  const said: (string | undefined)[] = []
+  for (const end of ends) said.push(await folded($, world, end))
+  expect(said).toEqual([
+    'Not folded: the handoff was stopped, so this session is as it was.',
+    'Not folded: the model refused to write the handoff, so this session is as it was.',
+    'Not folded: the handoff turn failed, so this session is as it was.',
+    'Not folded: the handoff turn ended with no answer, so this session is as it was.',
+  ])
+  expect(world.calls).toEqual(Array(4).fill(['ai', 'agent', 'compact-session', ...ALL_ARGS]))
+  expect(world.logs).toEqual([])
+  expect(await carriedOn($, world)).toBe('Folding.')
+})
+
+test('a refused request for a handoff folds nothing and says why', async ($, on) => {
+  const world = engine(on, carried)
+  await start($, 'resume')
+  world.submitting.drop = 'a Stop stands'
+  expect((await ask($, world)).text).toBe(ASKING)
+  await world.clock.advance(0)
+  expect(world.logs).toEqual([
+    'Not folded: the request for a handoff was refused (a Stop stands), so this session is as it was.',
+  ])
+  world.submitting.drop = undefined
+  expect((await ask($, world)).text).toBe(ASKING)
+})
+
+test('/fold while a fold runs is under way; a request whose turn never came is asked again', async ($, on) => {
+  const world = engine(on, carried)
+  clearing(on, world)
+  await start($, 'resume')
+  expect((await ask($, world)).text).toBe(ASKING)
+  await world.clock.advance(0)
+  expect((await ask($, world)).text).toBe(ASKING)
+  await world.clock.advance(0)
+  expect(world.submits).toHaveLength(2)
+  await $.turn.start({ text: REQUEST, turnId: HANDOFF_TURN })
+  const ended = complete($, WROTE)
+  await world.clock.advance(0)
+  expect((await fold($)).text).toBe('Not folded: a fold is under way.')
+  await world.clock.advance(FLUSH_MS)
+  await ended
+  expect(world.logs).toEqual(['Folding.'])
+})
+
+test('a turn other than the handoff’s folds nothing', async ($, on) => {
+  const world = engine(on, carried)
+  await start($, 'resume')
+  expect((await ask($, world)).text).toBe(ASKING)
+  await world.clock.advance(0)
+  await $.turn.start({ text: 'Something else.', turnId: 't0' })
+  await $.turn.complete({ turnId: 't0', durationMs: 1, isAborted: false, answer: 'Done.', reason: 'answer' })
+  await $.turn.start({ text: REQUEST, turnId: 'a1', agentId: 'a1' })
+  await $.turn.complete({ turnId: 'a1', agentId: 'a1', durationMs: 1, isAborted: false, answer: 'Done.', reason: 'answer' })
+  await world.clock.advance(FLUSH_MS)
+  expect(world.calls).toEqual([['ai', 'agent', 'compact-session', ...ALL_ARGS]])
+  expect(world.logs).toEqual([])
 })
 
 test('/ai attach and detach run ai agent with the session and show its answer', async ($, on) => {
@@ -626,24 +821,18 @@ type Spawn = (prompt: string) => Promise<{ model: string } | { deny: string }>
  * agent and keeps no id from a hook's answer, so here the guard learns the fork only from its
  * turn's start.
  */
-function recalling(on: On, spawn: Spawn = async () => ({ model: 'm' })) {
-  const reads: string[] = []
+function recalling(on: On, world: World, spawn: Spawn = async () => ({ model: 'm' })) {
   const prompts: { prompt: string }[] = []
   const passed: string[] = []
-  on('fs.read', async (_$, e) => {
-    reads.push(e.path)
-    return { value: RECALL }
-  })
   on('agent.spawn', async (_$, e) => {
     prompts.push(e)
     return spawn(e.prompt)
   })
-  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
   on('tool.call', async (_$, e) => {
     passed.push(e.tool === 'Bash' ? e.command : e.tool)
     return { result: 'ok' }
   })
-  return { reads, prompts, passed }
+  return { reads: world.reads, prompts, passed }
 }
 
 function begin($: Engine, text: string, agentId: string) {
@@ -656,7 +845,7 @@ function call($: Engine, tool: string, input: Record<string, string>, agentId = 
 
 test('/recall starts a fork on the message and tells the model how to relay its brief', async ($, on) => {
   const world = engine(on, views)
-  const got = recalling(on)
+  const got = recalling(on, world)
   const message = 'I want to resume  work on ai task.\nPerhaps a compiler, $& and all.'
   const ran = await recall($, ` ${message} `)
   expect(ran.text).toBe(RECALLING)
@@ -679,21 +868,21 @@ test('/recall starts a fork on the message and tells the model how to relay its 
 })
 
 test('/recall with no message prints its usage and starts nothing', async ($, on) => {
-  const got = recalling(on)
+  const got = recalling(on, engine(on, views))
   expect((await recall($, '')).text).toBe('Usage: /recall <message>')
   expect((await recall($, '   ')).text).toBe('Usage: /recall <message>')
   expect(got.prompts).toEqual([])
 })
 
 test('a recall the engine refuses says why, and leaves nothing to guard', async ($, on) => {
-  const got = recalling(on, async () => ({ deny: 'past a Stop' }))
+  const got = recalling(on, engine(on, views), async () => ({ deny: 'past a Stop' }))
   expect((await recall($, 'the compiler')).text).toBe('Not recalling: past a Stop')
   await begin($, got.prompts[0]!.prompt, FORK)
   expect((await call($, 'Bash', { command: 'ai memory note x' })).deny).toBeUndefined()
 })
 
 test('a recall fork reads, and every tool call that could write is refused', async ($, on) => {
-  const got = recalling(on)
+  const got = recalling(on, engine(on, views))
   await recall($, 'the compiler')
   await begin($, got.prompts[0]!.prompt, FORK)
   await begin($, 'Another task.', 'other')
@@ -739,7 +928,7 @@ test('a recall fork reads, and every tool call that could write is refused', asy
 })
 
 test('a recall fork whose start comes before the spawn answers is guarded', async ($, on) => {
-  const got = recalling(on, async prompt => {
+  const got = recalling(on, engine(on, views), async prompt => {
     await begin($, prompt, FORK)
     return { model: 'm' }
   })

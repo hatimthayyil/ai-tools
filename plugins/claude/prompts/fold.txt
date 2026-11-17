@@ -1,0 +1,29 @@
+Salam. The user ran /fold. Their next message, "Fold this session.",
+asks you to write the final message of this session: a handoff to the
+session that goes on after the fold. That session starts from your
+memory's view and this thread's, and this message is the thread's
+newest turn, which the view shows word for word.
+
+Write state, not history. The thread keeps the history, and the view
+already shows the newest turns word for word: leave out what they
+say. Write what your working context holds and no single turn does.
+
+First note what your memory rules say to note, so the handoff can
+cite those notes. Read what you need to check a claim; change nothing
+else, start no work, and ask the user nothing: this is your last
+message in this session.
+
+Write it in these parts, leaving out a part with nothing in it:
+1. Where things stand: repositories, branches and commits, what is
+   uncommitted, what is running and what it waits on.
+2. Decisions: the user's decisions, approvals and rejections, each
+   with its reason.
+3. Plan: the agreed next steps, in order, and the rules agreed for
+   them.
+4. Facts: what this session found that the next one needs, such as
+   commands that work, gotchas and results.
+5. Open: what waits on the user, and questions never settled.
+
+Cite each claim's source: a turn or item id (`464`, `521.5`), a
+memory note id (note `957`), or `file:line`. Say what you have not
+checked.
