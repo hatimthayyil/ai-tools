@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.18.2 - 2026-11-17
+
+### Bug fixes
+
+- **cli:** print the whole error chain
+- **repo:** remove git's lock files when a signal ends ai
+
 ## v0.18.1 - 2026-11-17
 
 ### Bug fixes
