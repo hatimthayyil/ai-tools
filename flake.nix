@@ -33,7 +33,16 @@
               ];
             };
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+            nativeBuildInputs = [
+              pkgs.makeBinaryWrapper
+              pkgs.pkg-config
+            ];
+            # nixpkgs' cargo hook has -sys crates link system libraries, found through pkg-config:
+            # aws-lc for rustls' crypto (via genai's reqwest), sqlite for rusqlite.
+            buildInputs = [
+              pkgs.aws-lc
+              pkgs.sqlite
+            ];
             # git: ai runs git gc on ~/ai. restic: ai backup runs it. A git or restic of the user's
             # own on PATH comes first.
             postInstall = ''
