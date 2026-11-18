@@ -61,10 +61,16 @@ pub fn read(harness: &str, session: &str, path: Option<&Path>) -> Result<Transcr
                 .get(name)
                 .map_or_else(Vec::new, |bytes| claude::parse_bytes(session, bytes));
             let agents = claude::subagents_from(dir, &files, &name.with_extension(""), session)?;
+            let rewritten = files
+                .keys()
+                .filter(|f| claude::rewrites(f))
+                .cloned()
+                .collect();
             Ok(Transcript {
                 items,
                 agents,
                 files,
+                rewritten,
                 dir: dir.to_path_buf(),
                 main: name.to_path_buf(),
             })

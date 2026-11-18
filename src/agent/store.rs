@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
     ops::Range,
     os::unix::process::CommandExt,
@@ -165,6 +165,8 @@ pub struct Transcript {
     pub items: Vec<Item>,
     pub agents: Vec<Subagent>,
     pub files: BTreeMap<PathBuf, Vec<u8>>,
+    /// Those of `files` the harness rewrites in place by design, rather than only appending to.
+    pub rewritten: BTreeSet<PathBuf>,
     pub dir: PathBuf,
     pub main: PathBuf,
 }
@@ -1341,7 +1343,8 @@ impl Snapshot {
     /// The records of `t`'s files this thread lacks, for session `b` on this machine: a file
     /// that grew is recorded at its new length, and one that no longer begins with what the
     /// thread read begins a new version. Then a warning for each file that no longer holds
-    /// what the thread read of it: one that no longer begins with it, and one that is gone.
+    /// what the thread read of it: one that no longer begins with it, unless the harness
+    /// rewrites it by design, and one that is gone.
     fn point(&self, b: &Track, t: &Transcript) -> Result<(Vec<Pointer>, Vec<String>)> {
         const CHECK: &str = "`ai backup threads` tells whether the backup holds them";
         let host = backup::host()?;
@@ -1351,20 +1354,24 @@ impl Snapshot {
             .into_iter()
             .filter(|v| v.harness == b.harness && v.session == b.session && v.read.host == host)
             .collect();
-        let live: BTreeMap<PathBuf, &[u8]> = t
+        let live: BTreeMap<PathBuf, (&[u8], bool)> = t
             .files
             .iter()
-            .map(|(rel, bytes)| (t.dir.join(rel), bytes.as_slice()))
+            .map(|(rel, bytes)| {
+                let rewritten = t.rewritten.contains(rel);
+                (t.dir.join(rel), (bytes.as_slice(), rewritten))
+            })
             .collect();
         let mut out = Vec::new();
         let mut unheld = Vec::new();
-        for (path, bytes) in &live {
+        for (path, (bytes, rewritten)) in &live {
             let newest = mine.iter().rfind(|v| v.read.path == *path);
             let (begins, sha256) = source::hashes(bytes, newest.map(|v| &v.read));
             let len = bytes.len() as u64;
             let from = match newest {
                 Some(v) if begins && v.read.len == len => continue,
                 Some(v) if begins => v.read.len,
+                Some(_) if *rewritten => 0,
                 Some(v) => {
                     unheld.push(format!(
                         "Thread {}: {} no longer begins with the {} this thread read of it. \

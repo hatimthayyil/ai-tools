@@ -724,6 +724,43 @@ fn a_harness_file_gone_or_cut_keeps_its_records_and_a_sync_tells_of_it() {
 }
 
 #[test]
+fn a_subagent_meta_file_rewritten_begins_a_version_untold() {
+    let r = Repo::new();
+    let dir = r.dir.path().join("s-1/subagents");
+    fs::create_dir_all(&dir).unwrap();
+    for f in [
+        "agent-a1b2c3d4e5f6a7b8c.jsonl",
+        "agent-a1b2c3d4e5f6a7b8c.meta.json",
+    ] {
+        fs::copy(fixture("subagent/subagents").join(f), dir.join(f)).unwrap();
+    }
+    let meta = dir.join("agent-a1b2c3d4e5f6a7b8c.meta.json");
+    let first = fs::read(&meta).unwrap();
+    let p = r.transcript("s-1", &lines("subagent.jsonl"));
+    let store = r.store();
+    store.attach("dev", "claude", "s-1", Some(&p)).unwrap();
+
+    let rewritten = br#"{"agentType":"fork","description":"rewritten"}"#;
+    assert!(!rewritten.starts_with(&first));
+    fs::write(&meta, rewritten).unwrap();
+    assert_eq!(
+        unheld(store.sync("claude", "s-1", None).unwrap()),
+        Vec::<String>::new(),
+        "Claude Code rewrites a subagent's meta file by design"
+    );
+    assert_source(&r, "dev", &meta, rewritten);
+    let snap = store.thread("dev").unwrap().snapshot().unwrap();
+    let of_meta: Vec<u64> = snap
+        .versions()
+        .unwrap()
+        .iter()
+        .filter(|v| v.read.path == real(&meta))
+        .map(|v| v.read.len)
+        .collect();
+    assert_eq!(of_meta, [first.len() as u64, rewritten.len() as u64]);
+}
+
+#[test]
 fn a_harness_file_is_recorded_where_it_really_sits() {
     let r = Repo::new();
     let elsewhere = r.dir.path().join("elsewhere");

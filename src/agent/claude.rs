@@ -189,6 +189,18 @@ pub fn parse(session: &str, text: &str) -> Vec<Item> {
     parse_bytes(session, text.as_bytes())
 }
 
+/// Whether Claude Code rewrites the session file at `rel`, relative to the transcript's
+/// directory, in place by design rather than only appending to it: a subagent's
+/// `<session>/subagents/agent-<agent>.meta.json`, rewritten as the subagent's state changes.
+pub fn rewrites(rel: &Path) -> bool {
+    let in_subagents = rel.parent().and_then(Path::file_name) == Some("subagents".as_ref());
+    let meta = rel
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("agent-") && n.ends_with(".meta.json"));
+    in_subagents && meta
+}
+
 /// A subagent's transcript, `<session>/subagents/agent-<agent>.jsonl`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Subagent {
