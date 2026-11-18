@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.18.3 - 2026-11-18
+
+### Bug fixes
+
+- **agent:** make hooks' commits in a committer outside their processes
+
+### Features
+
+- **agent:** count a plugin's prompt sent as the user's words as theirs
+- **plugin:** /fold has Claude write a handoff before it folds
+- **plugin:** `/fold <direction>` aims the handoff and starts the new session on it
+
 ## v0.18.2 - 2026-11-17
 
 ### Bug fixes
