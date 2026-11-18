@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.18.4 - 2026-11-18
+
+### Bug fixes
+
+- **error:** tell a gix error tree on one line
+- **repo:** write ~/ai's index without git's index.lock
+- **agent:** don't warn when Claude Code rewrites a subagent's meta file
+
 ## v0.18.3 - 2026-11-18
 
 ### Bug fixes
