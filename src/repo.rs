@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     io::{self, Write},
-    os::unix::process::CommandExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -34,6 +34,8 @@ const FAILED: &str = "ai-commit-failed";
 /// In the git directory: the newest modification time among the loose objects [`gc`] counted when
 /// it last started `git gc`, in nanoseconds since the epoch.
 const GC_MARK: &str = "ai-gc";
+/// In the git directory: the start of the name of each temporary file [`write_index`] fills.
+const INDEX_TEMP: &str = "ai-index.";
 
 pub fn exists(dir: &Path) -> bool {
     git_dir(dir).is_dir()
@@ -397,7 +399,8 @@ fn read_dir_if(dir: &Path) -> Result<Vec<io::Result<fs::DirEntry>>> {
 /// `msg` by the user's git identity, else `me`: HEAD's tree with those paths as they are on disk
 /// and everything else as HEAD has it; nothing when that tree is HEAD's. Of the index, only the
 /// entries under `paths` change, so what the user staged elsewhere stays staged. A file whose
-/// stat matches its index entry keeps that entry's blob unread.
+/// stat matches its index entry keeps that entry's blob unread. The index is written without
+/// git's `index.lock` ([`write_index`]): a git command writing it meanwhile may lose its write.
 pub fn commit_paths(dir: &Path, paths: &[&Path], me: &str, msg: &str) -> Result<()> {
     let _lock = lock(dir)?;
     let mut repo = gix::open(dir)?;
@@ -464,7 +467,7 @@ pub fn commit_paths(dir: &Path, paths: &[&Path], me: &str, msg: &str) -> Result<
     index.sort_entries();
     index.remove_tree();
     // Before HEAD moves, as in `commit`.
-    index.write(Default::default())?;
+    write_index(&index)?;
     if !same {
         let me = repo.committer().context("No committer.")??;
         repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
@@ -474,7 +477,8 @@ pub fn commit_paths(dir: &Path, paths: &[&Path], me: &str, msg: &str) -> Result<
 
 /// Commits every file of `dir` its `.gitignore` keeps, as one commit `msg` by the user's git
 /// identity, else `me`; nothing when the tree is HEAD's. A file whose stat matches its index
-/// entry keeps that entry's blob unread.
+/// entry keeps that entry's blob unread. The index is written without git's `index.lock`
+/// ([`write_index`]): a git command writing it meanwhile may lose its write.
 pub fn commit(dir: &Path, me: &str, msg: &str) -> Result<()> {
     let _lock = lock(dir)?;
     let mut repo = gix::open(dir)?;
@@ -518,11 +522,44 @@ pub fn commit(dir: &Path, me: &str, msg: &str) -> Result<()> {
     }
     // Before HEAD moves: whoever reads between the two sees the files staged, never a HEAD the
     // index lags behind.
-    index.write(Default::default())?;
+    write_index(&index)?;
     if !same {
         let me = repo.committer().context("No committer.")??;
         repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
     }
+    Ok(())
+}
+
+/// Writes `index` over the file it was read from, as git does but without its `index.lock`:
+/// whole into a temporary file of its own beside it, then renamed in. Only ai writes the index of
+/// its repositories, and only holding [`lock`], which serialises those writes; so the caller
+/// holds it, and any temporary file of this kind already there is a killed write's, and goes.
+fn write_index(index: &gix::index::File) -> Result<()> {
+    let path = index.path();
+    let dir = path
+        .parent()
+        .with_context(|| format!("{} has no directory.", pretty(path)))?;
+    for e in read_dir_if(dir)? {
+        let e = e.at(dir)?;
+        if e.file_name()
+            .as_encoded_bytes()
+            .starts_with(INDEX_TEMP.as_bytes())
+        {
+            match fs::remove_file(e.path()) {
+                Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err).at(&e.path()),
+                _ => {}
+            }
+        }
+    }
+    let tmp = tempfile::Builder::new()
+        .prefix(INDEX_TEMP)
+        .permissions(fs::Permissions::from_mode(0o666))
+        .tempfile_in(dir)
+        .at(dir)?;
+    let mut out = io::BufWriter::with_capacity(64 * 1024, tmp);
+    index.write_to(&mut out, Default::default())?;
+    let tmp = out.into_inner().map_err(|e| e.into_error()).at(path)?;
+    tmp.persist(path).map_err(|e| e.error).at(path)?;
     Ok(())
 }
 
@@ -675,12 +712,7 @@ mod tests {
         create(&dir).unwrap();
         fs::write(dir.join("a"), "1\n").unwrap();
         commit(&dir, "ai", "one").unwrap();
-        let staged = || {
-            let index = gix::open(&dir).unwrap().index_or_empty().unwrap();
-            let paths = index.entries().iter().map(|e| e.path(&index).to_string());
-            paths.collect::<Vec<_>>()
-        };
-        assert_eq!(staged(), ["a"]);
+        assert_eq!(staged(&dir), ["a"]);
 
         // A held lock on HEAD's branch keeps HEAD where it is.
         let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
@@ -689,12 +721,19 @@ mod tests {
         fs::write(dir.join("b"), "2\n").unwrap();
         assert!(commit(&dir, "ai", "two").is_err());
         assert_eq!(head(&dir, "a").0, "one");
-        assert_eq!(staged(), ["a", "b"]);
+        assert_eq!(staged(&dir), ["a", "b"]);
 
         fs::remove_file(&held).unwrap();
         commit(&dir, "ai", "two").unwrap();
         assert_eq!(head(&dir, "b"), ("two".into(), "2\n".into()));
-        assert_eq!(staged(), ["a", "b"]);
+        assert_eq!(staged(&dir), ["a", "b"]);
+    }
+
+    /// The paths the index of the repository at `dir` holds, in its order.
+    fn staged(dir: &Path) -> Vec<String> {
+        let index = gix::open(dir).unwrap().index_or_empty().unwrap();
+        let paths = index.entries().iter().map(|e| e.path(&index).to_string());
+        paths.collect()
     }
 
     /// HEAD's subject and the blob at `path` in its tree.
@@ -926,11 +965,6 @@ mod tests {
         fs::create_dir_all(dir.join(t)).unwrap();
         fs::write(dir.join("t/a"), "1\n").unwrap();
         commit_paths(&dir, &[t], "ai", "one").unwrap();
-        let staged = || {
-            let index = gix::open(&dir).unwrap().index_or_empty().unwrap();
-            let paths = index.entries().iter().map(|e| e.path(&index).to_string());
-            paths.collect::<Vec<_>>()
-        };
 
         // A held lock on HEAD's branch keeps HEAD where it is.
         let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
@@ -939,12 +973,55 @@ mod tests {
         fs::write(dir.join("t/b"), "2\n").unwrap();
         assert!(commit_paths(&dir, &[t], "ai", "two").is_err());
         assert_eq!(head(&dir, "t/a").0, "one");
-        assert_eq!(staged(), ["t/a", "t/b"]);
+        assert_eq!(staged(&dir), ["t/a", "t/b"]);
 
         fs::remove_file(&held).unwrap();
         commit_paths(&dir, &[t], "ai", "two").unwrap();
         assert_eq!(head(&dir, "t/b"), ("two".into(), "2\n".into()));
-        assert_eq!(staged(), ["t/a", "t/b"]);
+        assert_eq!(staged(&dir), ["t/a", "t/b"]);
+    }
+
+    #[test]
+    fn an_index_lock_left_behind_stops_no_commit() {
+        let (_tmp, dir) = first_commit();
+        let left = git_dir(&dir).join("index.lock");
+        fs::write(&left, "left by a killed git").unwrap();
+        let status = || {
+            let work = dir.to_str().unwrap();
+            git(&dir, &["--work-tree", work, "status", "--porcelain"])
+        };
+
+        fs::write(dir.join("a"), "1\n").unwrap();
+        commit(&dir, "ai", "one").unwrap();
+        assert_eq!(head(&dir, "a"), ("one".into(), "1\n".into()));
+        assert_eq!(staged(&dir), ["a", "first"]);
+        assert_eq!(status(), "");
+
+        put(&dir, "t/b", "2\n");
+        commit_paths(&dir, &[Path::new("t")], "ai", "two").unwrap();
+        assert_eq!(head(&dir, "t/b"), ("two".into(), "2\n".into()));
+        assert_eq!(staged(&dir), ["a", "first", "t/b"]);
+        assert_eq!(status(), "");
+
+        assert_eq!(fs::read_to_string(&left).unwrap(), "left by a killed git");
+    }
+
+    #[test]
+    fn a_commit_removes_the_index_a_killed_commit_left_half_written() {
+        let (_tmp, dir) = first_commit();
+        let left = git_dir(&dir).join(format!("{INDEX_TEMP}k1ll3d"));
+
+        fs::write(&left, "half").unwrap();
+        fs::write(dir.join("a"), "1\n").unwrap();
+        commit(&dir, "ai", "one").unwrap();
+        assert!(!left.exists());
+
+        fs::write(&left, "half").unwrap();
+        put(&dir, "t/b", "2\n");
+        commit_paths(&dir, &[Path::new("t")], "ai", "two").unwrap();
+        assert!(!left.exists());
+        assert_eq!(staged(&dir), ["a", "first", "t/b"]);
+        assert!(!git_dir(&dir).join("index.lock").exists());
     }
 
     #[test]
@@ -1088,13 +1165,14 @@ mod tests {
     #[test]
     fn a_failed_commit_is_recorded_and_keeps_its_asks_until_one_succeeds() {
         let (_tmp, dir) = first_commit();
-        let stale = git_dir(&dir).join("index.lock");
+        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
+        let stale = git_dir(&dir).join(format!("{}.lock", branch.as_bstr()));
         fs::write(&stale, "").unwrap();
         put(&dir, "a/x", "1\n");
         ask(&dir, Path::new("a"), "one").unwrap();
         let e = error::line(&commit_asked(&dir, "ai").unwrap_err());
         assert!(e.starts_with("Cannot commit "), "{e}");
-        assert!(e.contains("index.lock"), "{e}");
+        assert!(e.contains(".lock"), "{e}");
         assert_eq!(failed(&dir).unwrap().as_deref(), Some(e.as_str()));
         put(&dir, "b/y", "2\n");
         ask(&dir, Path::new("b"), "two").unwrap();

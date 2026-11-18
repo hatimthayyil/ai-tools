@@ -381,6 +381,12 @@ fn git(dir: &Path, args: &[&str]) -> String {
     stdout(&o)
 }
 
+/// The lock git takes to move the branch HEAD names in the repository at `dir`.
+fn branch_lock(dir: &Path) -> PathBuf {
+    let head = git(dir, &["symbolic-ref", "HEAD"]);
+    dir.join(".git").join(format!("{}.lock", head.trim()))
+}
+
 fn stderr(o: &Output) -> String {
     String::from_utf8(o.stderr.clone()).unwrap()
 }
@@ -3046,7 +3052,7 @@ fn a_commit_a_stale_git_lock_stops_names_the_lock_on_one_line() {
         s.ai_in("s-1", &["new", "dev"]),
         "Created agent dev. Start it: ai agent resume dev\n",
     );
-    let lock = s.homes().repo.join(".git/index.lock");
+    let lock = branch_lock(&s.homes().repo);
     fs::write(&lock, "").unwrap();
     s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
     let o = s.ai_in("s-1", &["attach", "dev"]);
@@ -3213,7 +3219,7 @@ fn a_hook_killed_mid_run_leaves_no_lock_and_the_next_event_commits_what_it_wrote
 fn a_failed_commit_is_told_by_every_command_until_one_succeeds() {
     let s = Sandbox::new();
     let ai = attached_dev(&s);
-    let stale = ai.join(".git/index.lock");
+    let stale = branch_lock(&ai);
     fs::write(&stale, "").unwrap();
     s.transcript("s-1", &talk(3, |k| format!("ask {k}")));
     ok(s.ai_in("s-1", &["end-session"]), "");

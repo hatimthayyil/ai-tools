@@ -5,9 +5,9 @@ use std::{io, mem::MaybeUninit, ptr};
 /// The signals git removes its lock files on before it dies of them.
 const TERMINATING: [libc::c_int; 4] = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM];
 
-/// Has each terminating signal remove the lock and temporary files gix holds (an index or a ref
+/// Has each terminating signal remove the lock and temporary files gix holds (an object or a ref
 /// being written) before the signal ends `ai` as it would have, as git's own handlers do: an
-/// interrupted commit then leaves no `index.lock` to refuse every later one. A signal ignored when
+/// interrupted commit then leaves no ref lock to refuse every later one. A signal ignored when
 /// `ai` starts stays ignored, so `nohup` and a shell's background jobs keep their meaning.
 ///
 /// SIGKILL cannot be caught, and a file gix is writing to at that instant is out of its reach, so
