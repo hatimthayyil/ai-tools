@@ -15,6 +15,10 @@
 - Glossary is given in `my/glossary.md`. Maintain `ai/glossary.md` yourself.
 - Backlog is given in `ai/backlog.md`.
 - Use one GitButler branch per feature. Forks commit onto that branch. Do not create a branch for a task, a fork or a single file. Create a second branch only when the user asks.
+- GitButler's target is the local branch `develop`. It has no upstream and must never get one: never push `develop`, since `but config target develop` makes it track `origin/develop` if that exists.
+- Land finished branches onto `develop` with `but land`. It moves only local refs, and `but undo` reverts it. Agents never push.
+- `main` tracks `origin/main` and holds only what Hatim publishes: he signs the tag on `develop`'s release commit, fast-forwards `main` with `git fetch . develop:main`, and pushes `main` and the tag.
+- Install for testing from `develop`: `nix profile install --builders '' "git+file:///hatimthayyil/code/ai-tools?ref=develop"`.
 
 ## Development
 
