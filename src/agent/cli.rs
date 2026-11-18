@@ -23,18 +23,19 @@ use crate::{
         record::{Binding, Key},
         rollup::Rollup,
         source::{self, Version},
-        store::{Snapshot, Store, Thread, ThreadInfo},
+        store::{self, Snapshot, Store, Thread, ThreadInfo},
         summarise::{Built, OnFail, build, plan, preview, rebuild, rewrite, summarise},
         sync::Synced,
         view::{Branch, Counts},
     },
     backup,
-    config::{FILE, Homes},
+    config::{FILE, Homes, Settings},
     error,
     file::{self, AtPath},
     memory::{Backend, Pattern, broken_pipe, claude::uuid, plural, quote, word},
     page,
     progress::{About, Mode, Past, Progress},
+    repo,
     summariser::WAIT,
 };
 
@@ -140,6 +141,11 @@ enum Command {
     )]
     Build(Build),
     #[command(
+        about = "commit what agents' events have written to ~/ai, after any commit under way.",
+        after_help = "Claude Code's hooks commit in the background: a session's end or a compaction asks for a commit, and a committer of its own makes it. When one fails, every ai agent command tells why until a commit succeeds; once the cause is fixed, the next event commits what waits, or this does now."
+    )]
+    Commit,
+    #[command(
         hide = true,
         about = "plumbing: copy this session's new entries into its thread."
     )]
@@ -157,7 +163,7 @@ enum Command {
     },
     #[command(
         hide = true,
-        about = "plumbing: copy the ended session's last entries into its thread, then commit the store."
+        about = "plumbing: copy the ended session's last entries into its thread, then ask for the store to be committed."
     )]
     EndSession {
         #[command(flatten)]
@@ -246,7 +252,7 @@ impl Resume {
     /// Runs in `cwd`, committing the store before the harness starts, or after a failure.
     fn run(&self, cwd: &Path) -> Result<ExitCode> {
         let msg = format!("ai agent resume {}", self.name);
-        committing(cwd, &msg, || resume(cwd, &self.name, &self.args))
+        committing(cwd, &msg, When::Now, || resume(cwd, &self.name, &self.args))
     }
 }
 
@@ -347,13 +353,43 @@ fn claude_config() -> Option<PathBuf> {
     claude::config_dir(|k| env::var(k).ok())
 }
 
-/// Runs `op`, then commits the agent store of the project at or above `cwd` as `msg`, whatever
-/// `op` returned, so what it wrote before failing is kept. `op`'s error comes first. A store
-/// this ai cannot read fails before `op` runs.
-fn committing<T>(cwd: &Path, msg: &str, op: impl FnOnce() -> Result<T>) -> Result<T> {
+/// Tells on stderr why the last commit of `~/ai` failed, while no commit has succeeded since:
+/// what the store's events wrote since waits uncommitted.
+fn tell_failed(homes: &Homes) {
+    match repo::failed(&homes.repo) {
+        Ok(None) => {}
+        Ok(Some(why)) => eprintln!(
+            "The last commit of ~/ai failed, so what agents wrote since waits uncommitted: {why} \
+             Once that is fixed, the next event commits it, or run: ai agent commit"
+        ),
+        Err(e) => eprintln!(
+            "Cannot read whether the last commit of ~/ai failed: {}",
+            error::line(&e)
+        ),
+    }
+}
+
+/// When an event's commit is made.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum When {
+    /// Before the command returns: what a person runs, which tells them of a failure at once.
+    Now,
+    /// By a committer in the background ([`Store::commit_later`]): what Claude Code's hooks run,
+    /// whose processes Claude Code may end at any instant. The command tells of an earlier
+    /// commit's failure instead.
+    Later,
+}
+
+/// Runs `op`, then commits the agent store of the project at or above `cwd` as `msg`, `when` it
+/// says, whatever `op` returned, so what it wrote before failing is kept. `op`'s error comes
+/// first. A store this ai cannot read fails before `op` runs.
+fn committing<T>(cwd: &Path, msg: &str, when: When, op: impl FnOnce() -> Result<T>) -> Result<T> {
     let store = Store::find(cwd)?;
     let r = op();
-    let c = store.map_or(Ok(()), |s| s.commit(msg));
+    let c = store.as_ref().map_or(Ok(()), |s| match when {
+        When::Now => s.commit(msg),
+        When::Later => s.commit_later(msg).map(|()| tell_failed(s.homes())),
+    });
     match (r, c) {
         (Ok(v), Ok(())) => Ok(v),
         (Ok(_), Err(e)) => Err(e),
@@ -379,38 +415,43 @@ impl Cli {
     /// Runs in `cwd`, printing to `out`; views, zooms and searches print whole on a `terminal`.
     /// Events commit the store: creating, renaming or removing an agent, attaching, detaching,
     /// resuming, a build but the background summariser's, a compaction and a session's end. A
-    /// turn's sync and a view leave what they wrote for the next event's commit.
+    /// turn's sync and a view leave what they wrote for the next event's commit. The events
+    /// Claude Code's hooks run (a compaction, a carry, a session's end) only ask for their commit
+    /// ([`When::Later`]); every other command tells of a failed one.
     pub fn run(self, cwd: &Path, out: &mut dyn Write, terminal: bool) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             agent: None,
             session: Session::default(),
         });
-        let msg = match &command {
-            Command::New { name } => format!("ai agent new {name}"),
-            Command::Rename { old, new } => format!("ai agent rename {old} {new}"),
-            Command::Remove { name } => format!("ai agent remove {name}"),
-            Command::Restore { name, .. } => format!("ai agent restore {name}"),
-            Command::Attach { name, .. } => format!("ai agent attach {name}"),
-            Command::Detach { .. } => "ai agent detach".into(),
+        let (msg, when) = match &command {
+            Command::New { name } => (format!("ai agent new {name}"), When::Now),
+            Command::Rename { old, new } => (format!("ai agent rename {old} {new}"), When::Now),
+            Command::Remove { name } => (format!("ai agent remove {name}"), When::Now),
+            Command::Restore { name, .. } => (format!("ai agent restore {name}"), When::Now),
+            Command::Attach { name, .. } => (format!("ai agent attach {name}"), When::Now),
+            Command::Detach { .. } => ("ai agent detach".into(), When::Now),
             Command::Build(b) if !b.background => match &b.target.agent {
-                Some(name) => format!("ai agent build {name}"),
-                None => "ai agent build".into(),
+                Some(name) => (format!("ai agent build {name}"), When::Now),
+                None => ("ai agent build".into(), When::Now),
             },
-            Command::CompactSession { .. } => "ai agent compact-session".into(),
-            Command::EndSession { .. } => "ai agent end-session".into(),
-            Command::CarrySession { .. } => "ai agent carry-session".into(),
-            Command::Resume(_)
-            | Command::List { .. }
+            Command::CompactSession { .. } => ("ai agent compact-session".into(), When::Later),
+            Command::EndSession { .. } => ("ai agent end-session".into(), When::Later),
+            Command::CarrySession { .. } => ("ai agent carry-session".into(), When::Later),
+            Command::Resume(_) | Command::Commit => return command.dispatch(cwd, out, terminal),
+            Command::List { .. }
             | Command::View { .. }
             | Command::Zoom { .. }
             | Command::Grep { .. }
             | Command::Build(_)
             | Command::SyncSession { .. }
             | Command::SessionName { .. } => {
+                if let Ok(homes) = Homes::user() {
+                    tell_failed(&homes);
+                }
                 return command.dispatch(cwd, out, terminal);
             }
         };
-        committing(cwd, &msg, || command.dispatch(cwd, out, terminal))
+        committing(cwd, &msg, when, || command.dispatch(cwd, out, terminal))
     }
 }
 
@@ -438,6 +479,7 @@ impl Command {
                 tool_output,
             } => grep(cwd, out, targets, &pat, tool_output, terminal),
             Command::Build(a) => build_cmd(cwd, out, a),
+            Command::Commit => commit(cwd, out),
             Command::SyncSession { session } => sync_session(cwd, session),
             Command::EndSession { session } => end_session(cwd, session),
             Command::CarrySession { from, session } => carry_session(cwd, out, &from, session),
@@ -445,6 +487,19 @@ impl Command {
             Command::SessionName { name } => session_name(cwd, out, &name),
         }
     }
+}
+
+/// Makes the commits of `~/ai` its queue holds, after any commit under way, and says what it
+/// did. Claude Code's hooks start it in the background, with no stdout.
+fn commit(cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+    let homes = Homes::user()?;
+    let n = store::commit_asked(&homes, &Settings::find_in(&homes, cwd))?;
+    match n {
+        0 => writeln!(out, "Nothing waits to be committed to ~/ai.")?,
+        1 => writeln!(out, "Committed 1 event's changes to ~/ai.")?,
+        n => writeln!(out, "Committed {n} events' changes to ~/ai.")?,
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn not_attached() -> Result<ExitCode> {

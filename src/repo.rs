@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs, io,
+    fs,
+    io::{self, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -15,11 +16,21 @@ use gix::{
     objs::tree::EntryKind,
 };
 use ignore::WalkBuilder;
+use serde::{Deserialize, Serialize};
 
-use crate::file::{self, AtPath, pretty};
+use crate::{
+    error,
+    file::{self, AtPath, pretty},
+};
 
 const GIT: &str = ".git";
 const LOCK: &str = "ai-commit.lock";
+/// In the git directory: a file for each commit [`ask`] queued and none has made yet.
+const QUEUE: &str = "ai-queue";
+/// In the git directory: held by the process making the commits [`ask`] queued.
+const COMMITTER: &str = "ai-committer.lock";
+/// In the git directory: why the last commit of the queue failed; gone once one succeeds.
+const FAILED: &str = "ai-commit-failed";
 /// In the git directory: the newest modification time among the loose objects [`gc`] counted when
 /// it last started `git gc`, in nanoseconds since the epoch.
 const GC_MARK: &str = "ai-gc";
@@ -36,6 +47,163 @@ pub fn git_dir(dir: &Path) -> PathBuf {
 /// The lock [`commit`] takes: holding it keeps every commit of `dir` waiting.
 pub fn lock(dir: &Path) -> Result<file::Lock> {
     file::lock(&git_dir(dir).join(LOCK))
+}
+
+/// A commit [`ask`] queued: what is under `path`, relative to the repository, as `msg`.
+#[derive(Serialize, Deserialize)]
+struct Ask {
+    path: String,
+    msg: String,
+}
+
+/// Asks for what is under `rel`, relative to the repository at `dir`, to be committed as `msg`,
+/// by queueing it for [`commit_asked`] in the git directory. Each ask is a file of its own,
+/// named by when it was made and written whole before one rename shows it, so none is read half
+/// written and none replaces another.
+pub fn ask(dir: &Path, rel: &Path, msg: &str) -> Result<()> {
+    let queue = git_dir(dir).join(QUEUE);
+    fs::create_dir_all(&queue).at(&queue)?;
+    let path = rel
+        .to_str()
+        .with_context(|| format!("{} is not UTF-8.", pretty(rel)))?
+        .trim_end_matches('/')
+        .to_string();
+    let mut f = tempfile::Builder::new()
+        .prefix(".")
+        .tempfile_in(&queue)
+        .at(&queue)?;
+    let ask = Ask {
+        path,
+        msg: msg.into(),
+    };
+    serde_json::to_writer(&mut f, &ask)?;
+    let made = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let suffix = f.path().file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let to = queue.join(format!("{made:020}{suffix}"));
+    f.persist_noclobber(&to).map_err(|e| e.error).at(&to)?;
+    Ok(())
+}
+
+/// The files of the asks queued in the repository at `dir`, in no order: those [`ask`] has
+/// shown, not one still being written.
+fn queued(dir: &Path) -> Result<Vec<PathBuf>> {
+    let queue = git_dir(dir).join(QUEUE);
+    let mut found = Vec::new();
+    for e in read_dir_if(&queue)? {
+        let p = e.at(&queue)?.path();
+        if p.file_name()
+            .is_some_and(|n| !n.as_encoded_bytes().starts_with(b"."))
+        {
+            found.push(p);
+        }
+    }
+    Ok(found)
+}
+
+/// The asks queued in the repository at `dir`, oldest first, each with its file. One whose file
+/// a committer removed meanwhile is left out: it is committed.
+fn asked(dir: &Path) -> Result<Vec<(PathBuf, Ask)>> {
+    let mut found = Vec::new();
+    for p in queued(dir)? {
+        let bytes = match fs::read(&p) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).at(&p),
+        };
+        let ask = serde_json::from_slice(&bytes)
+            .with_context(|| format!("{} is not an ask ai wrote.", pretty(&p)))?;
+        found.push((p, ask));
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(found)
+}
+
+/// Whether a process holds the lock [`commit_asked`] commits under: one that will look at the
+/// queue again before it ends.
+pub fn committing(dir: &Path) -> Result<bool> {
+    file::held(&git_dir(dir).join(COMMITTER))
+}
+
+/// Makes the commits [`ask`] queued in the repository at `dir`, by the user's git identity,
+/// else `me`: every ask found as one [`commit_paths`] of their paths, its message theirs in the
+/// order they were asked, then again until none is left; how many asks it committed. It commits
+/// holding the committer lock, waiting for another committer to let go of it first. An ask's
+/// file goes only once its commit is made, so a committer cut short leaves its asks for the
+/// next.
+///
+/// An ask queued while the lock is held may start no committer of its own ([`committing`]), so
+/// once this lets go of the lock, it looks at the queue again. A failure is recorded for
+/// [`failed`] and stops it, leaving what it failed on queued; a success clears the record.
+pub fn commit_asked(dir: &Path, me: &str) -> Result<usize> {
+    let mut n = 0;
+    loop {
+        let held = file::lock(&git_dir(dir).join(COMMITTER))?;
+        let done = commit_queue(dir, me);
+        record(dir, done.as_ref().err())?;
+        n += done?;
+        drop(held);
+        if queued(dir)?.is_empty() {
+            return Ok(n);
+        }
+    }
+}
+
+/// [`commit_asked`]'s commits, under its lock.
+fn commit_queue(dir: &Path, me: &str) -> Result<usize> {
+    let mut n = 0;
+    loop {
+        let asks = asked(dir)?;
+        if asks.is_empty() {
+            return Ok(n);
+        }
+        let mut paths: Vec<&str> = Vec::new();
+        let mut msgs: Vec<&str> = Vec::new();
+        for (_, a) in &asks {
+            if !paths.contains(&a.path.as_str()) {
+                paths.push(&a.path);
+            }
+            if !msgs.contains(&a.msg.as_str()) {
+                msgs.push(&a.msg);
+            }
+        }
+        let rels: Vec<&Path> = paths.iter().map(Path::new).collect();
+        commit_paths(dir, &rels, me, &msgs.join("; ")).with_context(|| {
+            let names: Vec<String> = paths.iter().map(|p| pretty(&dir.join(p))).collect();
+            format!("Cannot commit {}", names.join(", "))
+        })?;
+        for (p, _) in &asks {
+            fs::remove_file(p).at(p)?;
+        }
+        n += asks.len();
+    }
+}
+
+/// Records why [`commit_asked`] failed for [`failed`]; with no error, clears the record.
+fn record(dir: &Path, failure: Option<&anyhow::Error>) -> Result<()> {
+    let path = git_dir(dir).join(FAILED);
+    let Some(e) = failure else {
+        return match fs::remove_file(&path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e).at(&path),
+            _ => Ok(()),
+        };
+    };
+    let mut f = tempfile::NamedTempFile::new_in(git_dir(dir)).at(&git_dir(dir))?;
+    writeln!(f, "{}", error::line(e)).at(f.path())?;
+    f.persist(&path).map_err(|e| e.error).at(&path)?;
+    Ok(())
+}
+
+/// Why the last commit of the queue of the repository at `dir` failed, unless one has
+/// succeeded since: what it asked for waits there, uncommitted.
+pub fn failed(dir: &Path) -> Result<Option<String>> {
+    let path = git_dir(dir).join(FAILED);
+    match fs::read_to_string(&path) {
+        Ok(why) => Ok(Some(why.trim_end().to_string())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).at(&path),
+    }
 }
 
 /// Makes `dir` a git repository unless it is one. `.git` is made beside `dir` and renamed in,
@@ -841,5 +1009,101 @@ mod tests {
             [t.join("link"), t.join("sub/b.tmp")]
         );
         assert!(left_out(&dir, Path::new("none")).unwrap().is_empty());
+    }
+
+    /// A repository at `store` in a new temporary directory, with a first commit.
+    fn first_commit() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        fs::write(dir.join("first"), "").unwrap();
+        commit(&dir, "ai", "first").unwrap();
+        (tmp, dir)
+    }
+
+    /// Writes `text` to `rel` in `dir`, making its directory.
+    fn put(dir: &Path, rel: &str, text: &str) {
+        let p = dir.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    }
+
+    fn subjects(dir: &Path) -> String {
+        git(dir, &["log", "--format=%s"])
+    }
+
+    #[test]
+    fn the_asks_waiting_are_committed_as_one_commit_in_the_order_asked() {
+        let (_tmp, dir) = first_commit();
+        assert_eq!(commit_asked(&dir, "ai").unwrap(), 0, "nothing waits");
+        put(&dir, "a/x", "1\n");
+        put(&dir, "b/y", "2\n");
+        ask(&dir, Path::new("a"), "one").unwrap();
+        ask(&dir, Path::new("b/"), "two").unwrap();
+        ask(&dir, Path::new("a"), "one").unwrap();
+        ask(&dir, Path::new("a"), "three").unwrap();
+        assert_eq!(commit_asked(&dir, "ai").unwrap(), 4);
+        assert_eq!(subjects(&dir), "one; two; three\nfirst\n");
+        assert_eq!(head(&dir, "b/y").1, "2\n");
+        assert!(asked(&dir).unwrap().is_empty());
+        assert_eq!(commit_asked(&dir, "ai").unwrap(), 0);
+        assert_eq!(subjects(&dir), "one; two; three\nfirst\n");
+    }
+
+    #[test]
+    fn an_ask_made_while_a_commit_waits_on_git_is_committed_by_that_committer() {
+        let (_tmp, dir) = first_commit();
+        let mut config = fs::OpenOptions::new()
+            .append(true)
+            .open(git_dir(&dir).join("config"))
+            .unwrap();
+        writeln!(config, "[core]\n\tfilesRefLockTimeout = 60000").unwrap();
+        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
+        let held = git_dir(&dir).join(format!("{}.lock", branch.as_bstr()));
+        fs::write(&held, "").unwrap();
+        put(&dir, "a/x", "1\n");
+        ask(&dir, Path::new("a"), "one").unwrap();
+        let committer = {
+            let dir = dir.clone();
+            std::thread::spawn(move || commit_asked(&dir, "ai"))
+        };
+        let started = std::time::Instant::now();
+        while !git_dir(&dir).join("HEAD.lock").exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "no commit began"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(committing(&dir).unwrap());
+        put(&dir, "b/y", "2\n");
+        ask(&dir, Path::new("b"), "two").unwrap();
+        fs::remove_file(&held).unwrap();
+        assert_eq!(committer.join().unwrap().unwrap(), 2);
+        assert_eq!(subjects(&dir), "two\none\nfirst\n");
+        assert_eq!(head(&dir, "b/y").1, "2\n");
+        assert!(!committing(&dir).unwrap());
+    }
+
+    #[test]
+    fn a_failed_commit_is_recorded_and_keeps_its_asks_until_one_succeeds() {
+        let (_tmp, dir) = first_commit();
+        let stale = git_dir(&dir).join("index.lock");
+        fs::write(&stale, "").unwrap();
+        put(&dir, "a/x", "1\n");
+        ask(&dir, Path::new("a"), "one").unwrap();
+        let e = error::line(&commit_asked(&dir, "ai").unwrap_err());
+        assert!(e.starts_with("Cannot commit "), "{e}");
+        assert!(e.contains("index.lock"), "{e}");
+        assert_eq!(failed(&dir).unwrap().as_deref(), Some(e.as_str()));
+        put(&dir, "b/y", "2\n");
+        ask(&dir, Path::new("b"), "two").unwrap();
+        assert!(commit_asked(&dir, "ai").is_err());
+        assert_eq!(asked(&dir).unwrap().len(), 2, "what failed stays queued");
+
+        fs::remove_file(&stale).unwrap();
+        assert_eq!(commit_asked(&dir, "ai").unwrap(), 2);
+        assert_eq!(failed(&dir).unwrap(), None);
+        assert_eq!(subjects(&dir), "one; two\nfirst\n");
     }
 }

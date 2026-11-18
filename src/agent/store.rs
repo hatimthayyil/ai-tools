@@ -2,7 +2,9 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs, io,
     ops::Range,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
+    process::{self, Stdio},
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
@@ -26,7 +28,7 @@ use crate::{
     error,
     file::{self, AtPath, human, pretty},
     jsonl,
-    memory::{CALLS, Who},
+    memory::{self, CALLS, Who},
     project::Project,
     repo,
 };
@@ -55,6 +57,8 @@ const WRITE_LOCK: &str = "write.lock";
 /// The compactor's lock on a thread, and its log.
 const COMPACT_LOCK: &str = "compact.lock";
 const COMPACT_LOG: &str = "compact.log";
+/// In `~/ai`'s git directory: what a committer [`Store::spawn_committer`] started printed.
+const COMMITTER_LOG: &str = "ai-committer.log";
 
 /// `name` if it names a thread: letters, digits, `-` and `_`, starting with a letter or digit.
 pub fn check_name(name: &str) -> Result<&str> {
@@ -69,6 +73,14 @@ pub fn check_name(name: &str) -> Result<&str> {
         bail!("'{name}' is not a thread name: letters, digits, '-' and '_'.");
     }
     Ok(name)
+}
+
+/// Makes every commit `~/ai`'s queue holds ([`repo::commit_asked`]), waiting for a commit under
+/// way, then starts `git gc` if `settings` say it is due ([`gc`]); how many asks it committed.
+pub fn commit_asked(homes: &Homes, settings: &Settings) -> Result<usize> {
+    let n = repo::commit_asked(&homes.repo, "ai")?;
+    gc(homes, settings);
+    Ok(n)
 }
 
 /// After a commit to `~/ai`, starts `git gc` on it once the loose objects written since the last
@@ -576,19 +588,68 @@ impl Store {
         Ok(Restored { detached })
     }
 
-    /// Commits the project's folder of `~/ai` as one commit `msg`, leaving the rest of the
-    /// repository as it is; nothing if the folder did not change or does not exist.
+    /// Commits the project's folder of `~/ai` as `msg`, with whatever else the queue holds
+    /// ([`Store::commit_asked`]), leaving the rest of the repository as it is; nothing if
+    /// nothing changed. It waits for a commit under way.
     pub fn commit(&self, msg: &str) -> Result<()> {
+        self.ask(msg)?;
+        self.commit_asked()?;
+        Ok(())
+    }
+
+    /// Asks for the project's folder of `~/ai` to be committed as `msg` by a committer of its
+    /// own, started unless one is running ([`Store::spawn_committer`]), and returns without
+    /// waiting for it. Claude Code ends a hook that outlasts its bound, SIGKILL included, so a
+    /// commit made in a hook's process can be cut short with git's lock left behind; the
+    /// committer is outside the hook's processes once the hook exits.
+    pub fn commit_later(&self, msg: &str) -> Result<()> {
+        if self.ask(msg)? && !repo::committing(&self.homes.repo)? {
+            self.spawn_committer()?;
+        }
+        Ok(())
+    }
+
+    /// Queues the project's folder to be committed as `msg`; whether it did, which it does not
+    /// when the folder does not exist.
+    fn ask(&self, msg: &str) -> Result<bool> {
         let folder = self.project.folder(&self.homes)?;
         if !folder.exists() {
-            return Ok(());
+            return Ok(false);
         }
         let rel = folder
             .strip_prefix(&self.homes.repo)
             .expect("a project's folder is in the user's repository");
-        repo::commit_paths(&self.homes.repo, &[rel], "ai", msg)
-            .with_context(|| format!("Cannot commit {}", pretty(&folder)))?;
-        gc(&self.homes, &self.settings());
+        repo::ask(&self.homes.repo, rel, msg)?;
+        Ok(true)
+    }
+
+    /// [`commit_asked`] with what `ai.toml` sets where this store was found.
+    pub fn commit_asked(&self) -> Result<usize> {
+        commit_asked(&self.homes, &self.settings())
+    }
+
+    /// Starts `ai agent commit` in this store's directory, detached: in a session and process
+    /// group of its own, with no stdin or stdout and stderr appended to
+    /// `~/ai/.git/ai-committer.log`, so it holds none of the caller's pipes and outlives it.
+    fn spawn_committer(&self) -> Result<()> {
+        let exe = std::env::current_exe().context("Cannot find this ai to start a commit.")?;
+        let log = repo::git_dir(&self.homes.repo).join(COMMITTER_LOG);
+        let mut c = process::Command::new(exe);
+        c.args(["agent", "commit"])
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(memory::log::open(&log)?);
+        // SAFETY: setsid is async-signal-safe, and the closure touches no other state.
+        unsafe {
+            c.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        c.spawn().context("Cannot start a commit of ~/ai.")?;
         Ok(())
     }
 

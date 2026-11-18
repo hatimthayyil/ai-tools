@@ -2,9 +2,12 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     mem::MaybeUninit,
-    os::fd::{AsRawFd, FromRawFd},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::process::CommandExt,
+    },
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     ptr, thread,
     time::{Duration, Instant},
 };
@@ -474,6 +477,16 @@ fn turn_ends(s: &Sandbox, name: &str) -> Vec<u64> {
         .iter()
         .map(|x| branch[x.span.end - 1] as u64)
         .collect()
+}
+
+/// Waits up to a minute for `done`, as for a committer in the background: fails naming `what`
+/// if it never is.
+fn until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !done() {
+        assert!(Instant::now() < deadline, "waited a minute for {what}");
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// The lines of one section of a view, each item under a turn's number with its whole id.
@@ -3003,7 +3016,9 @@ fn a_turns_sync_waits_for_the_next_event_to_be_committed() {
     );
     assert!(!clean(), "what they wrote waits on disk");
     ok(s.ai_in("s-1", &["end-session"]), "");
+    until("the session's end to be committed", || log() != events);
     assert_eq!(log(), format!("ai agent end-session\n{events}"));
+    until("its committer to end", || !repo::committing(&ai).unwrap());
     assert!(clean(), "the next event commits it");
 
     let top = || log().lines().next().unwrap().to_string();
@@ -3016,7 +3031,8 @@ fn a_turns_sync_waits_for_the_next_event_to_be_committed() {
         ok(s.ai_in("s-1", &["sync-session"]), "");
         let o = s.ai_in("s-1", args);
         assert!(o.status.success(), "{msg}: {}", stderr(&o));
-        assert_eq!(top(), msg);
+        until(msg, || top() == msg);
+        until("its committer to end", || !repo::committing(&ai).unwrap());
         assert!(clean(), "{msg} commits the turn synced before it");
     }
     s.ai(&["resume", "dev"]);
@@ -3048,6 +3064,210 @@ fn a_commit_a_stale_git_lock_stops_names_the_lock_on_one_line() {
         "a cause is told once: {e}"
     );
     assert!(!e.contains(".rs:"), "no source locations: {e}");
+}
+
+/// An agent `dev` with session `s-1` attached, two turns in; `~/ai`.
+fn attached_dev(s: &Sandbox) -> PathBuf {
+    ok(
+        s.ai_in("s-1", &["new", "dev"]),
+        "Created agent dev. Start it: ai agent resume dev\n",
+    );
+    s.transcript("s-1", &talk(2, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["attach", "dev"]), "Attached to dev.\n");
+    s.homes().repo
+}
+
+/// `ai agent end-session` for session `s-1`, started as the leader of a process group of its
+/// own, as Claude Code starts a hook.
+fn end_session_hook(s: &Sandbox) -> std::process::Child {
+    s.cmd(&s.repo())
+        .env("CLAUDE_CODE_SESSION_ID", "s-1")
+        .arg("end-session")
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// Sends `sig` to process group `pgid`; the error if it reached no process.
+fn kill_group(pgid: u32, sig: libc::c_int) -> Option<io::Error> {
+    // SAFETY: kill takes a process group and a signal.
+    let r = unsafe { libc::kill(-(pgid as libc::pid_t), sig) };
+    (r != 0).then(io::Error::last_os_error)
+}
+
+/// The lock files git and gix make in `~/ai`'s git directory, of those that are there.
+fn git_locks(ai: &Path) -> Vec<String> {
+    let git_dir = ai.join(".git");
+    let mut found = Vec::new();
+    for e in ignore::WalkBuilder::new(&git_dir)
+        .standard_filters(false)
+        .build()
+        .flatten()
+    {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // ai's own locks are OS locks on files that stay, released when their process ends.
+        if name.ends_with(".lock") && !name.starts_with("ai-") {
+            found.push(
+                e.path()
+                    .strip_prefix(&git_dir)
+                    .unwrap()
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    found
+}
+
+#[test]
+fn a_hooks_commit_is_made_outside_its_processes_so_ending_them_leaves_no_lock() {
+    let s = Sandbox::new();
+    let ai = attached_dev(&s);
+    let log = || git(&ai, &["log", "--format=%s"]);
+    let before = log();
+    // Holds the lock of HEAD's branch, which a commit's ref update waits on for a minute.
+    let git_dir = ai.join(".git");
+    let mut config = fs::OpenOptions::new()
+        .append(true)
+        .open(git_dir.join("config"))
+        .unwrap();
+    writeln!(config, "[core]\n\tfilesRefLockTimeout = 60000").unwrap();
+    let head = fs::read_to_string(git_dir.join("HEAD")).unwrap();
+    let held = git_dir.join(format!(
+        "{}.lock",
+        head.trim().strip_prefix("ref: ").unwrap()
+    ));
+    fs::write(&held, "").unwrap();
+
+    s.transcript("s-1", &talk(3, |k| format!("ask {k}")));
+    let hook = end_session_hook(&s);
+    let pgid = hook.id();
+    let o = hook.wait_with_output().unwrap();
+    assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
+    until("the committer's commit to begin", || {
+        git_dir.join("HEAD.lock").exists()
+    });
+    assert!(repo::committing(&ai).unwrap());
+    assert_eq!(
+        log(),
+        before,
+        "the hook returned before its commit was made"
+    );
+    let gone = kill_group(pgid, libc::SIGKILL).expect("nothing is left in the hook's group");
+    assert_eq!(gone.raw_os_error(), Some(libc::ESRCH));
+
+    fs::remove_file(&held).unwrap();
+    until("the committer's commit", || log() != before);
+    assert_eq!(log(), format!("ai agent end-session\n{before}"));
+    until("the committer to end", || !repo::committing(&ai).unwrap());
+    assert_eq!(git_locks(&ai), Vec::<String>::new());
+    assert_eq!(git(&ai, &["status", "--porcelain"]), "");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hook_killed_mid_run_leaves_no_lock_and_the_next_event_commits_what_it_wrote() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let s = Sandbox::new();
+    let ai = attached_dev(&s);
+    let log = || git(&ai, &["log", "--format=%s"]);
+    let before = log();
+    let id = Project::find(&s.repo()).unwrap().unwrap().id;
+    let write = s
+        .homes()
+        .machine
+        .join("agents")
+        .join(&id)
+        .join("threads/dev/write.lock");
+    let thread = ai_tools::file::lock(&write).unwrap();
+
+    s.transcript("s-1", &talk(3, |k| format!("ask {k}")));
+    let mut hook = end_session_hook(&s);
+    let fds = format!("/proc/{}/fd", hook.id());
+    until("the hook to wait on the thread's lock", || {
+        fs::read_dir(&fds).is_ok_and(|d| {
+            d.flatten()
+                .any(|e| fs::read_link(e.path()).is_ok_and(|l| l == write))
+        })
+    });
+    assert!(kill_group(hook.id(), libc::SIGKILL).is_none());
+    assert_eq!(hook.wait().unwrap().signal(), Some(libc::SIGKILL));
+    drop(thread);
+    assert_eq!(git_locks(&ai), Vec::<String>::new());
+    assert_eq!(repo::failed(&ai).unwrap(), None);
+    assert_eq!(log(), before);
+
+    let o = end_session_hook(&s).wait_with_output().unwrap();
+    assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
+    until("the next event's commit", || log() != before);
+    assert_eq!(log(), format!("ai agent end-session\n{before}"));
+    until("the committer to end", || !repo::committing(&ai).unwrap());
+    assert_eq!(git(&ai, &["status", "--porcelain"]), "");
+    assert_eq!(turn_ends(&s, "dev").len(), 3);
+}
+
+#[test]
+fn a_failed_commit_is_told_by_every_command_until_one_succeeds() {
+    let s = Sandbox::new();
+    let ai = attached_dev(&s);
+    let stale = ai.join(".git/index.lock");
+    fs::write(&stale, "").unwrap();
+    s.transcript("s-1", &talk(3, |k| format!("ask {k}")));
+    ok(s.ai_in("s-1", &["end-session"]), "");
+    until("the committer's failure", || {
+        repo::failed(&ai).unwrap().is_some()
+    });
+    let told = |o: &Output| {
+        let e = stderr(o);
+        assert!(
+            e.starts_with(
+                "The last commit of ~/ai failed, so what agents wrote since waits uncommitted: \
+                 Cannot commit ~/ai/projects/repo: "
+            ),
+            "{e}"
+        );
+        assert!(e.contains(&stale.display().to_string()), "{e}");
+        assert!(
+            e.ends_with(
+                " Once that is fixed, the next event commits it, or run: ai agent commit\n"
+            ),
+            "{e}"
+        );
+    };
+    let list = s.ai(&["list"]);
+    assert_eq!(code(&list), 0);
+    assert!(stdout(&list).starts_with("dev  "), "{}", stdout(&list));
+    told(&list);
+    s.transcript("s-1", &talk(4, |k| format!("ask {k}")));
+    let o = s.ai_in("s-1", &["end-session"]);
+    assert_eq!(code(&o), 0);
+    told(&o);
+    let o = s.ai(&["commit"]);
+    assert_eq!(code(&o), 1);
+    assert!(
+        stderr(&o).starts_with("Cannot commit ~/ai/projects/repo: "),
+        "{}",
+        stderr(&o)
+    );
+
+    fs::remove_file(&stale).unwrap();
+    assert_eq!(code(&s.ai(&["commit"])), 0);
+    until("the committers to end", || !repo::committing(&ai).unwrap());
+    assert_eq!(
+        git(&ai, &["log", "-1", "--format=%s"]),
+        "ai agent end-session\n"
+    );
+    assert_eq!(git(&ai, &["status", "--porcelain"]), "");
+    assert_eq!(repo::failed(&ai).unwrap(), None);
+    let list = s.ai(&["list"]);
+    assert_eq!(stderr(&list), "");
+    ok(
+        s.ai(&["commit"]),
+        "Nothing waits to be committed to ~/ai.\n",
+    );
 }
 
 #[test]
