@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
-    process::{self, ExitCode},
+    process::{self, Command as Process, ExitCode},
     time::Instant,
 };
 
@@ -27,7 +27,7 @@ use crate::{
         prov,
         record::{Kind, Message, Node, Place, Who, midnight},
         stats::{Stats, stats},
-        store::{ME, Snapshot, Store},
+        store::{ME, Site, Snapshot, Store},
         tree::{Coord, LEVELS, ancestors, overlapping},
         usage::{self, Tally, Use},
         view::{Mem, PLACEHOLDER, VIEW},
@@ -86,7 +86,7 @@ subagent. Don't run {memo}.`";
 #[command(
     name = "memory",
     about = "A permanent, append-only memory for AI agents.",
-    after_help = "The memories live in ~/.ai/memory, or in $AI_MEMORY_DIR if set."
+    after_help = "The memories live in your git repository ~/ai, under refs/ai/memory, with this machine's logs in ~/.ai/memory. $AI_MEMORY_DIR, if set, names a memory whole in one directory instead."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -322,11 +322,15 @@ impl Default for Runtime {
     }
 }
 
-/// Starts `ai <tool> build` on the store at `dir` (named to it by `$var`), detached; it logs to
+/// Starts `ai <tool> build`, detached, on the store `name` names to it; it logs to
 /// `summarise.log` in `log_dir`, its stderr too.
-pub fn spawn_summariser(tool: &str, var: &str, dir: &Path, log_dir: &Path) -> Result<()> {
+pub fn spawn_summariser(
+    tool: &str,
+    log_dir: &Path,
+    name: impl FnOnce(&mut Process) -> &mut Process,
+) -> Result<()> {
     log::spawn(&log_dir.join(log::SUMMARISE_LOG), |c| {
-        c.args([tool, "build"]).env(var, dir)
+        name(c.args([tool, "build"]))
     })
 }
 
@@ -338,11 +342,6 @@ pub fn store_dir(var: &str, name: &str) -> Result<PathBuf> {
     let home = settings::home()
         .with_context(|| format!("No home directory. Point {var} at the {name}."))?;
     Ok(home.join(name))
-}
-
-/// `$AI_MEMORY_DIR`, else `~/.ai/memory`.
-pub fn default_dir() -> Result<PathBuf> {
-    store_dir("AI_MEMORY_DIR", "memory")
 }
 
 impl Cli {
@@ -357,7 +356,7 @@ impl Cli {
         }
     }
 
-    /// Runs against the default memory, with the sizes `ai.toml` sets here, printing to stdout.
+    /// Runs against [`Site::env`]'s memory, with the sizes `ai.toml` sets here, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
         let settings = Settings::find(&cwd);
@@ -370,22 +369,22 @@ impl Cli {
             summariser: Box::new(move || summariser.summariser()),
             ..Runtime::default()
         };
-        match self.run_with(&default_dir()?, &mut io::stdout().lock(), &rt) {
+        match self.run_with(&Site::env()?, &mut io::stdout().lock(), &rt) {
             Err(e) if broken_pipe(&e) => Ok(ExitCode::SUCCESS),
             r => r,
         }
     }
 
-    pub fn run_with(self, dir: &Path, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+    pub fn run_with(self, site: &Site, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         let command = self.command.unwrap_or(Command::View {
             whole: false,
             tree: None,
             meta: Meta::default(),
         });
         if let Command::Init = command {
-            return init(dir, out, &(rt.config)()?);
+            return init(site, out, &(rt.config)()?);
         }
-        let s = Store::open(dir)?;
+        let s = Store::open(site)?;
         let cwd = std::env::current_dir().ok();
         let mut place = cwd.as_deref().map(prov::place).unwrap_or_default();
         if let (Command::Note { .. }, Some(cwd)) = (&command, &cwd) {
@@ -396,7 +395,7 @@ impl Cli {
         let mut out = Tally::new(out);
         let quiet = matches!(command, Command::PromptHook);
         let r = match command {
-            Command::PromptHook => hook(&mut out, (rt.stdin)(), dir, &mut who).map(|rule| {
+            Command::PromptHook => hook(&mut out, (rt.stdin)(), s.dir(), &mut who).map(|rule| {
                 args.extend(rule.into_iter().flat_map(|r| [REMINDED.into(), r.into()]));
                 ExitCode::SUCCESS
             }),
@@ -407,7 +406,7 @@ impl Cli {
             Ok(_) => Some("exit 1".into()),
             Err(e) => Some(error::line(e)),
         };
-        let _ = usage::record(dir, &Use::new(cmd, args, &place, &who, &out, error));
+        let _ = usage::record(s.dir(), &Use::new(cmd, args, &place, &who, &out, error));
         if quiet { Ok(ExitCode::SUCCESS) } else { r }
     }
 }
@@ -488,9 +487,9 @@ fn check(text: &str, target: u64) -> Result<&str> {
     Ok(text)
 }
 
-fn init(dir: &Path, out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
-    let (s, fresh) = Store::create(dir)?;
-    let at = pretty(dir);
+fn init(site: &Site, out: &mut dyn Write, cfg: &Config) -> Result<ExitCode> {
+    let (s, fresh) = Store::create(site)?;
+    let at = site;
     if fresh {
         writeln!(out, "Created {at}: your memory.")?;
     } else {
@@ -593,7 +592,7 @@ fn note(
     let (i, _, _) = s.append("note", &[m])?;
     writeln!(out, "Saved as {i}.")?;
     if rt.summarise_on_note && pending(s)? && summariser::usable((rt.summariser)()).is_some() {
-        spawn_summariser("memory", "AI_MEMORY_DIR", s.dir(), s.dir())?;
+        spawn_summariser("memory", s.dir(), |c| s.site().name_to(c))?;
     }
     Ok(ExitCode::SUCCESS)
 }

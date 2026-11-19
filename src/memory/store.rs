@@ -1,8 +1,9 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fmt, fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    process::Command,
     rc::Rc,
 };
 
@@ -11,6 +12,7 @@ use gix::ObjectId;
 use tempfile::NamedTempFile;
 
 use crate::{
+    config::Homes,
     file::{self, AtPath, pretty},
     git::{Changes, Ref, Snap, fan_path},
     memory::{
@@ -20,12 +22,17 @@ use crate::{
         upgrade::{self, FORMAT},
     },
     record::Seg,
+    repo,
 };
 
 pub const ME: &str = "ai memory";
 pub const REF: &str = "refs/ai/memory";
 pub const LOG: &str = "log";
 const SEG: u64 = 256;
+/// Names a memory whole in one directory; see [`Site::Whole`].
+pub const DIR_VAR: &str = "AI_MEMORY_DIR";
+/// In `~/.ai`: the directory of this machine's files of the user's memory.
+const DIR: &str = "memory";
 const ORIGIN: &str = "origin";
 /// The compactor's lock file; an upgrade takes it too.
 const LOCK: &str = "compact.lock";
@@ -110,8 +117,113 @@ fn saved(st: State) -> Changes {
     ch
 }
 
+/// Where a memory is kept.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Site {
+    /// The user's memory: its ref in the user's git repository, `~/ai`, and this machine's
+    /// files in `~/.ai/memory`.
+    User(Homes),
+    /// A memory whole in one directory, the one `$AI_MEMORY_DIR` names: a bare git repository
+    /// holding its ref, with this machine's files beside git's.
+    Whole(PathBuf),
+}
+
+impl Site {
+    /// The memory `$AI_MEMORY_DIR` names, else the user's.
+    pub fn env() -> Result<Site> {
+        match std::env::var_os(DIR_VAR).filter(|d| !d.is_empty()) {
+            Some(d) => Ok(Site::Whole(d.into())),
+            None => Ok(Site::User(Homes::user()?)),
+        }
+    }
+
+    pub fn whole(dir: &Path) -> Site {
+        Site::Whole(dir.to_path_buf())
+    }
+
+    /// The git repository holding the memory's ref.
+    pub fn repo(&self) -> &Path {
+        match self {
+            Site::User(homes) => &homes.repo,
+            Site::Whole(dir) => dir,
+        }
+    }
+
+    /// The directory of this machine's files of the memory: its origin, locks, logs, recorded
+    /// calls and usage. None of them is in git.
+    pub fn dir(&self) -> PathBuf {
+        match self {
+            Site::User(homes) => homes.machine.join(DIR),
+            Site::Whole(dir) => dir.clone(),
+        }
+    }
+
+    /// Makes `c`, a run of this program, find this memory as [`Site::env`]'s.
+    pub fn name_to<'c>(&self, c: &'c mut Command) -> &'c mut Command {
+        match self {
+            Site::User(homes) => c.env_remove(DIR_VAR).env("HOME", &homes.home),
+            Site::Whole(dir) => c.env(DIR_VAR, dir),
+        }
+    }
+
+    /// The repository of this site if it is one a memory can be in, with whether it holds the
+    /// memory's ref. A user's repository that cannot be read is an error; a whole memory is
+    /// only ever a bare repository, so `$AI_MEMORY_DIR` at a checkout is no memory.
+    fn open(&self) -> Result<Option<(gix::Repository, bool)>> {
+        let repo = match self {
+            Site::User(homes) if !repo::exists(&homes.repo) => None,
+            Site::User(homes) => Some(
+                gix::open(&homes.repo)
+                    .with_context(|| format!("Cannot open {}.", pretty(&homes.repo)))?,
+            ),
+            Site::Whole(dir) => gix::open(dir).ok().filter(|r| r.is_bare()),
+        };
+        let Some(repo) = repo else {
+            return Ok(None);
+        };
+        let has = has_ref(&repo)?;
+        Ok(Some((repo, has)))
+    }
+
+    /// Refuses the user's memory while it is still where ai kept it before: a bare repository
+    /// at `~/.ai/memory` holding the ref, when the user's repository has no ref of its own.
+    /// Starting an empty memory beside it would hide every memory it holds.
+    fn refuse_unconverted(&self, has: bool) -> Result<()> {
+        let Site::User(_) = self else {
+            return Ok(());
+        };
+        let old = self.dir();
+        if !has
+            && let Ok(r) = gix::open(&old)
+            && r.is_bare()
+            && has_ref(&r)?
+        {
+            bail!(
+                "Your memory is still in {}, where ai kept it before; it now lives in {}. \
+                 To move it, run: ai convert",
+                pretty(&old),
+                pretty(self.repo())
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The site as the user names it: the directory holding the memory's ref.
+impl fmt::Display for Site {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        pretty(self.repo()).fmt(f)
+    }
+}
+
+/// Whether `repo` holds a memory's ref.
+fn has_ref(repo: &gix::Repository) -> Result<bool> {
+    Ok(repo.try_find_reference(REF)?.is_some())
+}
+
 pub struct Store {
     git: Ref,
+    site: Site,
     dir: PathBuf,
     origin: String,
 }
@@ -139,47 +251,58 @@ fn crockford(bits: u32, len: usize) -> String {
 
 impl Store {
     /// Opens an existing memory; only [`Store::create`] makes one.
-    pub fn open(dir: &Path) -> Result<Store> {
-        match Store::find(dir)? {
+    pub fn open(site: &Site) -> Result<Store> {
+        match Store::find(site)? {
             Some(s) => Ok(s),
             None => bail!(
-                "No memory at {}.\nTo create one, run: {ME} init\n\
-                 To use an existing one, point AI_MEMORY_DIR at it.",
-                dir.display()
+                "No memory at {site}.\nTo create one, run: {ME} init\n\
+                 To use an existing one, point {DIR_VAR} at it."
             ),
         }
     }
 
-    /// Opens the memory at `dir`, creating it if absent; returns whether it was new.
-    pub fn create(dir: &Path) -> Result<(Store, bool)> {
-        if let Some(s) = Store::find(dir)? {
+    /// Opens the memory at `site`, setting it up if absent; returns whether it is new, with
+    /// nothing in it from another machine.
+    pub fn create(site: &Site) -> Result<(Store, bool)> {
+        if let Some(s) = Store::find(site)? {
             return Ok((s, false));
         }
-        if fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
-            bail!(
-                "{} is not a memory, and not empty. Point AI_MEMORY_DIR elsewhere.",
-                pretty(dir)
-            );
+        match site {
+            Site::User(homes) => repo::ensure(&homes.repo)?,
+            Site::Whole(dir) => {
+                if fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
+                    bail!(
+                        "{} is not a memory, and not empty. Point {DIR_VAR} elsewhere.",
+                        pretty(dir)
+                    );
+                }
+                fs::create_dir_all(dir).at(dir)?;
+                gix::init_bare(dir)?;
+            }
         }
-        fs::create_dir_all(dir).at(dir)?;
-        gix::init_bare(dir)?;
-        Ok((Store::open(dir)?, true))
+        let dir = site.dir();
+        fs::create_dir_all(&dir).at(&dir)?;
+        let s = Store::open(site)?;
+        let new = s.head()?.is_none();
+        Ok((s, new))
     }
 
-    fn find(dir: &Path) -> Result<Option<Store>> {
-        if !dir.is_dir() {
-            return Ok(None);
-        }
-        let Ok(mut repo) = gix::open(dir) else {
+    /// The memory at `site`, set up by [`Store::create`]: its repository, and the directory of
+    /// this machine's files. A user's repository alone is no memory, even one holding the ref,
+    /// so no command but `init` starts a memory, or takes up one from another machine. A
+    /// memory is empty until its ref is made.
+    fn find(site: &Site) -> Result<Option<Store>> {
+        let found = site.open()?;
+        site.refuse_unconverted(found.as_ref().is_some_and(|(_, has)| *has))?;
+        let dir = site.dir();
+        let Some((mut repo, _)) = found.filter(|_| dir.is_dir()) else {
             return Ok(None);
         };
-        if !repo.is_bare() {
-            return Ok(None);
-        }
         repo.committer_or_set_fallback(ME, "ai@localhost")?;
         let mut s = Store {
             git: Ref::new(repo, REF.into(), "memory", FORMAT),
-            dir: dir.to_path_buf(),
+            site: site.clone(),
+            dir,
             origin: String::new(),
         };
         s.upgrade()?;
@@ -229,7 +352,7 @@ impl Store {
         file::try_lock(&self.dir.join(LOCK))
     }
 
-    /// The origin in this store's `origin` file, made by the first open.
+    /// The origin in this store's `origin` file, one of this machine's, made by the first open.
     fn load_origin(&self) -> Result<String> {
         let p = self.dir.join(ORIGIN);
         if let Some(o) = read_origin(&p)? {
@@ -245,6 +368,12 @@ impl Store {
         read_origin(&p)?.with_context(|| format!("{} vanished.", pretty(&p)))
     }
 
+    /// Where this memory is kept.
+    pub fn site(&self) -> &Site {
+        &self.site
+    }
+
+    /// The directory of this machine's files of the memory; see [`Site::dir`].
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -758,5 +887,47 @@ impl<'s> Snapshot<'s> {
             Ok(())
         })?;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::*;
+
+    /// What `site` sets or removes in the environment of a command it is named to.
+    fn named(site: &Site) -> Vec<(String, Option<String>)> {
+        let mut c = Command::new("ai");
+        site.name_to(&mut c);
+        let text = |s: &OsStr| s.to_string_lossy().into_owned();
+        c.get_envs().map(|(k, v)| (text(k), v.map(text))).collect()
+    }
+
+    #[test]
+    fn a_command_named_a_memory_opens_the_same_one() {
+        assert_eq!(
+            named(&Site::User(Homes::at(Path::new("/h")))),
+            [
+                (DIR_VAR.to_string(), None),
+                ("HOME".to_string(), Some("/h".to_string()))
+            ]
+        );
+        assert_eq!(
+            named(&Site::whole(Path::new("/m"))),
+            [(DIR_VAR.to_string(), Some("/m".to_string()))]
+        );
+    }
+
+    #[test]
+    fn the_users_memory_keeps_its_ref_in_the_repository_and_this_machines_files_in_the_machine_folder()
+     {
+        let site = Site::User(Homes::at(Path::new("/h")));
+        assert_eq!(
+            (site.repo(), site.dir()),
+            (Path::new("/h/ai"), PathBuf::from("/h/.ai/memory"))
+        );
+        let site = Site::whole(Path::new("/m"));
+        assert_eq!((site.repo(), site.dir()), (Path::new("/m"), "/m".into()));
     }
 }

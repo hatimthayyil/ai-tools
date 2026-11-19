@@ -15,7 +15,7 @@ use ai_tools::file::pretty;
 use ai_tools::memory::{
     Backend, Block, Cli, Compactor, Config, Conversation, Coord, Event, Field, GaveUp, HIDDEN,
     Kind, LONG_PROMPT, Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY,
-    REMINDER, Runtime, Store, Usage, VIEW, View, Who, zoom,
+    REMINDER, Runtime, Site, Store, Usage, VIEW, View, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -94,7 +94,7 @@ fn run_rt(dir: &Path, rt: &Runtime, args: &[&str]) -> Out {
         }
     };
     let mut buf = Vec::new();
-    let result = cli.run_with(dir, &mut buf, rt);
+    let result = cli.run_with(&Site::whole(dir), &mut buf, rt);
     let stdout = String::from_utf8(buf).unwrap();
     match result {
         Ok(c) => Out {
@@ -412,7 +412,7 @@ fn due_is_every_ready_node_oldest_level_first() {
 #[test]
 fn short_messages_are_their_own_nodes() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     let (first, built, snap) = s
         .append(
             "t",
@@ -479,7 +479,7 @@ fn short_messages_are_their_own_nodes() {
 #[test]
 fn zoom_opens_two_levels() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     let items: Vec<_> = (0..16)
         .map(|i| msg(Kind::User, format!("w{i}\nm")))
         .collect();
@@ -550,7 +550,7 @@ fn zoom_opens_two_levels() {
 #[test]
 fn the_compactor_builds_everything_and_settles() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     let items: Vec<_> = (0..12).map(|i| msg(Kind::User, long(i))).collect();
     s.append("t", &items).unwrap();
     let fake = Arc::new(Fake::summaries());
@@ -598,7 +598,7 @@ fn the_compactor_builds_everything_and_settles() {
 #[test]
 fn the_compactor_folds_the_view_under_its_budget() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     let fake = Arc::new(Fake::summaries());
     let mut c = compactor(&s, &fake, opts(3000, 8));
     for i in 0..100 {
@@ -622,11 +622,11 @@ fn the_compactor_folds_the_view_under_its_budget() {
 #[test]
 fn notes_from_elsewhere_are_picked_up() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0))]).unwrap();
     let fake = Arc::new(Fake::summaries());
     let mut c = compactor(&s, &fake, opts(VIEW, 8));
-    let other = Store::open(&d).unwrap();
+    let other = Store::open(&Site::whole(&d)).unwrap();
     other.append("t", &[msg(Kind::Note, long(1))]).unwrap();
     c.run(|_| Ok(())).unwrap();
     assert_eq!(c.mem().t(), 2);
@@ -636,7 +636,7 @@ fn notes_from_elsewhere_are_picked_up() {
 #[test]
 fn overshoots_are_retried_in_the_same_conversation() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0))]).unwrap();
     let fake = Arc::new(Fake::new(|_, attempt| {
         Ok(format!("  {}  ", "z".repeat(600 - 40 * attempt)))
@@ -686,7 +686,7 @@ fn failures(events: &[Event]) -> Vec<(Coord, &str, usize)> {
 #[test]
 fn failures_are_retried_and_each_reported() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0))]).unwrap();
     let left = Arc::new(Mutex::new(3));
     let l2 = left.clone();
@@ -744,7 +744,7 @@ fn failures_are_retried_and_each_reported() {
 #[test]
 fn a_node_failing_past_its_retries_stops_the_compactor() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0))]).unwrap();
     let dead = Arc::new(Fake::new(|_, _| bail!("logged out")));
     let mut c = compactor(&s, &dead, opts(VIEW, 8));
@@ -769,7 +769,7 @@ fn a_node_failing_past_its_retries_stops_the_compactor() {
 #[test]
 fn a_summariser_on_a_dead_backend_gives_up_and_frees_the_lock() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
         .unwrap();
     let dead = Fake::new(|_, _| bail!("usage limit reached"));
@@ -833,7 +833,7 @@ fn a_life_through_the_cli() {
     assert_eq!(r.stdout, "Saved as 41.\n");
 
     let view = run(d, &["view"]).stdout;
-    let ts = Store::open(d)
+    let ts = Store::open(&Site::whole(d))
         .unwrap()
         .snapshot()
         .unwrap()
@@ -866,7 +866,7 @@ fn a_life_through_the_cli() {
     let rt = runtime(Arc::new(Model(Arc::new(Fake::summaries()))));
     let r = run_rt(d, &rt, &["build"]);
     assert!(ended(&r.stdout).1 > 0, "{}{}", r.stdout, r.stderr);
-    let s = Store::open(d).unwrap();
+    let s = Store::open(&Site::whole(d)).unwrap();
     let snap = s.snapshot().unwrap();
     for l in 0..6 {
         for i in 0..42u64 >> l {
@@ -933,7 +933,7 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
     assert!(run(d, &["zoom", "x"]).stderr.contains("not a line id"));
 
-    let origin = Store::open(d).unwrap().origin().to_string();
+    let origin = Store::open(&Site::whole(d)).unwrap().origin().to_string();
     let show = run(d, &["show", "40"]).stdout;
     assert!(show.starts_with("40\nts      "));
     assert!(show.contains("\nkind    note\n") && show.contains("\ntext    a short one\n"));
@@ -1147,7 +1147,7 @@ fn init_prints_the_block_and_is_idempotent() {
 #[test]
 fn every_store_has_one_origin_stamped_on_what_it_writes() {
     let (_tmp, d) = store();
-    let mut s = Store::open(&d).unwrap();
+    let mut s = Store::open(&Site::whole(&d)).unwrap();
     let origin = s.origin().to_string();
     assert!(
         Regex::new("^[0-9A-HJKMNP-TV-Z]{6}$")
@@ -1158,7 +1158,7 @@ fn every_store_has_one_origin_stamped_on_what_it_writes() {
         fs::read_to_string(d.join("origin")).unwrap(),
         format!("{origin}\n")
     );
-    assert_eq!(Store::open(&d).unwrap().origin(), origin);
+    assert_eq!(Store::open(&Site::whole(&d)).unwrap().origin(), origin);
 
     let old = Message {
         ts: "20250102T030405Z".into(),
@@ -1185,13 +1185,13 @@ fn every_store_has_one_origin_stamped_on_what_it_writes() {
 
     s.set_origin("NEW456").unwrap();
     assert!(s.set_origin("a b").is_err() && s.set_origin("").is_err());
-    assert_eq!(Store::open(&d).unwrap().origin(), "NEW456");
+    assert_eq!(Store::open(&Site::whole(&d)).unwrap().origin(), "NEW456");
     s.append("t", &[msg(Kind::Note, "after")]).unwrap();
     assert_eq!(s.snapshot().unwrap().message(2).unwrap().origin, "NEW456");
 
     fs::write(d.join("origin"), "two words\n").unwrap();
     assert!(
-        Store::open(&d)
+        Store::open(&Site::whole(&d))
             .err()
             .unwrap()
             .to_string()
@@ -1202,7 +1202,7 @@ fn every_store_has_one_origin_stamped_on_what_it_writes() {
 #[test]
 fn the_log_is_in_time_order() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     let at = |ts: &str| Message {
         ts: ts.into(),
         ..msg(Kind::Note, "dated")
@@ -1295,7 +1295,7 @@ fn a_missing_dir_is_reported_not_created() {
 #[test]
 fn a_build_off_a_terminal_prints_its_plan_each_summary_and_its_end() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
         .unwrap();
     let r = run(&d, &["build"]);
@@ -1326,7 +1326,7 @@ $"
 #[test]
 fn a_dry_run_prints_the_plan_with_past_costs_and_builds_nothing() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
         .unwrap();
     assert_eq!(ended(&run(&d, &["build"]).stdout), (3, 3, 0, None));
@@ -1365,7 +1365,7 @@ Log: {log}
 #[test]
 fn a_summariser_logs_timestamped_events_to_summarise_log() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
         .unwrap();
     let r = run(&d, &["build"]);
@@ -1419,7 +1419,7 @@ fn a_summariser_logs_timestamped_events_to_summarise_log() {
 #[test]
 fn a_note_whose_summariser_finds_the_lock_taken_still_gets_built() {
     let (_tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, long(0))]).unwrap();
     let model: Arc<dyn Backend> = Arc::new(Model(Arc::new(Fake::summaries())));
     let late = Arc::new(Mutex::new(None::<String>));
@@ -1430,7 +1430,7 @@ fn a_note_whose_summariser_finds_the_lock_taken_still_gets_built() {
         if seen.is_some() {
             return;
         }
-        Store::open(&dir)
+        Store::open(&Site::whole(&dir))
             .unwrap()
             .append("note", &[msg(Kind::Note, long(1))])
             .unwrap();
@@ -1452,7 +1452,7 @@ fn a_note_whose_summariser_finds_the_lock_taken_still_gets_built() {
 /// the model wrote 0, 1 and 0+2; 2, 3, 2+2 and 0+4 are free.
 fn summarised() -> (TempDir, PathBuf) {
     let (tmp, d) = store();
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     let short = |t: &str| msg(Kind::User, t);
     s.append(
         "t",
@@ -1480,7 +1480,7 @@ fn renewing() -> Fake {
 
 /// The text of node `c` in tree `n` of the memory at `d`, if built.
 fn text_in(d: &Path, n: u64, c: Coord) -> Option<String> {
-    let s = Store::open(d).unwrap();
+    let s = Store::open(&Site::whole(d)).unwrap();
     let snap = s.snapshot().unwrap().tree(n).unwrap();
     snap.node(c).unwrap().map(|n| n.text)
 }
@@ -1698,13 +1698,16 @@ fn a_copy_cut_short_by_a_crash_gets_its_missing_notes_on_the_next_rebuild() {
     let rt = runtime(Arc::new(Model(Arc::new(renewing()))));
     run_rt(&d, &rt, &["build"]);
     run(&d, &["tree", "use", "2"]);
-    Store::open(&d)
+    Store::open(&Site::whole(&d))
         .unwrap()
         .append("t", &[msg(Kind::User, "c")])
         .unwrap();
     run(&d, &["tree", "use", "1"]);
     assert_eq!(text_in(&d, 1, Coord::leaf(4)), None);
-    Store::open(&d).unwrap().copy_building(1).unwrap();
+    Store::open(&Site::whole(&d))
+        .unwrap()
+        .copy_building(1)
+        .unwrap();
     assert_eq!(
         text_in(&d, 3, Coord::leaf(4)),
         None,
@@ -1760,7 +1763,7 @@ fn an_old_tree_is_restored_by_making_it_current_without_a_copy() {
 fn notes_recorded_during_a_rebuild_join_both_trees() {
     let (_tmp, d) = summarised();
     run(&d, &["tree", "rebuild", "0"]);
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     s.append("t", &[msg(Kind::User, "late")]).unwrap();
     for n in [1, 2] {
         assert_eq!(
@@ -1805,7 +1808,7 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
         r.stdout,
         r.stderr
     );
-    let s = Store::open(&d).unwrap();
+    let s = Store::open(&Site::whole(&d)).unwrap();
     let note = |ts: &str, agent: &str, repo: &str, session: &str| Message {
         ts: ts.into(),
         place: Place {

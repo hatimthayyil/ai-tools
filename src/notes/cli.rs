@@ -162,7 +162,7 @@ fn summarise_after(s: &Store, rt: &Runtime) -> Result<()> {
         && !due(&s.load()?)?.is_empty()
         && summariser::usable((rt.summariser)()).is_some()
     {
-        spawn_summariser("notes", DIR_VAR, s.dir(), &s.git_dir())?;
+        spawn_summariser("notes", &s.git_dir(), |c| c.env(DIR_VAR, s.dir()))?;
     }
     Ok(())
 }

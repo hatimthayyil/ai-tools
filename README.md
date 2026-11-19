@@ -65,7 +65,7 @@ ai memory grep <regex>          # search every message
 
 Views print whole on a terminal. Piped, as an agent reads them, they come in parts of at most 20,000 bytes. The first read saves every part in `$XDG_CACHE_HOME/ai/views/` (default `~/.cache/ai/views/`), and each part ends with the command for the next, like `ai page 17:2`. A saved view is gone 10 minutes after it was last read.
 
-`ai` stores memories in `~/.ai/memory`, or in `$AI_MEMORY_DIR` if you set it. A newer `ai` upgrades the memory on first use and prints the commit holding its previous state; older releases then fail on it without writing.
+`ai` stores memories in your git repository `~/ai`, under the ref `refs/ai/memory`; `ai memory init` makes the repository if you have none. What belongs to this machine alone stays out of git, in `~/.ai/memory`: the store's id, logs, recorded summariser calls and usage. `$AI_MEMORY_DIR`, if you set it, names a memory whole in one directory instead: a bare git repository with those files beside git's. A newer `ai` upgrades the memory on first use and prints the commit holding its previous state; older releases then fail on it without writing.
 
 ```sh
 # file a note (or pipe its text on stdin)

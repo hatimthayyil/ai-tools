@@ -8,7 +8,12 @@ use std::{
 use anyhow::{Context, Result};
 use clap::Args;
 
-use crate::{agent, config::Settings, memory, page};
+use crate::{
+    agent,
+    config::Settings,
+    memory::{self, Site},
+    page,
+};
 
 /// `ai view`: the memory's whole view, read as `ai memory view`, then a thread's view
 /// (`agent::thread_view`), then the memory's [`memory::AWAKE`]; whole on a terminal, else in
@@ -28,16 +33,11 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Runs against the default memory, in the current directory, printing to stdout.
+    /// Runs against [`Site::env`]'s memory, in the current directory, printing to stdout.
     pub fn exec(self) -> Result<ExitCode> {
         let cwd = env::current_dir().context("Cannot read the current directory.")?;
         let terminal = io::stdout().is_terminal();
-        match self.run(
-            &memory::default_dir()?,
-            &cwd,
-            &mut io::stdout().lock(),
-            terminal,
-        ) {
+        match self.run(&Site::env()?, &cwd, &mut io::stdout().lock(), terminal) {
             Err(e) if memory::broken_pipe(&e) => Ok(ExitCode::SUCCESS),
             r => r,
         }
@@ -46,7 +46,7 @@ impl Cli {
     /// Runs against the memory at `memory`, in `cwd`, printing to `out`; whole on a `terminal`.
     pub fn run(
         self,
-        memory: &Path,
+        memory: &Site,
         cwd: &Path,
         out: &mut dyn Write,
         terminal: bool,

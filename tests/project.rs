@@ -276,5 +276,8 @@ fn a_store_ai_0_17_kept_is_refused_by_the_commands_that_open_it_alone() {
         1,
         "{warned}"
     );
-    assert!(!s.homes().repo.exists(), "nothing claimed the project");
+    assert!(
+        !s.homes().repo.join("projects").exists(),
+        "nothing claimed the project"
+    );
 }

@@ -7,7 +7,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use ai_tools::memory::{Coord, Message, REF, Store};
+use ai_tools::{
+    config::Homes,
+    memory::{Coord, Message, REF, Site, Store},
+};
 use tempfile::TempDir;
 
 const ISOLATE: [&str; 20] = [
@@ -115,7 +118,7 @@ impl Sandbox {
     }
 
     fn memories(&self) -> Vec<Message> {
-        let st = Store::open(&self.store()).unwrap();
+        let st = Store::open(&Site::whole(&self.store())).unwrap();
         let snap = st.snapshot().unwrap();
         let mut out = Vec::new();
         snap.scan(u64::MAX, |_, m| {
@@ -155,26 +158,316 @@ fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
+impl Sandbox {
+    fn home(&self) -> PathBuf {
+        self.path().join("home")
+    }
+
+    /// The user's memory in this sandbox's home.
+    fn user(&self) -> Site {
+        Site::User(Homes::at(&self.home()))
+    }
+
+    /// Runs `ai memory args` against the user's memory.
+    fn mine(&self, args: &[&str]) -> Output {
+        self.cmd(self.path(), None).args(args).output().unwrap()
+    }
+
+    /// Runs git on the user's repository, `~/ai`.
+    fn user_git(&self, args: &[&str]) -> String {
+        self.git(&self.home().join("ai"), args)
+    }
+
+    /// The names in `dir`, in order.
+    fn names(&self, dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
 #[test]
-fn defaults_to_the_home_dir() {
+fn the_first_command_on_a_new_machine_makes_no_memory_and_init_makes_the_users_repository() {
     let s = Sandbox::new();
-    let r = s.cmd(s.path(), None).arg("init").output().unwrap();
+    let (repo, machine) = (s.home().join("ai"), s.home().join(".ai/memory"));
+    for args in [&["note", "a fact"][..], &["view"], &["grep", "fact"]] {
+        let r = s.mine(args);
+        assert_eq!(r.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            text(&r.stderr),
+            "No memory at ~/ai.\nTo create one, run: ai memory init\n\
+             To use an existing one, point AI_MEMORY_DIR at it.\n"
+        );
+    }
+    assert!(!repo.exists() && !machine.exists());
+
+    let r = s.mine(&["init"]);
     assert!(r.status.success(), "{}", text(&r.stderr));
-    assert!(text(&r.stdout).starts_with("Created ~/.ai/memory: your memory."));
-    let d = s.path().join("home/.ai/memory");
+    assert!(text(&r.stdout).starts_with("Created ~/ai: your memory."));
+    assert_eq!(s.user_git(&["rev-parse", "--is-bare-repository"]), "false");
+    assert_eq!(s.user_git(&["for-each-ref", "--format=%(refname)"]), "");
+    let r = s.mine(&["view"]);
+    assert!(r.status.success() && text(&r.stdout).contains("No memories yet"));
+    let r = s.mine(&["init"]);
+    assert!(text(&r.stdout).starts_with("Found ~/ai: 0 messages."));
+}
+
+#[test]
+fn a_memory_from_another_machine_is_taken_up_by_init_alone() {
+    let s = Sandbox::new();
+    let machine = s.home().join(".ai/memory");
+    assert!(s.mine(&["init"]).status.success());
+    assert!(s.mine(&["note", "from elsewhere"]).status.success());
+    let origin = fs::read_to_string(machine.join("origin")).unwrap();
+    fs::remove_dir_all(&machine).unwrap();
+
+    for args in [&["view"][..], &["note", "from here"]] {
+        let r = s.mine(args);
+        assert_eq!(r.status.code(), Some(1), "{args:?}");
+        assert!(text(&r.stderr).starts_with("No memory at ~/ai.\n"));
+    }
+    assert!(!machine.exists());
+
+    let r = s.mine(&["init"]);
+    assert!(text(&r.stdout).starts_with("Found ~/ai: 1 message."));
     assert_eq!(
-        s.git(
-            s.path(),
-            &[
-                &format!("--git-dir={}", d.display()),
-                "rev-parse",
-                "--is-bare-repository"
-            ]
-        ),
-        "true"
+        text(&s.mine(&["note", "from here"]).stdout),
+        "Saved as 1.\n"
     );
-    let r = s.cmd(s.path(), None).arg("view").output().unwrap();
-    assert!(r.status.success() && text(&r.stdout).contains("You are awake."));
+    assert!(text(&s.mine(&["view"]).stdout).contains("from elsewhere"));
+    assert_ne!(fs::read_to_string(machine.join("origin")).unwrap(), origin);
+}
+
+#[test]
+fn the_users_memory_is_a_ref_of_the_users_repository_and_this_machines_files_stay_out_of_it() {
+    let s = Sandbox::new();
+    let (repo, machine) = (s.home().join("ai"), s.home().join(".ai/memory"));
+    assert!(s.mine(&["init"]).status.success());
+    let path = s.fake_claude(FAKE_CLAUDE);
+    for i in 0..2 {
+        let r = s
+            .cmd(s.path(), None)
+            .args(["note", &format!("note {i} {}", "z".repeat(250))])
+            .env("AI_MEMORY_SUMMARISE", "1")
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert_eq!(text(&r.stdout), format!("Saved as {i}.\n"));
+    }
+    let usage = || fs::read_to_string(machine.join("usage.jsonl")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !usage().contains("\"cmd\":\"build\"") {
+        assert!(
+            Instant::now() < deadline,
+            "no summariser: {}",
+            fs::read_to_string(machine.join("summarise.log")).unwrap_or_default()
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let summary = Store::open(&s.user())
+        .unwrap()
+        .snapshot()
+        .unwrap()
+        .node(Coord::new(1, 0))
+        .unwrap();
+    assert_eq!(summary.unwrap().text, "a fake summary");
+    assert_eq!(s.user_git(&["for-each-ref", "--format=%(refname)"]), REF);
+    assert_eq!(
+        s.user_git(&["ls-tree", "--name-only", REF]),
+        "format\nlog\ntrees"
+    );
+    assert_eq!(s.names(&repo), [".git"], "nothing is checked out");
+    assert!(!repo.join(".git/index").exists(), "no index is written");
+    assert_eq!(s.user_git(&["status", "--porcelain"]), "");
+
+    assert_eq!(
+        s.names(&machine),
+        [
+            "calls",
+            "compact.lock",
+            "origin",
+            "summarise.log",
+            "usage.jsonl"
+        ]
+    );
+    let git = s.names(&repo.join(".git"));
+    for name in s.names(&machine) {
+        assert!(!git.contains(&name), "{name} is in the repository");
+    }
+    let origin = fs::read_to_string(machine.join("origin")).unwrap();
+    assert_eq!(Store::open(&s.user()).unwrap().origin(), origin.trim());
+    assert!(usage().contains("\"cmd\":\"note\""));
+}
+
+#[test]
+fn memories_are_written_beside_the_commits_of_the_users_repository_and_survive_its_gc() {
+    let s = Sandbox::new();
+    let repo = s.home().join("ai");
+    fs::create_dir_all(repo.join("projects/p")).unwrap();
+    s.git(&repo, &["init", "-q"]);
+    fs::write(repo.join("projects/p/id"), "p\n").unwrap();
+    s.user_git(&["add", "."]);
+    s.user_git(&["commit", "-q", "-m", "a thread"]);
+    let head = s.user_git(&["rev-parse", "HEAD"]);
+
+    let r = s.mine(&["note", "before init"]);
+    assert!(
+        text(&r.stderr).starts_with("No memory at ~/ai.\nTo create one, run: ai memory init\n")
+    );
+    assert!(!s.home().join(".ai/memory").exists());
+    assert!(text(&s.mine(&["init"]).stdout).starts_with("Created ~/ai: your memory."));
+    assert_eq!(
+        text(&s.mine(&["note", "before the gc"]).stdout),
+        "Saved as 0.\n"
+    );
+    s.user_git(&["gc", "-q", "--prune=now"]);
+    assert!(
+        !repo.join(".git").join(REF).exists(),
+        "the gc packed the memory's ref"
+    );
+    assert_eq!(
+        text(&s.mine(&["note", "after the gc"]).stdout),
+        "Saved as 1.\n"
+    );
+    s.user_git(&["pack-refs", "--all", "--prune"]);
+    assert_eq!(
+        text(&s.mine(&["note", "packed again"]).stdout),
+        "Saved as 2.\n"
+    );
+
+    let view = text(&s.mine(&["view"]).stdout);
+    for note in ["before the gc", "after the gc", "packed again"] {
+        assert!(view.contains(note), "{view}");
+    }
+    assert_eq!(s.user_git(&["rev-list", "--count", REF]), "3");
+    assert_eq!(s.user_git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(s.user_git(&["status", "--porcelain"]), "");
+    s.user_git(&["fsck", "--strict"]);
+}
+
+#[test]
+fn memories_written_while_the_users_repository_commits_and_runs_ais_gc_lose_nothing() {
+    let s = Sandbox::new();
+    let repo = s.home().join("ai");
+    s.git(s.path(), &["init", "-q", repo.to_str().unwrap()]);
+    assert!(s.mine(&["init"]).status.success());
+    assert_eq!(
+        text(&s.mine(&["note", "the first"]).stdout),
+        "Saved as 0.\n"
+    );
+    let p = 16;
+    let mut kids: Vec<_> = (0..p)
+        .map(|i| {
+            s.cmd(s.path(), None)
+                .args(["note", &format!("parallel note {i}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let mut commits = 0;
+    while kids.iter_mut().any(|k| k.try_wait().unwrap().is_none()) || commits < 3 {
+        fs::write(repo.join("thread"), format!("{commits}\n")).unwrap();
+        s.user_git(&["add", "thread"]);
+        s.user_git(&["commit", "-q", "-m", "a thread"]);
+        s.user_git(&["-c", "gc.packRefs=false", "gc", "-q"]);
+        commits += 1;
+    }
+    for k in kids {
+        let r = k.wait_with_output().unwrap();
+        assert!(r.status.success(), "{}", text(&r.stderr));
+    }
+    let mut texts = Vec::new();
+    Store::open(&s.user())
+        .unwrap()
+        .snapshot()
+        .unwrap()
+        .scan(u64::MAX, |_, m| {
+            texts.push(m.text);
+            Ok(())
+        })
+        .unwrap();
+    texts.sort();
+    let mut want: Vec<_> = (0..p).map(|i| format!("parallel note {i}")).collect();
+    want.push("the first".into());
+    want.sort();
+    assert_eq!(texts, want);
+    assert_eq!(
+        s.user_git(&["rev-list", "--count", "HEAD"]),
+        commits.to_string()
+    );
+    assert_eq!(s.user_git(&["status", "--porcelain"]), "");
+    s.user_git(&["fsck", "--strict"]);
+}
+
+#[test]
+fn a_memory_still_where_ai_kept_it_before_is_refused_until_it_is_converted() {
+    let s = Sandbox::new();
+    let (repo, old) = (s.home().join("ai"), s.home().join(".ai/memory"));
+    assert!(s.ai_at(&old, &["init"]).status.success());
+    assert!(s.ai_at(&old, &["note", "an old memory"]).status.success());
+    let origin = fs::read_to_string(old.join("origin")).unwrap();
+    let refused = "Your memory is still in ~/.ai/memory, where ai kept it before; it now lives \
+                   in ~/ai. To move it, run: ai convert\n";
+
+    let every: [&[&str]; 9] = [
+        &["view"],
+        &["init"],
+        &["note", "a new memory"],
+        &["grep", "old"],
+        &["zoom", "0"],
+        &["show", "0"],
+        &["build"],
+        &["stats"],
+        &["prompt-hook"],
+    ];
+    let refuses = |when: &str| {
+        for args in every {
+            let r = s.mine(args);
+            assert_eq!(r.status.code(), Some(1), "{when}: {args:?}");
+            assert_eq!(text(&r.stderr), refused, "{when}: {args:?}");
+            assert_eq!(text(&r.stdout), "", "{when}: {args:?}");
+        }
+        let mut view = Command::new(env!("CARGO_BIN_EXE_ai"));
+        s.isolate(&mut view);
+        let r = view.current_dir(s.path()).arg("view").output().unwrap();
+        assert_eq!(text(&r.stderr), refused, "{when}: ai view");
+    };
+    refuses("without the user's repository");
+    assert!(
+        !repo.exists(),
+        "no repository is made to start an empty memory in"
+    );
+
+    s.git(s.path(), &["init", "-q", repo.to_str().unwrap()]);
+    refuses("with the user's repository");
+    assert_eq!(s.user_git(&["for-each-ref", "--format=%(refname)"]), "");
+    assert_eq!(
+        text(&s.ai_at(&old, &["view"]).stdout)
+            .matches("an old memory")
+            .count(),
+        1
+    );
+
+    s.user_git(&[
+        "fetch",
+        "-q",
+        old.to_str().unwrap(),
+        &format!("{REF}:{REF}"),
+    ]);
+    let view = text(&s.mine(&["view"]).stdout);
+    assert!(view.contains("an old memory"), "{view}");
+    assert_eq!(
+        text(&s.mine(&["note", "a new memory"]).stdout),
+        "Saved as 1.\n"
+    );
+    assert_eq!(fs::read_to_string(old.join("origin")).unwrap(), origin);
+    assert!(!text(&s.ai_at(&old, &["view"]).stdout).contains("a new memory"));
 }
 
 #[test]
@@ -764,7 +1057,7 @@ fn the_api_backend_without_its_key_fails_before_building() {
         "{}",
         text(&r.stderr)
     );
-    let st = Store::open(&s.store()).unwrap();
+    let st = Store::open(&Site::whole(&s.store())).unwrap();
     assert!(
         st.snapshot()
             .unwrap()
@@ -798,7 +1091,7 @@ fn a_note_is_summarised_in_the_background() {
     }
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let st = Store::open(&s.store()).unwrap();
+        let st = Store::open(&Site::whole(&s.store())).unwrap();
         if let Some(n) = st.snapshot().unwrap().node(Coord::new(1, 0)).unwrap() {
             assert_eq!(
                 (
@@ -892,7 +1185,10 @@ fn a_build_that_finds_another_at_work_runs_no_key_s_command() {
         "[summariser]\nbackend = \"api\"\nmodel = \"heabsy/qwen38\"\n\n[summariser.keys]\nheabsy = \"touch '{}'; exit 1\"\n",
         ran.display()
     ));
-    let lock = Store::open(&s.store()).unwrap().try_lock().unwrap();
+    let lock = Store::open(&Site::whole(&s.store()))
+        .unwrap()
+        .try_lock()
+        .unwrap();
     assert!(lock.is_some());
     let r = s.ai(&["build"]);
     assert!(r.status.success(), "{}", text(&r.stderr));
@@ -948,7 +1244,7 @@ fn a_witness_checks_each_summary_until_it_finds_nothing_wrong() {
         .unwrap();
     let log = fs::read_to_string(s.store().join("summarise.log")).unwrap();
     assert!(r.status.success(), "{}\n{log}", text(&r.stderr));
-    let st = Store::open(&s.store()).unwrap();
+    let st = Store::open(&Site::whole(&s.store())).unwrap();
     let n = st
         .snapshot()
         .unwrap()

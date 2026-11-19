@@ -1,6 +1,6 @@
 # Glossary
 
-- `memory`: the store `ai memory` manages; one per user per machine, shared by every repo and session, append-only. A bare git repo at `~/.ai/memory` (override `AI_MEMORY_DIR`); all data lives as objects under `refs/ai/memory`, one commit per mutation.
+- `memory`: the store `ai memory` manages; one per user per machine, shared by every repo and session, append-only. All data lives as objects under `refs/ai/memory` in the user's git repo `~/ai`, one commit per mutation; this machine's files (`origin`, locks, logs, `calls/`, `usage.jsonl`) are in `~/.ai/memory`, outside git. `AI_MEMORY_DIR` names a memory whole in one directory instead: a bare git repo with those files beside git's.
 - `message`: one entry of the log, with a `kind`; its blob is `log/<hi>/<lo>`: `key value` header lines (`ts kind origin repo root head branch agent model session`, empty ones left out), a blank line, then the text. Ids are positions `0, 1, …`, permanent.
 - `kind`: `user` (the user's words), `talk` (the agent's replies), `tool` (its tool calls), `echo` (tool results), `note` (`ai memory note`, `import`).
 - `node`: one summary line of the tree, ≤ ~512 characters (`NODE`). `(l, i)` covers messages `[i·2^l, (i+1)·2^l)`; level 0 summarizes one message, level `l` merges its two children. Stored one per line in `trees/<n>/<l>/<hi>/<lo>` segments of 256, under a column row (`ts origin agent model session stale text`); `stale` is `1` while the text awaits a rebuild. `state` names the current tree, the one being built and the last number given.
@@ -18,7 +18,7 @@
 - `part`: one page of a view's output when it is not on a terminal: at most `PART` (20,000) bytes, headed by its command and `part k of n`, ending with `Next: ai page <view>:<part>` while parts remain.
 - `saved view`: every part of one paged output, saved by its first read as `<n>.json` in `$XDG_CACHE_HOME/ai/views/` and printed part by part by `ai page <n>:<part>`; numbered with the lowest free number, gone 10 minutes after it was last read.
 - `zoom`: open `id+n` two levels down; a bare `id` gives the original message in bounded pages (`part`, from 1).
-- `origin`: a store's random id (6 Crockford base-32 characters), made at `init` and kept in the store's `origin` file; stamped on every message and node the store writes.
+- `origin`: a store's random id (6 Crockford base-32 characters), made at the first open and kept in the `origin` file among this machine's files, so each machine's copy of a memory has its own; stamped on every message and node the store writes.
 - `show`: every field of one message or node.
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes); off a terminal, in parts newest first.
 - `snapshot`: the memory as of one commit; every command reads one.

@@ -25,7 +25,7 @@ pub(crate) use api::tests as fake_api;
 pub use api::{Api, Provider};
 pub use backend::{Backend, Block, Conversation, MakeBackend, Usage};
 pub use claude::{CALLS, ClaudeCode};
-pub use cli::{AWAKE, Cli, Runtime, broken_pipe, default_dir, plural, spawn_summariser, store_dir};
+pub use cli::{AWAKE, Cli, Runtime, broken_pipe, plural, spawn_summariser, store_dir};
 pub use compact::{
     COMPACT, Compactor, Event, GaveUp, JOBS, Job, Options, RETRIES, RETRY, RETRY_MAX, SCALE, Spend,
     Step, TRIES, ruler, summarize, write_line,
@@ -36,7 +36,7 @@ pub use grep::{Pattern, excerpt, quote, word};
 pub use hook::{LONG_PROMPT, REMIND_EVERY, REMINDER};
 pub use meta::{Field, Meta};
 pub use record::{Kind, Message, Node, Place, Who, flat, now};
-pub use store::{Built, LOG, ME, REF, Snapshot, State, Store};
+pub use store::{Built, DIR_VAR, LOG, ME, REF, Site, Snapshot, State, Store};
 pub use tree::{Coord, NODE, WORDS, ancestors, limit, overlapping};
 pub use view::{HIDDEN, Mem, PLACEHOLDER, VIEW};
 pub use witness::{WITNESS, Witnessed, settle};
