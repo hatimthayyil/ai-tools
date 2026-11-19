@@ -228,9 +228,9 @@ pub fn create(dir: &Path) -> Result<()> {
     }
 }
 
-/// Makes `dir` a git repository unless it is one. An absent or empty directory becomes one; a
-/// directory holding files but no repository is refused, since what it holds is someone's.
-pub fn ensure(dir: &Path) -> Result<()> {
+/// Whether [`ensure`] would make `dir` a git repository or find it one: an error for a directory
+/// holding files but no repository, since what it holds is someone's.
+pub fn ensurable(dir: &Path) -> Result<()> {
     if exists(dir) {
         return Ok(());
     }
@@ -241,10 +241,16 @@ pub fn ensure(dir: &Path) -> Result<()> {
             pretty(dir),
             dir.display()
         ),
-        Ok(false) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).at(dir),
+        Ok(false) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).at(dir),
     }
+}
+
+/// Makes `dir` a git repository unless it is one. An absent or empty directory becomes one; a
+/// directory holding files but no repository is refused ([`ensurable`]).
+pub fn ensure(dir: &Path) -> Result<()> {
+    ensurable(dir)?;
     create(dir)
 }
 
@@ -268,6 +274,16 @@ const GIT_ENV: [&str; 5] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 ];
 
+/// `git` run on the git directory `git_dir`, whatever repository its environment names.
+pub fn git(git_dir: &Path) -> Command {
+    let mut c = Command::new("git");
+    for k in GIT_ENV {
+        c.env_remove(k);
+    }
+    c.arg("--git-dir").arg(git_dir);
+    c
+}
+
 /// Starts `git gc` on the repository at `dir` once the loose objects written since it last
 /// started one pass `limit` bytes, and returns without waiting for it. gix writes each object
 /// whole and never packs, so a file that grows is stored whole again by every commit until
@@ -284,13 +300,7 @@ pub fn gc(dir: &Path, limit: u64) -> Result<Gc> {
     if loose.bytes <= limit {
         return Ok(Gc::Within);
     }
-    let mut c = Command::new("git");
-    for k in GIT_ENV {
-        c.env_remove(k);
-    }
-    let child = c
-        .arg("--git-dir")
-        .arg(git_dir(dir))
+    let child = git(&git_dir(dir))
         .args(["gc", "--quiet"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

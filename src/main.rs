@@ -40,7 +40,9 @@ enum Command {
         about = "Back up every harness's transcripts with restic: a local repository, and a remote one if set."
     )]
     Backup(ai_tools::backup::Cli),
-    #[command(about = "Convert a project's agents and settings from ai 0.17's .ai/local to ~/ai.")]
+    #[command(
+        about = "Convert what an earlier ai kept elsewhere to ~/ai: your memory, and a project's agents and settings."
+    )]
     Convert(convert::Cli),
 }
 

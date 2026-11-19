@@ -1,14 +1,16 @@
-//! `ai convert`: converts what ai 0.17 kept in a project's `.ai/local`, its agents (store format
-//! 4) and its private settings, to the project's folder of `~/ai`, which this ai reads. It runs
-//! once per project and machine, and never changes or removes `.ai/local`: what else that holds
-//! is the project's private working data, and the old agents stay there until the user deletes
-//! them.
+//! `ai convert`: converts what an earlier ai kept elsewhere to `~/ai`, where this ai reads it.
+//! Each run first moves the user's memory there from `~/.ai/memory` ([`memory`]), once per
+//! machine. It then converts what ai 0.17 kept in a project's `.ai/local`, its agents (store
+//! format 4) and its private settings, to the project's folder of `~/ai`. That runs once per
+//! project and machine, and never changes or removes `.ai/local`: what else that holds is the
+//! project's private working data, and the old agents stay there until the user deletes them.
 //!
 //! A conversion builds the whole folder in `~/ai`'s git directory, checks it, makes it durable,
 //! then moves it into place in one step; a conversion cut short before that step leaves
 //! nothing, and is made again from the start. A record in `~/.ai/converted/` lets a later run
 //! finish one cut short after the step.
 
+mod memory;
 mod old;
 #[cfg(test)]
 mod tests;
@@ -46,7 +48,11 @@ const ID: &str = "id";
 /// `ai convert`.
 #[derive(clap::Args)]
 #[command(
-    after_help = "Run it once per project on each machine, with the project's agent sessions \
+    after_help = "Every run first moves your memory from ~/.ai/memory, where ai kept it before, \
+                  into ~/ai, once per machine: its whole history goes along, this machine's \
+                  files of it stay in ~/.ai/memory, and the old repository is kept as \
+                  ~/.ai/memory-converted.git, yours to delete once you have checked the \
+                  conversion.\n\nRun it once per project on each machine, with the project's agent sessions \
                   closed. With no DIR it converts the current directory's project, and given one \
                   DIR it says what it found there. `ai convert ~/code/*/` converts every project \
                   there, telling of each, and counts in one closing line the directories that \
@@ -65,7 +71,8 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Converts each directory's project, telling what it did; fails if any conversion failed.
+    /// Converts the user's memory, then each directory's project, telling what it did; fails if
+    /// any conversion failed.
     pub fn exec(self) -> Result<ExitCode> {
         let homes = Homes::user()?;
         let dirs = match self.dirs.is_empty() {
@@ -77,6 +84,17 @@ impl Cli {
         };
         let several = dirs.len() > 1;
         let (mut failed, mut not_projects, mut empty) = (false, 0, 0);
+        match memory::convert(&homes, opts) {
+            Ok(outcome) => {
+                for line in memory::describe(&outcome) {
+                    println!("{line}");
+                }
+            }
+            Err(e) => {
+                failed = true;
+                eprintln!("memory: {}", error::line(&e));
+            }
+        }
         for dir in &dirs {
             match convert(dir, &homes, opts) {
                 Ok(Outcome::NotAProject) if several => not_projects += 1,

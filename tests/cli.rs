@@ -173,6 +173,17 @@ impl Sandbox {
         self.cmd(self.path(), None).args(args).output().unwrap()
     }
 
+    /// Runs `ai convert args` outside any project.
+    fn convert(&self, args: &[&str]) -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ai"));
+        self.isolate(&mut c);
+        c.current_dir(self.path())
+            .arg("convert")
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
     /// Runs git on the user's repository, `~/ai`.
     fn user_git(&self, args: &[&str]) -> String {
         self.git(&self.home().join("ai"), args)
@@ -468,6 +479,95 @@ fn a_memory_still_where_ai_kept_it_before_is_refused_until_it_is_converted() {
     );
     assert_eq!(fs::read_to_string(old.join("origin")).unwrap(), origin);
     assert!(!text(&s.ai_at(&old, &["view"]).stdout).contains("a new memory"));
+}
+
+#[test]
+fn ai_convert_moves_a_memory_still_where_ai_kept_it_before_into_the_users_repository() {
+    let s = Sandbox::new();
+    let (repo, old) = (s.home().join("ai"), s.home().join(".ai/memory"));
+    assert!(s.ai_at(&old, &["init"]).status.success());
+    for note in ["an old memory", "another"] {
+        assert!(s.ai_at(&old, &["note", note]).status.success());
+    }
+    let tip = s.git_at(&old, &["rev-parse", REF]);
+    let commits = s.git_at(&old, &["rev-list", "--count", REF]);
+    let origin = fs::read_to_string(old.join("origin")).unwrap();
+    let usage = fs::read(old.join("usage.jsonl")).unwrap();
+    let here = format!(
+        "{}: not a project (no ai.toml with a project id), nothing to convert.\n",
+        s.path().display()
+    );
+
+    let lock = old.join(format!("{REF}.lock"));
+    fs::write(&lock, "").unwrap();
+    let r = s.convert(&[]);
+    assert_eq!(r.status.code(), Some(1));
+    assert_eq!(
+        text(&r.stderr),
+        "memory: An ai is writing your memory (~/.ai/memory/refs/ai/memory.lock is held). Let \
+         it finish, then try again.\n"
+    );
+    assert_eq!(text(&r.stdout), here);
+    fs::remove_file(&lock).unwrap();
+
+    let r = s.convert(&["--dry-run"]);
+    assert_eq!(
+        text(&r.stdout),
+        format!(
+            "memory: would convert 2 messages ({commits} commits) from ~/.ai/memory to ~/ai.\n\
+             {here}"
+        )
+    );
+    assert!(r.status.success());
+    assert!(!repo.exists());
+    assert_eq!(s.mine(&["view"]).status.code(), Some(1));
+
+    let r = s.convert(&[]);
+    assert_eq!(text(&r.stderr), "");
+    assert_eq!(
+        text(&r.stdout),
+        format!(
+            "memory: converted 2 messages ({commits} commits) from ~/.ai/memory to ~/ai.\n  \
+             ~/.ai/memory keeps this machine's files; the old repository is now \
+             ~/.ai/memory-converted.git, no longer read, and once you have checked the \
+             conversion, yours to delete.\n{here}"
+        )
+    );
+    assert_eq!(s.user_git(&["rev-parse", REF]), tip);
+    assert_eq!(s.user_git(&["rev-list", "--count", REF]), commits);
+    s.user_git(&["fsck", "--strict"]);
+
+    let view = text(&s.mine(&["view"]).stdout);
+    for note in ["an old memory", "another"] {
+        assert!(view.contains(note), "{view}");
+    }
+    assert_eq!(
+        text(&s.mine(&["note", "a new memory"]).stdout),
+        "Saved as 2.\n"
+    );
+    assert_eq!(fs::read_to_string(old.join("origin")).unwrap(), origin);
+    assert!(
+        fs::read(old.join("usage.jsonl"))
+            .unwrap()
+            .starts_with(&usage)
+    );
+
+    let older = s.ai_at(&old, &["note", "from an older ai"]);
+    assert_eq!(older.status.code(), Some(1));
+    assert!(
+        text(&older.stderr).starts_with("No memory at "),
+        "{}",
+        text(&older.stderr)
+    );
+    let aside = s.home().join(".ai/memory-converted.git");
+    assert_eq!(s.git_at(&aside, &["rev-parse", REF]), tip);
+
+    let r = s.convert(&[]);
+    assert_eq!(
+        text(&r.stdout),
+        format!("memory: already converted to ~/ai.\n{here}")
+    );
+    assert!(r.status.success());
 }
 
 #[test]
