@@ -50,6 +50,8 @@ either to `managed-settings.json` or as a file of their own in `managed-settings
 
 Claude Code installs the plugin at the next session start. `<prefix>` must be absolute: `/home/<you>/.nix-profile` on your own machine, or for a fleet a path every machine has and only administrators can write, such as the NixOS system profile `/run/current-system/sw` with `environment.pathsToLink = [ "/share/ai" ];`. Where the organization also delivers server-managed settings from the claude.ai console, Claude Code ignores this file unless that source sets `"managedSourcesBehavior": "merge"`.
 
+While the plugin is loaded, Claude Code's automatic compaction is off, at the context limit and while the session is idle: a session keeps its whole conversation until you `/fold` or `/compact` it. The plugin sets `DISABLE_AUTO_COMPACT=1` for the session as it starts. `"autoCompactEnabled": true` in your Claude Code settings keeps automatic compaction on. Where Claude Code refuses the variable, the plugin says so, and automatic compaction stays on.
+
 ## Use
 
 ```sh

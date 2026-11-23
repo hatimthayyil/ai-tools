@@ -1,6 +1,6 @@
 {
   "name": "ai",
   "version": "0.1.0",
-  "description": "ai in Claude Code: /fold has Claude write a handoff, aimed at your direction when you give one, then goes on in a new session that starts from your memory's view and the thread's and starts on your direction, or compacts a session attached to no agent to your memory's view and the handoff; /reply quotes the text you selected, else the latest answer, into the prompt box; /ai new, attach and detach tie the session to an agent; /recall briefs you on your message from your memory, the thread and the repository",
+  "description": "ai in Claude Code: /fold has Claude write a handoff, aimed at your direction when you give one, then goes on in a new session that starts from your memory's view and the thread's and starts on your direction, or compacts a session attached to no agent to your memory's view and the handoff; /reply quotes the text you selected, else the latest answer, into the prompt box; /ai new, attach and detach tie the session to an agent; /recall briefs you on your message from your memory, the thread and the repository; automatic compaction is off while the plugin is loaded, unless your settings turn it on",
   "types": "./types/index.d.ts"
 }

@@ -535,6 +535,94 @@ test('a failed seed starts without the view and says why', async ($, on) => {
   expect(world.logs).toEqual(["ai agent compact-session failed; starting without the thread's view. no claude on PATH"])
 })
 
+const CWD = '/repo'
+const OFF = ['DISABLE_AUTO_COMPACT', '1']
+
+/**
+ * The session coming up where the settings hold `autoCompactEnabled` as `held` (unset while
+ * undefined, unreadable while `held.fails`) and the engine answers each `$.env.set` with
+ * `answer`'s result.
+ */
+function coming(
+  on: On,
+  held?: boolean | { fails: true },
+  answer: () => { value: { deny?: string } } | { deny: string } = () => ({ value: {} }),
+) {
+  const commands: string[] = []
+  const sets: (string | undefined)[][] = []
+  on('command.register', (_$, e) => {
+    commands.push(e.name)
+    return { value: { command: e.name } }
+  })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('settings.read', () => {
+    // The kit skips a hook that throws, so the read finds no implementation and rejects.
+    if (typeof held === 'object') throw new Error('unreadable')
+    return { value: held === undefined ? {} : { autoCompactEnabled: held } }
+  })
+  on('env.set', (_$, e) => {
+    sets.push([e.name, e.value])
+    return answer()
+  })
+  return { commands, sets }
+}
+
+const come = ($: Engine) => $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+
+test('a session starts with automatic compaction off', async ($, on) => {
+  const world = engine(on, views)
+  const unset = coming(on)
+  expect(await come($)).toEqual({ cwd: CWD })
+  expect(unset.sets).toEqual([OFF])
+  expect(unset.commands).toEqual(['fold', 'ai', 'recall', 'reply'])
+  expect(world.logs).toEqual([])
+})
+
+test('a session whose settings turn automatic compaction off starts with it off', async ($, on) => {
+  const world = engine(on, views)
+  const off = coming(on, false)
+  expect(await come($)).toEqual({ cwd: CWD })
+  expect(off.sets).toEqual([OFF])
+  expect(world.logs).toEqual([])
+})
+
+test('a session whose settings turn automatic compaction on keeps it', async ($, on) => {
+  const world = engine(on, views)
+  const kept = coming(on, true)
+  expect(await come($)).toEqual({ cwd: CWD })
+  expect(kept.sets).toEqual([])
+  expect(kept.commands).toEqual(['fold', 'ai', 'recall', 'reply'])
+  expect(world.logs).toEqual([])
+})
+
+test('a session the engine keeps automatic compaction on in says why, and starts as it would', async ($, on) => {
+  const world = engine(on, views)
+  const held = coming(on, undefined, () => ({ value: { deny: 'your organization manages this variable' } }))
+  expect(await come($)).toEqual({ cwd: CWD })
+  expect(held.sets).toEqual([OFF])
+  expect(held.commands).toEqual(['fold', 'ai', 'recall', 'reply'])
+  expect(world.logs).toEqual(['Automatic compaction stays on: your organization manages this variable'])
+})
+
+test('a refused switch for automatic compaction says why, and the session starts as it would', async ($, on) => {
+  const world = engine(on, views)
+  const refused = coming(on, undefined, () => ({ deny: 'not from a plugin' }))
+  expect(await come($)).toEqual({ cwd: CWD })
+  expect(refused.commands).toEqual(['fold', 'ai', 'recall', 'reply'])
+  expect(world.logs.length).toBe(1)
+  expect(world.logs[0]).toMatch(/^Automatic compaction stays on: .*not from a plugin/)
+})
+
+test('a session whose settings cannot be read keeps automatic compaction on, says why, and starts as it would', async ($, on) => {
+  const world = engine(on, views)
+  const unread = coming(on, { fails: true })
+  expect(await come($)).toEqual({ cwd: CWD })
+  expect(unread.sets).toEqual([])
+  expect(unread.commands).toEqual(['fold', 'ai', 'recall', 'reply'])
+  expect(world.logs.length).toBe(1)
+  expect(world.logs[0]).toMatch(/^Automatic compaction stays on: ./)
+})
+
 test('a subagent compacts natively, leaving the view /fold built for the main conversation', async ($, on) => {
   const world = engine(on, unattached)
   await start($, 'resume')

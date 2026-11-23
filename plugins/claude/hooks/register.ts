@@ -16,6 +16,7 @@ const UNWRITTEN: Record<TurnCompleteReason, string> = {
 }
 const WITHHELD =
   'Not folded: this session is attached to no agent, so a fold compacts it, and the ai plugin never saw this session start, so it would not see the compaction either: Claude Code would write its own summary. Where an organization manages Claude Code, only plugins its managed settings install see these events.'
+const STAYS_ON = 'Automatic compaction stays on'
 const RECALL_USAGE = 'Usage: /recall <message>'
 const RELAY =
   "/recall started a read-only fork on the user's message. When its brief arrives, show it to the user whole and wait for their review. Then write the whole brief again with their corrections, and note nothing from it they have not approved."
@@ -446,8 +447,23 @@ async function recall($: EngineInterface, direction: string): Promise<CommandRun
   return { text: 'Recalling. The brief follows when the fork ends.', context: [RELAY] }
 }
 
+/**
+ * Turns Claude Code's automatic compaction off for this session, unless the settings hold
+ * `autoCompactEnabled: true`; says why when the engine keeps it on.
+ */
+async function noAutoCompact($: EngineInterface): Promise<void> {
+  try {
+    if ((await $.settings.read({ key: 'autoCompactEnabled' })) === true) return
+    const { deny } = await $.env.set('DISABLE_AUTO_COMPACT', '1')
+    if (deny !== undefined) $.ui.log(`${STAYS_ON}: ${deny}`)
+  } catch (err) {
+    $.ui.log(`${STAYS_ON}: ${String(err)}`)
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    await noAutoCompact($)
     await $.command.register({
       name: 'fold',
       description:
