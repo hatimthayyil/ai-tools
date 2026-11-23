@@ -386,7 +386,7 @@ fn memories_written_while_the_users_repository_commits_and_runs_ais_gc_lose_noth
         fs::write(repo.join("thread"), format!("{commits}\n")).unwrap();
         s.user_git(&["add", "thread"]);
         s.user_git(&["commit", "-q", "-m", "a thread"]);
-        s.user_git(&["-c", "gc.packRefs=false", "gc", "-q"]);
+        s.user_git(&["gc", "-q"]);
         commits += 1;
     }
     for k in kids {
@@ -413,6 +413,59 @@ fn memories_written_while_the_users_repository_commits_and_runs_ais_gc_lose_noth
         commits.to_string()
     );
     assert_eq!(s.user_git(&["status", "--porcelain"]), "");
+    s.user_git(&["fsck", "--strict"]);
+}
+
+#[test]
+fn memories_written_while_git_packs_the_users_refs_lose_nothing() {
+    let s = Sandbox::new();
+    let repo = s.home().join("ai");
+    s.git(s.path(), &["init", "-q", repo.to_str().unwrap()]);
+    // Waits as long as a loaded machine needs, so that no note fails for a held lock.
+    s.user_git(&["config", "core.filesRefLockTimeout", "60000"]);
+    assert!(s.mine(&["init"]).status.success());
+    assert_eq!(
+        text(&s.mine(&["note", "the first"]).stdout),
+        "Saved as 0.\n"
+    );
+    s.user_git(&["pack-refs", "--all", "--prune"]);
+    let p = 16;
+    let mut kids: Vec<_> = (0..p)
+        .map(|i| {
+            s.cmd(s.path(), None)
+                .args(["note", &format!("parallel note {i}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    while kids.iter_mut().any(|k| k.try_wait().unwrap().is_none()) {
+        s.user_git(&["pack-refs", "--all", "--prune"]);
+    }
+    for k in kids {
+        let r = k.wait_with_output().unwrap();
+        assert!(r.status.success(), "{}", text(&r.stderr));
+    }
+    let mut texts = Vec::new();
+    Store::open(&s.user())
+        .unwrap()
+        .snapshot()
+        .unwrap()
+        .scan(u64::MAX, |_, m| {
+            texts.push(m.text);
+            Ok(())
+        })
+        .unwrap();
+    texts.sort();
+    let mut want: Vec<_> = (0..p).map(|i| format!("parallel note {i}")).collect();
+    want.push("the first".into());
+    want.sort();
+    assert_eq!(texts, want);
+    assert_eq!(
+        s.user_git(&["rev-list", "--count", REF]),
+        (p + 1).to_string()
+    );
     s.user_git(&["fsck", "--strict"]);
 }
 

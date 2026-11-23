@@ -20,6 +20,7 @@ use std::{
 use ai_tools::{
     config::Homes,
     file::{self, AtPath, pretty},
+    git,
     memory::{REF, Site, Store, plural},
     repo,
 };
@@ -212,9 +213,7 @@ fn finish(p: &Places, opts: Options) -> Result<Outcome> {
 
 /// The commit the memory's ref names in the repository `repo`; `None` without the ref.
 fn tip(repo: &gix::Repository) -> Result<Option<ObjectId>> {
-    Ok(repo
-        .try_find_reference(REF)?
-        .and_then(|r| r.try_id().map(|id| id.detach())))
+    git::tip(repo, REF)
 }
 
 /// The commit of the memory in the old repository at `old`: a bare repository holding the ref,
@@ -312,18 +311,11 @@ fn rehearse(old: &Path, tip: ObjectId) -> Result<(u64, u64)> {
 }
 
 /// Fetches the memory's ref from the repository `old` into the git directory `git_dir`, naming
-/// no ref there, and checks that `git_dir` then holds every object `tip` reaches in `old`. The
-/// fetch starts no maintenance: git's would pack `git_dir`'s refs.
+/// no ref there, and checks that `git_dir` then holds every object `tip` reaches in `old`.
 fn bring(git_dir: &Path, old: &Path, tip: ObjectId) -> Result<()> {
     run(
         repo::git(git_dir)
-            .args([
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--no-write-fetch-head",
-                "--no-auto-maintenance",
-            ])
+            .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"])
             .arg(old)
             .arg(REF),
         "fetch",

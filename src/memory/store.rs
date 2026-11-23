@@ -14,7 +14,7 @@ use tempfile::NamedTempFile;
 use crate::{
     config::Homes,
     file::{self, AtPath, pretty},
-    git::{Changes, Ref, Snap, fan_path},
+    git::{self, Changes, Ref, Snap, fan_path},
     memory::{
         meta::stamp,
         record::{COLUMNS, Message, Node, Who, now},
@@ -218,7 +218,7 @@ impl fmt::Display for Site {
 
 /// Whether `repo` holds a memory's ref.
 fn has_ref(repo: &gix::Repository) -> Result<bool> {
-    Ok(repo.try_find_reference(REF)?.is_some())
+    Ok(git::tip(repo, REF)?.is_some())
 }
 
 pub struct Store {
@@ -339,7 +339,7 @@ impl Store {
             }
             let msg = format!("upgrade format {from} -> {FORMAT}");
             let commit = self.git.new_commit(&msg, tree, head)?;
-            if self.git.cas(head, commit, &msg)? {
+            if self.git.cas(head, commit)? {
                 let prev = head.map_or_else(String::new, |h| h.to_string());
                 eprintln!("Upgraded memory to format {FORMAT}; previous state is commit {prev}.");
                 return Ok(());
