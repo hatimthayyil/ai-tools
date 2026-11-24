@@ -3,13 +3,17 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     io::{self, Write},
-    path::PathBuf,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
-use gix::{ObjectId, lock::acquire::Fail, objs::tree::EntryKind};
+use gix::{
+    ObjectId, actor::SignatureRef, lock::acquire::Fail, objs::tree::EntryKind,
+    refs::store::WriteReflog,
+};
 
 use crate::file::{AtPath, pretty};
 
@@ -52,11 +56,14 @@ impl Changes {
     }
 }
 
-/// How long a ref's lock is waited for where `core.filesRefLockTimeout` gives no time: git's
-/// own wait.
+/// How long a lock is waited for where `core.filesRefLockTimeout` gives no time: git's own wait
+/// for a ref's.
 const LOCK_WAIT: Duration = Duration::from_millis(100);
 /// How often taking a ref's lock starts over when a directory above it goes.
 const RETAKES: usize = 32;
+/// The refs git makes a reflog for where `core.logAllRefUpdates` is `true`, as git's
+/// `should_autocreate_reflog` names them, besides HEAD.
+const LOGGED: [&str; 3] = ["refs/heads/", "refs/remotes/", "refs/notes/"];
 
 /// The file the ref `name`, one under `refs/`, has to itself in `repo` until git packs it.
 fn loose(repo: &gix::Repository, name: &str) -> PathBuf {
@@ -84,6 +91,222 @@ pub fn tip(repo: &gix::Repository, name: &str) -> Result<Option<ObjectId>> {
         }
         Err(e) => Err(e).at(&path),
     }
+}
+
+/// How long `repo`'s git waits for a ref's lock: `core.filesRefLockTimeout` milliseconds, for
+/// ever when negative.
+fn wait(repo: &gix::Repository) -> Fail {
+    match repo.config_snapshot().integer("core.filesRefLockTimeout") {
+        None => LOCK_WAIT.into(),
+        Some(ms) if ms < 0 => Fail::AfterDurationWithBackoff(Duration::from_secs(u64::MAX)),
+        Some(ms) => Duration::from_millis(ms.unsigned_abs()).into(),
+    }
+}
+
+/// The lock git takes to rewrite the file at `path`: `<path>.lock`, made only where there is
+/// none, with mode 0666 less the umask as git makes it, and with the directories up to
+/// `boundary`; waited for as long as `repo`'s git waits for a ref's lock. Dropped, it goes,
+/// and so does every directory it made; a signal that ends `ai` takes it too.
+pub fn lock(
+    repo: &gix::Repository,
+    path: &Path,
+    boundary: Option<PathBuf>,
+) -> gix::ExnResult<gix::lock::File> {
+    let wait = wait(repo);
+    retaking(|| {
+        gix::lock::File::acquire_to_update_resource_with_permissions(
+            path,
+            wait,
+            boundary.clone(),
+            || fs::Permissions::from_mode(0o666),
+        )
+    })
+}
+
+/// The lock of the ref `name`, one under `refs/`: `<ref>.lock` beside the ref's file.
+fn ref_lock(repo: &gix::Repository, name: &str) -> gix::ExnResult<gix::lock::File> {
+    let refs = repo.refs.common_dir_resolved().join("refs");
+    lock(repo, &loose(repo, name), Some(refs))
+}
+
+/// The lock of the ref `name`, one under `refs/`, while it names `from`; `None` once it names
+/// another commit. The ref is read under the lock, which every writer of the ref takes, and git
+/// too before it removes the file of a ref it packed: the value read there stands until the
+/// lock goes.
+fn ref_lock_at(
+    repo: &gix::Repository,
+    name: &str,
+    from: Option<ObjectId>,
+) -> Result<Option<gix::lock::File>> {
+    let lock = match ref_lock(repo, name) {
+        Ok(lock) => lock,
+        Err(_) if tip(repo, name)? != from => return Ok(None),
+        Err(e) => return Err(gix::Error::from(e).into()),
+    };
+    Ok((tip(repo, name)? == from).then_some(lock))
+}
+
+/// Writes `to` into `lock`, a ref's or a detached HEAD's, and renames it over the file it locks.
+fn put(mut lock: gix::lock::File, to: ObjectId) -> Result<()> {
+    lock.with_mut(|f| writeln!(f, "{to}"))
+        .at(lock.lock_path())?;
+    let path = lock.resource_path();
+    match lock.commit() {
+        Ok(_) => Ok(()),
+        // Empty directories where the ref's file belongs: what is left of refs once under its name.
+        Err(e) if path.is_dir() => {
+            gix::tempfile::remove_dir::empty_depth_first(path.clone()).at(&path)?;
+            let moved = e.instance.commit().map(|_| ());
+            moved.map_err(|e| e.error).at(&path)
+        }
+        Err(e) => Err(e.error).at(&path),
+    }
+}
+
+/// Moves the ref `name` of `repo`, one under `refs/`, from `from` to `to`, as git moves a ref;
+/// false if another writer moved it first. It writes no reflog.
+pub fn swap(
+    repo: &gix::Repository,
+    name: &str,
+    from: Option<ObjectId>,
+    to: ObjectId,
+) -> Result<bool> {
+    let Some(lock) = ref_lock_at(repo, name, from)? else {
+        return Ok(false);
+    };
+    put(lock, to)?;
+    Ok(true)
+}
+
+/// HEAD of a repository as it was read.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Head {
+    /// The branch HEAD names, a ref under `refs/`; `None` for a detached HEAD.
+    pub branch: Option<String>,
+    /// HEAD's commit; `None` on a branch with no commit yet.
+    pub commit: Option<ObjectId>,
+}
+
+/// HEAD of `repo` as git reads it: its file, then the branch it names as [`tip`] reads it.
+pub fn head(repo: &gix::Repository) -> Result<Head> {
+    let path = repo.git_dir().join("HEAD");
+    let text = fs::read(&path).at(&path)?;
+    let text = text.trim_ascii_end();
+    let Some(name) = text.strip_prefix(b"ref: ") else {
+        return match ObjectId::from_hex(text) {
+            Ok(id) => Ok(Head {
+                branch: None,
+                commit: Some(id),
+            }),
+            Err(_) => bail!("{} names no commit.", pretty(&path)),
+        };
+    };
+    let Some(name) = std::str::from_utf8(name)
+        .ok()
+        .filter(|n| n.starts_with("refs/"))
+    else {
+        bail!("{} names no branch.", pretty(&path));
+    };
+    Ok(Head {
+        commit: tip(repo, name)?,
+        branch: Some(name.into()),
+    })
+}
+
+/// Moves HEAD of `repo` from `from` to `to`, a commit whose subject begins `msg` and whose
+/// committer is `who`, as `git commit` moves it; false if HEAD names another commit by then.
+///
+/// git takes `HEAD.lock`, then the lock of the branch HEAD names, and reads the branch under
+/// them; it appends the move to HEAD's reflog and the branch's, renames the branch's lock over
+/// its file, and lets `HEAD.lock` go, leaving HEAD naming the branch. A detached HEAD is itself
+/// the ref written.
+pub fn advance_head(
+    repo: &gix::Repository,
+    from: Option<ObjectId>,
+    to: ObjectId,
+    who: SignatureRef<'_>,
+    msg: &str,
+) -> Result<bool> {
+    let path = repo.git_dir().join("HEAD");
+    let held = match lock(repo, &path, None) {
+        Ok(lock) => lock,
+        Err(_) if head(repo)?.commit != from => return Ok(false),
+        Err(e) => return Err(gix::Error::from(e).into()),
+    };
+    let subject = msg.lines().next().unwrap_or_default().trim_end();
+    let why = match from {
+        None => format!("commit (initial): {subject}"),
+        Some(_) => format!("commit: {subject}"),
+    };
+    let entry = Entry {
+        from,
+        to,
+        who,
+        why: &why,
+    };
+    match head(repo)?.branch {
+        Some(branch) => {
+            let Some(lock) = ref_lock_at(repo, &branch, from)? else {
+                return Ok(false);
+            };
+            log(repo, "HEAD", &entry)?;
+            log(repo, &branch, &entry)?;
+            put(lock, to)?;
+            drop(held);
+        }
+        None => {
+            if head(repo)?.commit != from {
+                return Ok(false);
+            }
+            log(repo, "HEAD", &entry)?;
+            put(held, to)?;
+        }
+    }
+    Ok(true)
+}
+
+/// A move of a ref, as its reflog records it.
+struct Entry<'a> {
+    from: Option<ObjectId>,
+    to: ObjectId,
+    who: SignatureRef<'a>,
+    why: &'a str,
+}
+
+/// Appends `e` to the reflog of `name` in `repo`, HEAD or a ref under `refs/`, as git does: to
+/// the reflog there is, else to a new one where `core.logAllRefUpdates` has git make one.
+fn log(repo: &gix::Repository, name: &str, e: &Entry) -> Result<()> {
+    let base = match name {
+        "HEAD" => repo.git_dir(),
+        _ => repo.refs.common_dir_resolved(),
+    };
+    let path = base.join("logs").join(name);
+    let make = match repo.refs.write_reflog {
+        WriteReflog::Always => true,
+        WriteReflog::Normal => name == "HEAD" || LOGGED.iter().any(|p| name.starts_with(p)),
+        WriteReflog::Disable => false,
+    };
+    let open = || fs::OpenOptions::new().append(true).create(make).open(&path);
+    if make {
+        let dir = path.parent().expect("a reflog is under logs/");
+        fs::create_dir_all(dir).at(dir)?;
+    }
+    let mut f = match open() {
+        Ok(f) => f,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        // Empty directories where the reflog belongs: what is left of refs once under its name.
+        Err(_) if make && path.is_dir() => {
+            gix::tempfile::remove_dir::empty_depth_first(path.clone()).at(&path)?;
+            open().at(&path)?
+        }
+        Err(err) => return Err(err).at(&path),
+    };
+    let mut line = Vec::new();
+    let none = repo.object_hash().null();
+    write!(line, "{} {} ", e.from.unwrap_or(none), e.to)?;
+    e.who.trim().write_to(&mut line)?;
+    writeln!(line, "\t{}", e.why)?;
+    f.write_all(&line).at(&path)
 }
 
 /// What `take` gives, taking again while it fails for a missing directory.
@@ -237,50 +460,9 @@ impl Ref {
         Ok(self.repo.new_commit_as(me, me, msg, tree, parent)?.id)
     }
 
-    /// Moves the ref from `from` to `to`; false if another writer moved it first.
-    ///
-    /// The ref is compared and written under its lock, which every writer of the ref takes, and
-    /// git too before it removes the file of a ref it packed: the value read there stands until
-    /// the write.
+    /// Moves the ref from `from` to `to` ([`swap`]); false if another writer moved it first.
     pub fn cas(&self, from: Option<ObjectId>, to: ObjectId) -> Result<bool> {
-        let mut lock = match self.lock() {
-            Ok(lock) => lock,
-            Err(_) if self.head()? != from => return Ok(false),
-            Err(e) => return Err(gix::Error::from(e).into()),
-        };
-        if self.head()? != from {
-            return Ok(false);
-        }
-        lock.with_mut(|f| writeln!(f, "{to}"))
-            .at(lock.lock_path())?;
-        let path = lock.resource_path();
-        match lock.commit() {
-            Ok(_) => Ok(true),
-            // Empty directories where the ref's file belongs: what is left of refs once under its name.
-            Err(e) if path.is_dir() => {
-                gix::tempfile::remove_dir::empty_depth_first(path.clone()).at(&path)?;
-                let moved = e.instance.commit().map(|_| true);
-                moved.map_err(|e| e.error).at(&path)
-            }
-            Err(e) => Err(e.error).at(&path),
-        }
-    }
-
-    /// The ref's lock, the file `<ref>.lock`, made with the directories above it and waited for
-    /// as long as git waits for it.
-    fn lock(&self) -> gix::ExnResult<gix::lock::File> {
-        let path = loose(&self.repo, &self.name);
-        let refs = self.repo.refs.common_dir_resolved().join("refs");
-        let wait = match self
-            .repo
-            .config_snapshot()
-            .integer("core.filesRefLockTimeout")
-        {
-            None => LOCK_WAIT.into(),
-            Some(ms) if ms < 0 => Fail::AfterDurationWithBackoff(Duration::from_secs(u64::MAX)),
-            Some(ms) => Duration::from_millis(ms.unsigned_abs()).into(),
-        };
-        retaking(|| gix::lock::File::acquire_to_update_resource(&path, wait, Some(refs.clone())))
+        swap(&self.repo, &self.name, from, to)
     }
 }
 

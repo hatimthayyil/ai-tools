@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     io::{self, Write},
-    os::unix::{fs::PermissionsExt, process::CommandExt},
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     error,
     file::{self, AtPath, pretty},
+    git,
 };
 
 const GIT: &str = ".git";
@@ -34,8 +35,6 @@ const FAILED: &str = "ai-commit-failed";
 /// In the git directory: the newest modification time among the loose objects [`gc`] counted when
 /// it last started `git gc`, in nanoseconds since the epoch.
 const GC_MARK: &str = "ai-gc";
-/// In the git directory: the start of the name of each temporary file [`write_index`] fills.
-const INDEX_TEMP: &str = "ai-index.";
 
 pub fn exists(dir: &Path) -> bool {
     git_dir(dir).is_dir()
@@ -46,7 +45,8 @@ pub fn git_dir(dir: &Path) -> PathBuf {
     dir.join(GIT)
 }
 
-/// The lock [`commit`] takes: holding it keeps every commit of `dir` waiting.
+/// The lock [`commit`] takes: holding it keeps every commit `ai` makes in `dir` waiting. git
+/// knows nothing of it; git's own locks keep `ai` and git apart.
 pub fn lock(dir: &Path) -> Result<file::Lock> {
     file::lock(&git_dir(dir).join(LOCK))
 }
@@ -409,168 +409,200 @@ fn read_dir_if(dir: &Path) -> Result<Vec<io::Result<fs::DirEntry>>> {
 /// `msg` by the user's git identity, else `me`: HEAD's tree with those paths as they are on disk
 /// and everything else as HEAD has it; nothing when that tree is HEAD's. Of the index, only the
 /// entries under `paths` change, so what the user staged elsewhere stays staged. A file whose
-/// stat matches its index entry keeps that entry's blob unread. The index is written without
-/// git's `index.lock` ([`write_index`]): a git command writing it meanwhile may lose its write.
+/// stat matches its index entry keeps that entry's blob unread. It commits as [`commit_with`].
 pub fn commit_paths(dir: &Path, paths: &[&Path], me: &str, msg: &str) -> Result<()> {
-    let _lock = lock(dir)?;
-    let mut repo = gix::open(dir)?;
-    repo.committer_or_set_fallback(me, "ai@localhost")?;
-    let mut index: gix::index::File = (**repo.index_or_empty()?).clone();
-    let parent = repo.head()?.id().map(|id| id.detach());
-    let base = match parent {
-        Some(p) => repo.find_commit(p)?.tree_id()?.detach(),
-        None => ObjectId::empty_tree(repo.object_hash()),
-    };
-    let mut ed = repo.edit_tree(base)?;
-    let mut prefixes = Vec::new();
-    let mut stats = HashMap::new();
-    let mut stale = false;
-    for p in paths {
-        let prefix = p
-            .to_str()
-            .with_context(|| format!("{} is not UTF-8.", pretty(p)))?
-            .trim_end_matches('/')
-            .to_string();
-        ed.remove(prefix.as_str())?;
-        for (rel, abs) in files_under(dir, p)? {
-            let stat = Metadata::from_path_no_follow(&abs)
-                .at(&abs)
-                .and_then(|m| Ok(Stat::from_fs(&m)?))?;
-            let known = index
-                .entry_by_path(rel.as_bytes().as_bstr())
-                .filter(|e| e.stat == stat)
-                .map(|e| e.id);
-            let id = match known {
-                Some(id) => id,
-                None => {
-                    stale = true;
-                    repo.write_blob(fs::read(&abs).at(&abs)?)?.detach()
-                }
-            };
-            ed.upsert(&rel, EntryKind::Blob, id)?;
-            stats.insert(rel, stat);
+    commit_with(dir, me, msg, |repo, index, parent| {
+        let mut index = index.clone();
+        let base = match parent {
+            Some(p) => repo.find_commit(p)?.tree_id()?.detach(),
+            None => ObjectId::empty_tree(repo.object_hash()),
+        };
+        let mut ed = repo.edit_tree(base)?;
+        let mut prefixes = Vec::new();
+        let mut stats = HashMap::new();
+        let mut stale = false;
+        for p in paths {
+            let prefix = p
+                .to_str()
+                .with_context(|| format!("{} is not UTF-8.", pretty(p)))?
+                .trim_end_matches('/')
+                .to_string();
+            ed.remove(prefix.as_str())?;
+            for (rel, abs) in files_under(dir, p)? {
+                let (id, stat) = blob(repo, &index, &rel, &abs, &mut stale)?;
+                ed.upsert(&rel, EntryKind::Blob, id)?;
+                stats.insert(rel, stat);
+            }
+            prefixes.push(prefix);
         }
-        prefixes.push(prefix);
-    }
-    let tree = ed.write()?.detach();
-    let same = match parent {
-        Some(p) => repo.find_commit(p)?.tree_id()? == tree,
-        None => tree == ObjectId::empty_tree(repo.object_hash()),
-    };
-    if same && !stale {
-        return Ok(());
-    }
-    let under = |path: &BStr| {
-        prefixes.iter().any(|p| {
-            path == p.as_bytes().as_bstr()
-                || (path.starts_with(p.as_bytes()) && path.get(p.len()) == Some(&b'/'))
-        })
-    };
-    index.remove_entries(|_, path, _| under(path));
-    let fresh = repo.index_from_tree(&tree)?;
-    for (e, path) in fresh.entries().iter().map(|e| (e, e.path(&fresh))) {
-        if under(path) {
-            let stat = stats.get(&path_str(path)).copied().unwrap_or(e.stat);
-            index.dangerously_push_entry(stat, e.id, e.flags, e.mode, path);
+        let tree = ed.write()?.detach();
+        let same = match parent {
+            Some(p) => repo.find_commit(p)?.tree_id()? == tree,
+            None => tree == ObjectId::empty_tree(repo.object_hash()),
+        };
+        if same && !stale {
+            return Ok(None);
         }
-    }
-    index.sort_entries();
-    index.remove_tree();
-    // Before HEAD moves, as in `commit`.
-    write_index(&index)?;
-    if !same {
-        let me = repo.committer().context("No committer.")??;
-        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
-    }
-    Ok(())
+        let under = |path: &BStr| {
+            prefixes.iter().any(|p| {
+                path == p.as_bytes().as_bstr()
+                    || (path.starts_with(p.as_bytes()) && path.get(p.len()) == Some(&b'/'))
+            })
+        };
+        index.remove_entries(|_, path, _| under(path));
+        let fresh = repo.index_from_tree(&tree)?;
+        for (e, path) in fresh.entries().iter().map(|e| (e, e.path(&fresh))) {
+            if under(path) {
+                let stat = stats.get(&path_str(path)).copied().unwrap_or(e.stat);
+                index.dangerously_push_entry(stat, e.id, e.flags, e.mode, path);
+            }
+        }
+        index.sort_entries();
+        index.remove_tree();
+        Ok(Some(Staged { tree, index, same }))
+    })
 }
 
 /// Commits every file of `dir` its `.gitignore` keeps, as one commit `msg` by the user's git
 /// identity, else `me`; nothing when the tree is HEAD's. A file whose stat matches its index
-/// entry keeps that entry's blob unread. The index is written without git's `index.lock`
-/// ([`write_index`]): a git command writing it meanwhile may lose its write.
+/// entry keeps that entry's blob unread. It commits as [`commit_with`].
 pub fn commit(dir: &Path, me: &str, msg: &str) -> Result<()> {
+    commit_with(dir, me, msg, |repo, index, parent| {
+        let mut ed = repo.edit_tree(ObjectId::empty_tree(repo.object_hash()))?;
+        let mut stats = HashMap::new();
+        let mut stale = false;
+        for (rel, abs) in files(dir)? {
+            let (id, stat) = blob(repo, index, &rel, &abs, &mut stale)?;
+            ed.upsert(&rel, EntryKind::Blob, id)?;
+            stats.insert(rel, stat);
+        }
+        let tree = ed.write()?.detach();
+        let same = match parent {
+            Some(p) => repo.find_commit(p)?.tree_id()? == tree,
+            None => false,
+        };
+        if same && !stale {
+            return Ok(None);
+        }
+        let mut index = repo.index_from_tree(&tree)?;
+        for (e, path) in index.entries_mut_with_paths() {
+            if let Some(s) = stats.get(&path_str(path)) {
+                e.stat = *s;
+            }
+        }
+        Ok(Some(Staged { tree, index, same }))
+    })
+}
+
+/// The blob of the file `abs`, at `rel` in the repository, and its stat: its index entry's when
+/// the stat matches the entry's, else the file read and written, which marks the index `stale`.
+fn blob(
+    repo: &gix::Repository,
+    index: &gix::index::File,
+    rel: &str,
+    abs: &Path,
+    stale: &mut bool,
+) -> Result<(ObjectId, Stat)> {
+    let stat = Metadata::from_path_no_follow(abs)
+        .at(abs)
+        .and_then(|m| Ok(Stat::from_fs(&m)?))?;
+    let known = index
+        .entry_by_path(rel.as_bytes().as_bstr())
+        .filter(|e| e.stat == stat)
+        .map(|e| e.id);
+    let id = match known {
+        Some(id) => id,
+        None => {
+            *stale = true;
+            repo.write_blob(fs::read(abs).at(abs)?)?.detach()
+        }
+    };
+    Ok((id, stat))
+}
+
+/// What a commit of [`commit_with`] makes: its tree, the index to go with it, and whether the
+/// tree is HEAD's, so that only the index changes.
+struct Staged {
+    tree: ObjectId,
+    index: gix::index::File,
+    same: bool,
+}
+
+/// Commits what `stage` makes of the index and HEAD's commit in the repository at `dir`, as one
+/// commit `msg` by the user's git identity, else `me`, holding [`lock`]; `stage` gives `None`
+/// when neither the tree nor the index would change.
+///
+/// It commits as `git commit -a` does, so that a git command run meanwhile loses no write and
+/// sees none half made. First it looks, as `git status` does, without any of git's locks, and
+/// takes none when there is nothing to commit, so a commit with nothing in it never turns a git
+/// command away. Then it takes git's `index.lock` and reads the index under it, writes the new
+/// index into the lock, moves HEAD as git does ([`git::advance_head`]), and only then renames the
+/// lock over the index. HEAD moved meanwhile, it lets the lock go and starts again on the new
+/// HEAD. A lock it cannot move HEAD past leaves the index and HEAD as they were.
+fn commit_with(
+    dir: &Path,
+    me: &str,
+    msg: &str,
+    stage: impl Fn(&gix::Repository, &gix::index::File, Option<ObjectId>) -> Result<Option<Staged>>,
+) -> Result<()> {
     let _lock = lock(dir)?;
     let mut repo = gix::open(dir)?;
     repo.committer_or_set_fallback(me, "ai@localhost")?;
-    let index = repo.index_or_empty()?;
-    let mut ed = repo.edit_tree(ObjectId::empty_tree(repo.object_hash()))?;
-    let mut stats = HashMap::new();
-    let mut stale = false;
-    for (rel, abs) in files(dir)? {
-        let stat = Metadata::from_path_no_follow(&abs)
-            .at(&abs)
-            .and_then(|m| Ok(Stat::from_fs(&m)?))?;
-        let known = index
-            .entry_by_path(rel.as_bytes().as_bstr())
-            .filter(|e| e.stat == stat)
-            .map(|e| e.id);
-        let id = match known {
-            Some(id) => id,
-            None => {
-                stale = true;
-                repo.write_blob(fs::read(&abs).at(&abs)?)?.detach()
-            }
-        };
-        ed.upsert(&rel, EntryKind::Blob, id)?;
-        stats.insert(rel, stat);
-    }
-    let tree = ed.write()?.detach();
-    let parent = repo.head()?.id().map(|id| id.detach());
-    let same = match parent {
-        Some(p) => repo.find_commit(p)?.tree_id()? == tree,
-        None => false,
-    };
-    if same && !stale {
+    if stage(&repo, &read_index(&repo)?, git::head(&repo)?.commit)?.is_none() {
         return Ok(());
     }
-    let mut index = repo.index_from_tree(&tree)?;
-    for (e, path) in index.entries_mut_with_paths() {
-        if let Some(s) = stats.get(&path_str(path)) {
-            e.stat = *s;
-        }
-    }
-    // Before HEAD moves: whoever reads between the two sees the files staged, never a HEAD the
-    // index lags behind.
-    write_index(&index)?;
-    if !same {
-        let me = repo.committer().context("No committer.")??;
-        repo.commit_as(me, me, "HEAD", msg, tree, parent)?;
-    }
-    Ok(())
-}
-
-/// Writes `index` over the file it was read from, as git does but without its `index.lock`:
-/// whole into a temporary file of its own beside it, then renamed in. Only ai writes the index of
-/// its repositories, and only holding [`lock`], which serialises those writes; so the caller
-/// holds it, and any temporary file of this kind already there is a killed write's, and goes.
-fn write_index(index: &gix::index::File) -> Result<()> {
-    let path = index.path();
-    let dir = path
-        .parent()
-        .with_context(|| format!("{} has no directory.", pretty(path)))?;
-    for e in read_dir_if(dir)? {
-        let e = e.at(dir)?;
-        if e.file_name()
-            .as_encoded_bytes()
-            .starts_with(INDEX_TEMP.as_bytes())
-        {
-            match fs::remove_file(e.path()) {
-                Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err).at(&e.path()),
-                _ => {}
+    loop {
+        let mut held = index_lock(&repo)?;
+        let index = read_index(&repo)?;
+        let parent = git::head(&repo)?.commit;
+        let Some(s) = stage(&repo, &index, parent)? else {
+            return Ok(());
+        };
+        let mut out = io::BufWriter::with_capacity(64 * 1024, &mut held);
+        s.index.write_to(&mut out, Default::default())?;
+        out.flush().at(&repo.index_path())?;
+        drop(out);
+        if !s.same {
+            let me = repo.committer().context("No committer.")??;
+            let commit = repo.new_commit_as(me, me, msg, s.tree, parent)?.id;
+            if !git::advance_head(&repo, parent, commit, me, msg)? {
+                continue;
             }
         }
+        let path = repo.index_path();
+        held.commit().map_err(|e| e.error).at(&path)?;
+        return Ok(());
     }
-    let tmp = tempfile::Builder::new()
-        .prefix(INDEX_TEMP)
-        .permissions(fs::Permissions::from_mode(0o666))
-        .tempfile_in(dir)
-        .at(dir)?;
-    let mut out = io::BufWriter::with_capacity(64 * 1024, tmp);
-    index.write_to(&mut out, Default::default())?;
-    let tmp = out.into_inner().map_err(|e| e.into_error()).at(path)?;
-    tmp.persist(path).map_err(|e| e.error).at(path)?;
-    Ok(())
+}
+
+/// git's lock of the index of `repo`, `index.lock`, waited for as git waits for a ref's lock:
+/// an error naming it while another holds it, which ai never takes from it.
+fn index_lock(repo: &gix::Repository) -> Result<gix::lock::File> {
+    let path = repo.index_path();
+    git::lock(repo, &path, None).map_err(|e| {
+        let lock = path.with_extension("lock");
+        match lock.exists() {
+            true => anyhow::anyhow!(
+                "git's {} is held: a git command is using {}'s index. Let it finish; if none \
+                 is running, one that was cut short left the lock behind, and it can go.",
+                pretty(&lock),
+                pretty(repo.workdir().unwrap_or(repo.git_dir()))
+            ),
+            false => gix::Error::from(e).into(),
+        }
+    })
+}
+
+/// The index of `repo` as its file holds it now; an empty one when there is no file.
+fn read_index(repo: &gix::Repository) -> Result<gix::index::File> {
+    let path = repo.index_path();
+    match path.exists() {
+        true => Ok(repo.open_index()?),
+        false => Ok(gix::index::File::from_state(
+            gix::index::State::new(repo.object_hash()),
+            path,
+        )),
+    }
 }
 
 /// HEAD's commit of the repository at `dir` when its tree holds `rel`, relative to `dir`; `None`
@@ -715,8 +747,14 @@ mod tests {
 
     use super::*;
 
+    /// The lock of the branch HEAD of the repository at `dir` names.
+    fn branch_lock(dir: &Path) -> PathBuf {
+        let branch = gix::open(dir).unwrap().head_name().unwrap().unwrap();
+        git_dir(dir).join(format!("{}.lock", branch.as_bstr()))
+    }
+
     #[test]
-    fn a_commit_writes_the_index_before_head_moves() {
+    fn a_commit_that_cannot_move_head_leaves_head_and_the_index_as_they_were() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("store");
         create(&dir).unwrap();
@@ -724,19 +762,115 @@ mod tests {
         commit(&dir, "ai", "one").unwrap();
         assert_eq!(staged(&dir), ["a"]);
 
-        // A held lock on HEAD's branch keeps HEAD where it is.
-        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
-        let held = git_dir(&dir).join(format!("{}.lock", branch.as_bstr()));
+        let held = branch_lock(&dir);
         fs::write(&held, "").unwrap();
         fs::write(dir.join("b"), "2\n").unwrap();
         assert!(commit(&dir, "ai", "two").is_err());
         assert_eq!(head(&dir, "a").0, "one");
-        assert_eq!(staged(&dir), ["a", "b"]);
+        assert_eq!(staged(&dir), ["a"]);
+        assert!(!git_dir(&dir).join("index.lock").exists());
+        assert!(!git_dir(&dir).join("HEAD.lock").exists());
 
         fs::remove_file(&held).unwrap();
         commit(&dir, "ai", "two").unwrap();
         assert_eq!(head(&dir, "b"), ("two".into(), "2\n".into()));
         assert_eq!(staged(&dir), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_commit_is_logged_as_git_logs_one() {
+        let (_tmp, dir) = first_commit();
+        fs::write(dir.join("a"), "1\n").unwrap();
+        commit(&dir, "ai", "one\n\nbody").unwrap();
+        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
+        let ids = git(&dir, &["rev-list", "HEAD"]);
+        let ids: Vec<&str> = ids.lines().collect();
+        let none = "0".repeat(40);
+        for log in ["HEAD".to_string(), branch.to_string()] {
+            let text = fs::read_to_string(git_dir(&dir).join("logs").join(&log)).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), 2, "{log}: {text}");
+            for (line, (from, to, why)) in lines.iter().zip([
+                (none.as_str(), ids[1], "commit (initial): first"),
+                (ids[1], ids[0], "commit: one"),
+            ]) {
+                let (moved, said) = line.split_once('\t').unwrap();
+                assert_eq!(said, why, "{log}");
+                let who = git(
+                    &dir,
+                    &["log", "-1", "--date=raw", "--format=%cn <%ce> %cd", to],
+                );
+                assert_eq!(moved, format!("{from} {to} {}", who.trim()), "{log}");
+            }
+            assert_eq!(
+                git(&dir, &["reflog", "show", "--format=%gs", &log]),
+                "commit: one\ncommit (initial): first\n"
+            );
+        }
+    }
+
+    #[test]
+    fn a_commit_makes_no_reflog_where_git_makes_none_but_adds_to_one_there_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("store");
+        create(&dir).unwrap();
+        git(&dir, &["config", "core.logAllRefUpdates", "false"]);
+        fs::write(dir.join("a"), "1\n").unwrap();
+        commit(&dir, "ai", "one").unwrap();
+        let logs = git_dir(&dir).join("logs");
+        assert!(!logs.exists());
+        fs::create_dir(&logs).unwrap();
+        fs::write(logs.join("HEAD"), "").unwrap();
+        fs::write(dir.join("a"), "2\n").unwrap();
+        commit(&dir, "ai", "two").unwrap();
+        assert_eq!(
+            git(&dir, &["reflog", "show", "--format=%gs", "HEAD"]),
+            "commit: two\n"
+        );
+        assert!(!logs.join("refs").exists());
+    }
+
+    #[test]
+    fn a_commit_on_a_detached_head_moves_head_alone() {
+        let (_tmp, dir) = first_commit();
+        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
+        let first = git(&dir, &["rev-parse", "HEAD"]);
+        fs::write(git_dir(&dir).join("HEAD"), &first).unwrap();
+        fs::write(dir.join("a"), "1\n").unwrap();
+        commit(&dir, "ai", "one").unwrap();
+        let head = fs::read_to_string(git_dir(&dir).join("HEAD")).unwrap();
+        assert_ne!(head, first);
+        assert_eq!(git(&dir, &["rev-parse", "HEAD~1"]), first);
+        assert_eq!(git(&dir, &["rev-parse", &branch.to_string()]), first);
+        assert_eq!(
+            git(&dir, &["reflog", "show", "--format=%gs", "HEAD"]),
+            "commit: one\ncommit (initial): first\n"
+        );
+    }
+
+    #[test]
+    fn a_commit_waits_for_head_s_lock_as_git_does() {
+        let (_tmp, dir) = first_commit();
+        let held = git_dir(&dir).join("HEAD.lock");
+        fs::write(&held, "").unwrap();
+        fs::write(dir.join("a"), "1\n").unwrap();
+        let l = error::line(&commit(&dir, "ai", "one").unwrap_err());
+        assert!(l.contains(&held.display().to_string()), "{l}");
+        assert_eq!(head(&dir, "first").0, "first");
+        assert_eq!(staged(&dir), ["first"]);
+        fs::remove_file(&held).unwrap();
+        commit(&dir, "ai", "one").unwrap();
+        assert_eq!(head(&dir, "a").0, "one");
+    }
+
+    #[test]
+    fn a_branch_git_packed_moves_on_from_its_packed_commit() {
+        let (_tmp, dir) = first_commit();
+        git(&dir, &["pack-refs", "--all", "--prune"]);
+        assert!(!branch_lock(&dir).with_extension("").exists());
+        fs::write(dir.join("a"), "1\n").unwrap();
+        commit(&dir, "ai", "one").unwrap();
+        assert_eq!(subjects(&dir), "one\nfirst\n");
     }
 
     /// The paths the index of the repository at `dir` holds, in its order.
@@ -967,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_of_paths_writes_the_index_before_head_moves() {
+    fn a_commit_of_paths_that_cannot_move_head_leaves_the_index_as_it_was() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("store");
         create(&dir).unwrap();
@@ -976,14 +1110,13 @@ mod tests {
         fs::write(dir.join("t/a"), "1\n").unwrap();
         commit_paths(&dir, &[t], "ai", "one").unwrap();
 
-        // A held lock on HEAD's branch keeps HEAD where it is.
-        let branch = gix::open(&dir).unwrap().head_name().unwrap().unwrap();
-        let held = git_dir(&dir).join(format!("{}.lock", branch.as_bstr()));
+        let held = branch_lock(&dir);
         fs::write(&held, "").unwrap();
         fs::write(dir.join("t/b"), "2\n").unwrap();
         assert!(commit_paths(&dir, &[t], "ai", "two").is_err());
         assert_eq!(head(&dir, "t/a").0, "one");
-        assert_eq!(staged(&dir), ["t/a", "t/b"]);
+        assert_eq!(staged(&dir), ["t/a"]);
+        assert!(!git_dir(&dir).join("index.lock").exists());
 
         fs::remove_file(&held).unwrap();
         commit_paths(&dir, &[t], "ai", "two").unwrap();
@@ -992,46 +1125,58 @@ mod tests {
     }
 
     #[test]
-    fn an_index_lock_left_behind_stops_no_commit() {
+    fn git_holding_the_index_lock_fails_a_commit_which_leaves_the_lock_alone() {
         let (_tmp, dir) = first_commit();
-        let left = git_dir(&dir).join("index.lock");
-        fs::write(&left, "left by a killed git").unwrap();
+        let held = git_dir(&dir).join("index.lock");
+        fs::write(&held, "git's").unwrap();
         let status = || {
             let work = dir.to_str().unwrap();
             git(&dir, &["--work-tree", work, "status", "--porcelain"])
         };
+        commit(&dir, "ai", "nothing").unwrap();
+        commit_paths(&dir, &[Path::new("first")], "ai", "nothing").unwrap();
+        assert_eq!(subjects(&dir), "first\n", "nothing to commit needs no lock");
 
         fs::write(dir.join("a"), "1\n").unwrap();
+        let e = error::line(&commit(&dir, "ai", "one").unwrap_err());
+        let want = format!(
+            "git's {} is held: a git command is using {}'s index. Let it finish; if none is \
+             running, one that was cut short left the lock behind, and it can go.",
+            pretty(&held),
+            pretty(&dir)
+        );
+        assert_eq!(e, want);
+        put(&dir, "t/b", "2\n");
+        assert!(commit_paths(&dir, &[Path::new("t")], "ai", "two").is_err());
+        assert_eq!(fs::read_to_string(&held).unwrap(), "git's");
+        assert_eq!(subjects(&dir), "first\n");
+        assert_eq!(staged(&dir), ["first"]);
+
+        fs::remove_file(&held).unwrap();
         commit(&dir, "ai", "one").unwrap();
         assert_eq!(head(&dir, "a"), ("one".into(), "1\n".into()));
-        assert_eq!(staged(&dir), ["a", "first"]);
-        assert_eq!(status(), "");
-
-        put(&dir, "t/b", "2\n");
-        commit_paths(&dir, &[Path::new("t")], "ai", "two").unwrap();
-        assert_eq!(head(&dir, "t/b"), ("two".into(), "2\n".into()));
         assert_eq!(staged(&dir), ["a", "first", "t/b"]);
         assert_eq!(status(), "");
-
-        assert_eq!(fs::read_to_string(&left).unwrap(), "left by a killed git");
     }
 
     #[test]
-    fn a_commit_removes_the_index_a_killed_commit_left_half_written() {
+    fn a_commit_waits_for_the_index_lock_while_git_holds_it() {
         let (_tmp, dir) = first_commit();
-        let left = git_dir(&dir).join(format!("{INDEX_TEMP}k1ll3d"));
-
-        fs::write(&left, "half").unwrap();
+        git(&dir, &["config", "core.filesRefLockTimeout", "60000"]);
+        let held = git_dir(&dir).join("index.lock");
+        fs::write(&held, "git's").unwrap();
         fs::write(dir.join("a"), "1\n").unwrap();
-        commit(&dir, "ai", "one").unwrap();
-        assert!(!left.exists());
-
-        fs::write(&left, "half").unwrap();
-        put(&dir, "t/b", "2\n");
-        commit_paths(&dir, &[Path::new("t")], "ai", "two").unwrap();
-        assert!(!left.exists());
-        assert_eq!(staged(&dir), ["a", "first", "t/b"]);
-        assert!(!git_dir(&dir).join("index.lock").exists());
+        let committer = {
+            let dir = dir.clone();
+            std::thread::spawn(move || commit(&dir, "ai", "one"))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(subjects(&dir), "first\n");
+        assert_eq!(fs::read_to_string(&held).unwrap(), "git's");
+        fs::remove_file(&held).unwrap();
+        committer.join().unwrap().unwrap();
+        assert_eq!(head(&dir, "a"), ("one".into(), "1\n".into()));
+        assert_eq!(staged(&dir), ["a", "first"]);
     }
 
     #[test]
