@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.19.0 - 2026-11-24
+
+### Upgrading
+
+From 0.18, once on each machine, before agents run on this release. Close every agent session first, so no hook runs `ai` halfway through. A memory that `$AI_MEMORY_DIR` names stays whole in its directory and needs none of this.
+
+1. **Know what moves.** The memory's ref, `refs/ai/memory`, is kept in `~/ai`'s git repository, with its whole history. This machine's files of the memory stay in `~/.ai/memory`, outside git: `origin`, locks, logs, recorded calls and usage.
+
+2. **Have `git` on your PATH,** and let no `ai` be writing or summarising the memory: `ai convert` refuses while one is, naming the lock it holds.
+
+3. **Run `ai convert`.** Every run moves the memory first, whatever directory it is given, making `~/ai` a repository if there is none. `ai convert --dry-run` changes nothing and prints `memory: would convert N messages (M commits) from ~/.ai/memory to ~/ai.`; without `--dry-run` it prints `memory: converted …`, and a later run prints `memory: already converted to ~/ai.` No `ai memory init` is needed afterwards. Until the memory is converted, every `ai memory` command and `ai view` refuse, naming `ai convert`.
+
+4. **Delete the old repository once you have checked the conversion.** Its git files are kept as `~/.ai/memory-converted.git`, still a repository and no longer read. `ai` never deletes it.
+
+5. **Name `~/ai` in the backup.** `ai backup` saves `~/ai` only when `[backup] folders` in your own `~/.ai/ai.toml` names it:
+
+   ```toml
+   [backup]
+   folders = ["~/ai"]
+   ```
+
+   An entry naming `~/.ai/memory` now saves this machine's files of the memory, and no notes.
+
+6. **Upgrade any older `ai`.** One pinned in a project still reads `~/.ai/memory`, which is no longer a repository: its `ai memory` commands fail with "No memory at ~/.ai/memory", and its `ai memory init` refuses the directory as not empty.
+
+### Breaking changes
+
+- **memory:** keep the memory's ref in ~/ai
+
+> ai memory reads refs/ai/memory in ~/ai. A memory at
+~/.ai/memory is refused until it is converted.
+
+### Bug fixes
+
+- **git:** move a store's ref with ai's own compare-and-swap
+- **repo:** commit as git does, so git run by hand beside ai loses nothing
+
+### Features
+
+- **plugin:** turn Claude Code's automatic compaction off
+- **convert:** move the memory from ~/.ai/memory into ~/ai
+
 ## v0.18.4 - 2026-11-18
 
 ### Bug fixes
